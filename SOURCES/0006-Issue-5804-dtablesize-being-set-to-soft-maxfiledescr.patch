@@ -1,0 +1,517 @@
+From 6053374b175e2fd8847282ceffb99854ec148324 Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Thu, 20 Jul 2023 15:47:14 +0000
+Subject: [PATCH 06/11] Issue 5804 - dtablesize being set to soft
+ maxfiledescriptor limit (#5806)
+
+Bug Description: 389ds is not setting dtablesize properly based when systemd is setting
+the maxfiledescriptors with it's default settings. dtablesize stays 1024 which causes
+massive slowdown once you hit around 950 connection
+
+Fix Description: dtablesize is set to the connection table size, this
+commit sets the connection table size/dtablesize to the system max
+file descriptor number less the reserve file descriptors.
+
+relates: https://github.com/389ds/389-ds-base/issues/5804
+
+Reviewed by: @tbordaz @progier389  (Thank you)
+---
+ .../suites/resource_limits/fdlimits_test.py   |  47 +++-
+ ldap/servers/slapd/conntable.c                |   2 +
+ ldap/servers/slapd/daemon.c                   |  37 ++-
+ ldap/servers/slapd/libglobs.c                 | 257 ++++++++++++++----
+ ldap/servers/slapd/proto-slap.h               |   6 +-
+ 5 files changed, 283 insertions(+), 66 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/resource_limits/fdlimits_test.py b/dirsrvtests/tests/suites/resource_limits/fdlimits_test.py
+index 3b26e8cae..19854b01d 100644
+--- a/dirsrvtests/tests/suites/resource_limits/fdlimits_test.py
++++ b/dirsrvtests/tests/suites/resource_limits/fdlimits_test.py
+@@ -11,6 +11,7 @@ import pytest
+ import os
+ import ldap
+ import resource
++from lib389.backend import Backends
+ from lib389._constants import *
+ from lib389.topologies import topology_st
+ from lib389.utils import ds_is_older, ensure_str
+@@ -22,9 +23,11 @@ logging.getLogger(__name__).setLevel(logging.INFO)
+ log = logging.getLogger(__name__)
+ 
+ FD_ATTR = "nsslapd-maxdescriptors"
++RESRV_FD_ATTR = "nsslapd-reservedescriptors"
+ GLOBAL_LIMIT = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+ SYSTEMD_LIMIT = ensure_str(check_output("systemctl show -p LimitNOFILE dirsrv@standalone1".split(" ")).strip()).split('=')[1]
+ CUSTOM_VAL = str(int(SYSTEMD_LIMIT) - 10)
++RESRV_DESC_VAL = str(10)
+ TOO_HIGH_VAL = str(GLOBAL_LIMIT * 2)
+ TOO_HIGH_VAL2 = str(int(SYSTEMD_LIMIT) * 2)
+ TOO_LOW_VAL = "0"
+@@ -74,7 +77,49 @@ def test_fd_limits(topology_st):
+     max_fd = topology_st.standalone.config.get_attr_val_utf8(FD_ATTR)
+     assert max_fd == CUSTOM_VAL
+ 
+-    log.info("Test PASSED")
++    log.info("test_fd_limits PASSED")
++
++@pytest.mark.skipif(ds_is_older("1.4.1.2"), reason="Not implemented")
++def test_reserve_descriptor_validation(topology_st):
++    """Test the reserve descriptor self check
++
++    :id: TODO
++    :setup: Standalone Instance
++    :steps:
++        1. Set attr nsslapd-reservedescriptors to a low value of RESRV_DESC_VAL (10)
++        2. Verify low value has been set
++        3. Restart instance (On restart the reservedescriptor attr will be validated)
++        4. Check updated value for nsslapd-reservedescriptors attr
++    :expectedresults:
++        1. Success
++        2. A value of RESRV_DESC_VAL (10) is returned
++        3. Success
++        4. A value of STANDALONE_INST_RESRV_DESCS (55) is returned
++    """
++
++    # Set nsslapd-reservedescriptors to a low value (RESRV_DESC_VAL:10)
++    topology_st.standalone.config.set(RESRV_FD_ATTR, RESRV_DESC_VAL)
++    resrv_fd = topology_st.standalone.config.get_attr_val_utf8(RESRV_FD_ATTR)
++    assert resrv_fd == RESRV_DESC_VAL
++
++    # An instance restart triggers a validation of the configured nsslapd-reservedescriptors attribute
++    topology_st.standalone.restart()
++
++    """
++    A standalone instance contains a single backend with default indexes
++    so we only check these. TODO add tests for repl, chaining, PTA, SSL
++    """
++    STANDALONE_INST_RESRV_DESCS = 20 # 20 = Reserve descriptor constant
++    backends = Backends(topology_st.standalone)
++    STANDALONE_INST_RESRV_DESCS += (len(backends.list()) * 4) # 4 = Backend descriptor constant
++    for be in backends.list() :
++        STANDALONE_INST_RESRV_DESCS += len(be.get_indexes().list())
++
++    # Varify reservedescriptors has been updated
++    resrv_fd = topology_st.standalone.config.get_attr_val_utf8(RESRV_FD_ATTR)
++    assert resrv_fd == str(STANDALONE_INST_RESRV_DESCS)
++
++    log.info("test_reserve_descriptor_validation PASSED")
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/ldap/servers/slapd/conntable.c b/ldap/servers/slapd/conntable.c
+index feb9c0d75..5e6513880 100644
+--- a/ldap/servers/slapd/conntable.c
++++ b/ldap/servers/slapd/conntable.c
+@@ -138,6 +138,8 @@ connection_table_new(int table_size)
+     ct->conn_next_offset = 1;
+     ct->conn_free_offset = 1;
+ 
++    slapi_log_err(SLAPI_LOG_INFO, "connection_table_new", "conntablesize:%d\n", ct->size);
++
+     pthread_mutexattr_t monitor_attr = {0};
+     pthread_mutexattr_init(&monitor_attr);
+     pthread_mutexattr_settype(&monitor_attr, PTHREAD_MUTEX_RECURSIVE);
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 388fa0943..e5b7d6e06 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -82,6 +82,7 @@ PRFileDesc *signalpipe[2];
+ static int writesignalpipe = SLAPD_INVALID_SOCKET;
+ static int readsignalpipe = SLAPD_INVALID_SOCKET;
+ #define FDS_SIGNAL_PIPE 0
++#define MAX_LDAP_CONNS 64000
+ 
+ static PRThread *accept_thread_p = NULL;
+ static PRThread *disk_thread_p = NULL;
+@@ -107,7 +108,7 @@ static PRFileDesc *tls_listener = NULL; /* Stashed tls listener for get_ssl_list
+ 
+ #define SLAPD_POLL_LISTEN_READY(xxflagsxx) (xxflagsxx & PR_POLL_READ)
+ 
+-static int get_configured_connection_table_size(void);
++static int get_connection_table_size(void);
+ #ifdef RESOLVER_NEEDS_LOW_FILE_DESCRIPTORS
+ static void get_loopback_by_addr(void);
+ #endif
+@@ -1063,7 +1064,11 @@ slapd_daemon(daemon_ports_t *ports)
+     PRIntervalTime pr_timeout = PR_MillisecondsToInterval(slapd_wakeup_timer);
+     uint64_t threads;
+     int in_referral_mode = config_check_referral_mode();
+-    int connection_table_size = get_configured_connection_table_size();
++    int connection_table_size = get_connection_table_size();
++    if (!connection_table_size) {
++        slapi_log_err(SLAPI_LOG_ERR, "slapd_daemon", "Not enough available file descriuptors");
++        exit(1);
++    }
+     the_connection_table = connection_table_new(connection_table_size);
+ 
+     /*
+@@ -2846,18 +2851,32 @@ catch_signals()
+ #endif /* HPUX */
+ 
+ static int
+-get_configured_connection_table_size(void)
++get_connection_table_size(void)
+ {
+-    int size = config_get_conntablesize();
++    int size = 0;
++    int resrvdesc = 0;
+     int maxdesc = config_get_maxdescriptors();
+ 
+-    /*
+-     * Cap the table size at nsslapd-maxdescriptors.
+-     */
+-    if (maxdesc >= 0 && size > maxdesc) {
+-        size = maxdesc;
++    /* Validate configured reserve descriptors */
++    validate_num_config_reservedescriptors();
++
++    resrvdesc = config_get_reservedescriptors();
++    if (maxdesc > resrvdesc) {
++         size = (maxdesc - resrvdesc);
++    } else {
++        return 0;
++    }
++
++    /* Verify size does not exceed max num of conns */
++    if (size > MAX_LDAP_CONNS) {
++        size = MAX_LDAP_CONNS;
+     }
+ 
++    slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
++    CFG_LOCK_WRITE(slapdFrontendConfig);
++    slapdFrontendConfig->conntablesize = size;
++    CFG_UNLOCK_WRITE(slapdFrontendConfig);
++
+     return size;
+ }
+ 
+diff --git a/ldap/servers/slapd/libglobs.c b/ldap/servers/slapd/libglobs.c
+index f6c6b52a1..43f924947 100644
+--- a/ldap/servers/slapd/libglobs.c
++++ b/ldap/servers/slapd/libglobs.c
+@@ -1670,13 +1670,6 @@ FrontendConfig_init(void)
+     cfg->groupevalnestlevel = SLAPD_DEFAULT_GROUPEVALNESTLEVEL;
+     cfg->snmp_index = SLAPD_DEFAULT_SNMP_INDEX;
+     cfg->SSLclientAuth = SLAPD_DEFAULT_SSLCLIENTAUTH;
+-
+-#ifdef USE_SYSCONF
+-    cfg->conntablesize = sysconf(_SC_OPEN_MAX);
+-#else  /* USE_SYSCONF */
+-    cfg->conntablesize = getdtablesize();
+-#endif /* USE_SYSCONF */
+-
+     init_accesscontrol = cfg->accesscontrol = LDAP_ON;
+ 
+     /* nagle triggers set/unset TCP_CORK setsockopt per operation
+@@ -1689,7 +1682,6 @@ FrontendConfig_init(void)
+     init_return_exact_case = cfg->return_exact_case = LDAP_ON;
+     init_result_tweak = cfg->result_tweak = LDAP_OFF;
+     init_attrname_exceptions = cfg->attrname_exceptions = LDAP_OFF;
+-    cfg->reservedescriptors = SLAPD_DEFAULT_RESERVE_FDS;
+     cfg->useroc = slapi_ch_strdup("");
+     cfg->userat = slapi_ch_strdup("");
+     /* kexcoff: should not be initialized by default here
+@@ -4830,43 +4822,13 @@ config_set_maxdescriptors(const char *attrname, char *value, char *errorbuf, int
+ int
+ config_set_conntablesize(const char *attrname, char *value, char *errorbuf, int apply)
+ {
+-    int retVal = LDAP_SUCCESS;
+-    long nValue = 0;
+-    int maxVal = 65535;
+-    char *endp = NULL;
+-    struct rlimit rlp;
+     slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
+ 
+-    if (config_value_is_null(attrname, value, errorbuf, 0)) {
+-        return LDAP_OPERATIONS_ERROR;
+-    }
++    slapi_create_errormsg(errorbuf, SLAPI_DSE_RETURNTEXT_SIZE,
++                          "User setting of %s attribute is disabled, server has auto calculated its value to %d.",
++                          attrname, slapdFrontendConfig->conntablesize);
+ 
+-    if (0 == getrlimit(RLIMIT_NOFILE, &rlp)) {
+-        maxVal = (int)rlp.rlim_max;
+-    }
+-
+-    errno = 0;
+-    nValue = strtol(value, &endp, 0);
+-
+-    if (*endp != '\0' || errno == ERANGE || nValue < 1 || nValue > maxVal) {
+-        slapi_create_errormsg(errorbuf, SLAPI_DSE_RETURNTEXT_SIZE,
+-                              "%s: invalid value \"%s\", connection table size must range from 1 to %d (the current process maxdescriptors limit). "
+-                              "Server will use a setting of %d.",
+-                              attrname, value, maxVal, maxVal);
+-        if (nValue > maxVal) {
+-            nValue = maxVal;
+-            retVal = LDAP_UNWILLING_TO_PERFORM;
+-        } else {
+-            retVal = LDAP_OPERATIONS_ERROR;
+-        }
+-    }
+-
+-    if (apply) {
+-        CFG_LOCK_WRITE(slapdFrontendConfig);
+-        slapdFrontendConfig->conntablesize = nValue;
+-        CFG_UNLOCK_WRITE(slapdFrontendConfig);
+-    }
+-    return retVal;
++    return LDAP_OPERATIONS_ERROR;
+ }
+ 
+ int
+@@ -6293,6 +6255,19 @@ config_get_maxdescriptors(void)
+     return retVal;
+ }
+ 
++int
++config_get_conntablesize(void)
++{
++    slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
++    int retVal;
++
++    CFG_LOCK_READ(slapdFrontendConfig);
++    retVal = slapdFrontendConfig->conntablesize;
++    CFG_UNLOCK_READ(slapdFrontendConfig);
++
++    return retVal;
++}
++
+ int
+ config_get_reservedescriptors()
+ {
+@@ -6595,19 +6570,6 @@ config_get_referral_mode(void)
+     return ret;
+ }
+ 
+-int
+-config_get_conntablesize(void)
+-{
+-    slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
+-    int retVal;
+-
+-    CFG_LOCK_READ(slapdFrontendConfig);
+-    retVal = slapdFrontendConfig->conntablesize;
+-    CFG_UNLOCK_READ(slapdFrontendConfig);
+-
+-    return retVal;
+-}
+-
+ /* return yes/no without actually copying the referral url
+    we don't worry about another thread changing this value
+    since we now return an integer */
+@@ -9135,3 +9097,188 @@ invalid_sasl_mech(char *str)
+     /* Mechanism value is valid */
+     return 0;
+ }
++
++/*
++ * Check if the number of reserve descriptors satisfy the servers needs.
++ *
++ * 1) Calculate the number of reserve descriptors the server requires
++ * 2) Get the configured value for nsslapd-reservedescriptors
++ * 3) If the configured value is less than the calculated value, increase it
++ *
++ * The formula used here is taken from the RH DS 11 docs:
++ * nsslapd-reservedescriptor = 20 + (NldbmBackends * 4) + NglobalIndex +
++ * 8 ReplicationDescriptors + Nreplicas +
++ * NchainingBackends * nsOperationCOnnectionsLImit +
++ * 3 PTADescriptors + 5 SSLDescriptors
++ */
++int
++validate_num_config_reservedescriptors(void)
++{
++    #define RESRV_DESC_CONST 20
++    #define BE_DESC_CONST 4
++    #define REPL_DESC_CONST 8
++    #define PTA_DESC_CONST 3
++    #define SSL_DESC_CONST 5
++    Slapi_Attr *attr = NULL;
++    Slapi_Backend *be = NULL;
++    Slapi_DN sdn;
++    Slapi_Entry *entry = NULL;
++    Slapi_Entry **entries = NULL;
++    Slapi_PBlock *search_pb = NULL;
++    char *cookie = NULL;
++    char const *mt_str = NULL;
++    char *entry_str = NULL;
++    int rc = -1;
++    int num_backends = 0;
++    int num_repl_agmts = 0;
++    int num_chaining_backends = 0;
++    int chain_conn_limit = 0;
++    int calc_reservedesc = RESRV_DESC_CONST;
++    int config_reservedesc = config_get_reservedescriptors();
++
++    /* Get number of backends, multiplied by the backend descriptor constant */
++    for (be = slapi_get_first_backend(&cookie); be != NULL; be = slapi_get_next_backend(cookie)) {
++        entry_str = slapi_create_dn_string("cn=%s,cn=ldbm database,cn=plugins,cn=config", be->be_name);
++        if (NULL == entry_str) {
++            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create backend dn string");
++            return -1;
++        }
++        slapi_sdn_init_dn_byref(&sdn, entry_str);
++        slapi_search_internal_get_entry(&sdn, NULL, &entry, plugin_get_default_component_id());
++        if (entry) {
++            if (slapi_entry_attr_hasvalue(entry, "objectclass", "nsBackendInstance")) {
++                num_backends += 1;
++            }
++        }
++        slapi_entry_free(entry);
++        slapi_ch_free_string(&entry_str);
++        slapi_sdn_done(&sdn);
++    }
++    slapi_ch_free((void **)&cookie);
++    if (num_backends) {
++        calc_reservedesc += (num_backends * BE_DESC_CONST);
++    }
++
++    /* Get number of indexes for each backend and add to total */
++    for (be = slapi_get_first_backend(&cookie); be; be = slapi_get_next_backend(cookie)) {
++        entry_str = slapi_create_dn_string("cn=index,cn=%s,cn=ldbm database,cn=plugins,cn=config", be->be_name);
++        if (NULL == entry_str) {
++            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create index dn string");
++            return -1;
++        }
++        slapi_sdn_init_dn_byref(&sdn, entry_str);
++        slapi_search_internal_get_entry(&sdn, NULL, &entry, plugin_get_default_component_id());
++        if (entry) {
++            rc = slapi_entry_attr_find(entry, "numsubordinates", &attr);
++            if (LDAP_SUCCESS == rc) {
++                Slapi_Value *sval;
++                slapi_attr_first_value(attr, &sval);
++                if (sval != NULL) {
++                    const struct berval *bval = slapi_value_get_berval(sval);
++                    if (NULL != bval)
++                        calc_reservedesc += atol(bval->bv_val);
++                }
++            }
++        }
++        slapi_entry_free(entry);
++        slapi_ch_free_string(&entry_str);
++        slapi_sdn_done(&sdn);
++    }
++    slapi_ch_free((void **)&cookie);
++
++    /* If replication is enabled add replication descriptor constant, plus the number of enabled repl agmts */
++    mt_str = slapi_get_mapping_tree_config_root();
++    if (NULL == mt_str) {
++        slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to get mapping tree config string");
++        return -1;
++    }
++    search_pb = slapi_pblock_new();
++    slapi_search_internal_set_pb(search_pb, mt_str, LDAP_SCOPE_SUBTREE, "(objectClass=nsds5replicationagreement) nsds5ReplicaEnabled", NULL, 0, NULL, NULL, plugin_get_default_component_id(), 0);
++    slapi_search_internal_pb(search_pb);
++    slapi_pblock_get(search_pb, SLAPI_PLUGIN_INTOP_RESULT, &rc);
++    if (LDAP_SUCCESS == rc) {
++        slapi_pblock_get(search_pb, SLAPI_PLUGIN_INTOP_SEARCH_ENTRIES, &entries);
++        for (; *entries; ++entries) {
++            num_repl_agmts += 1;
++        }
++        if (num_repl_agmts) {
++            calc_reservedesc += REPL_DESC_CONST;
++        }
++    }
++    slapi_free_search_results_internal(search_pb);
++    slapi_pblock_destroy(search_pb);
++    calc_reservedesc += num_repl_agmts;
++
++    /* Get the operation connection limit from the default instance config */
++    entry_str = slapi_create_dn_string("cn=default instance config,cn=chaining database,cn=plugins,cn=config");
++    if (NULL == entry_str) {
++        slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create default chaining config dn string");
++        return -1;
++    }
++    slapi_sdn_init_dn_byref(&sdn, entry_str);
++    slapi_search_internal_get_entry(&sdn, NULL, &entry, plugin_get_default_component_id());
++    if (entry) {
++        chain_conn_limit = slapi_entry_attr_get_int(entry, "nsoperationconnectionslimit");
++    }
++    slapi_entry_free(entry);
++    slapi_ch_free_string(&entry_str);
++    slapi_sdn_done(&sdn);
++
++    /* Get the number of chaining backends, multiplied by the chaining operation connection limit */
++    for (be = slapi_get_first_backend(&cookie); be; be = slapi_get_next_backend(cookie)) {
++        entry_str = slapi_create_dn_string("cn=%s,cn=chaining database,cn=plugins,cn=config", be->be_name);
++        if (NULL == entry_str) {
++            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create chaining be dn string");
++            return -1;
++        }
++        slapi_sdn_init_dn_byref(&sdn, entry_str);
++        slapi_search_internal_get_entry(&sdn, NULL, &entry, plugin_get_default_component_id());
++        if (entry) {
++            if (slapi_entry_attr_hasvalue(entry, "objectclass", "nsBackendInstance")) {
++                num_chaining_backends += 1;
++            }
++        }
++        slapi_entry_free(entry);
++        slapi_ch_free_string(&entry_str);
++        slapi_sdn_done(&sdn);
++    }
++    slapi_ch_free((void **)&cookie);
++    if (num_chaining_backends) {
++        calc_reservedesc += (num_chaining_backends * chain_conn_limit);
++    }
++
++    /* If PTA is enabled add the pass through auth descriptor constant */
++    entry_str = slapi_create_dn_string("cn=Pass Through Authentication,cn=plugins,cn=config");
++    if (NULL == entry_str) {
++        slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create PTA dn string");
++        return -1;
++    }
++    slapi_sdn_init_dn_byref(&sdn, entry_str);
++    slapi_search_internal_get_entry(&sdn, NULL, &entry, plugin_get_default_component_id());
++    if (entry) {
++        if (slapi_entry_attr_hasvalue(entry, "nsslapd-PluginEnabled", "on")) {
++            calc_reservedesc += PTA_DESC_CONST;
++        }
++    }
++    slapi_entry_free(entry);
++    slapi_ch_free_string(&entry_str);
++    slapi_sdn_done(&sdn);
++
++    /* If SSL is enabled add the SSL descriptor constant */;;
++    if (config_get_security()) {
++        calc_reservedesc += SSL_DESC_CONST;
++    }
++
++    char errorbuf[SLAPI_DSE_RETURNTEXT_SIZE];
++    char resrvdesc_str[SLAPI_DSE_RETURNTEXT_SIZE];
++    /* Are the configured reserve descriptors enough to satisfy the servers needs */
++    if (config_reservedesc < calc_reservedesc) {
++        PR_snprintf(resrvdesc_str, sizeof(resrvdesc_str), "%d", calc_reservedesc);
++        if (LDAP_SUCCESS == config_set_reservedescriptors(CONFIG_RESERVEDESCRIPTORS_ATTRIBUTE, resrvdesc_str, errorbuf, 1)) {
++            slapi_log_err(SLAPI_LOG_INFO, "validate_num_config_reservedescriptors",
++                  "reserve descriptors changed from %d to %d\n", config_reservedesc, calc_reservedesc);
++        }
++    }
++
++    return (0);
++}
+diff --git a/ldap/servers/slapd/proto-slap.h b/ldap/servers/slapd/proto-slap.h
+index 65efee854..47465c4c5 100644
+--- a/ldap/servers/slapd/proto-slap.h
++++ b/ldap/servers/slapd/proto-slap.h
+@@ -349,7 +349,7 @@ int config_set_useroc(const char *attrname, char *value, char *errorbuf, int app
+ int config_set_return_exact_case(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_result_tweak(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_referral_mode(const char *attrname, char *url, char *errorbuf, int apply);
+-int config_set_conntablesize(const char *attrname, char *url, char *errorbuf, int apply);
++int config_set_conntablesize(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_maxbersize(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_maxsasliosize(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_versionstring(const char *attrname, char *versionstring, char *errorbuf, int apply);
+@@ -645,6 +645,10 @@ int get_ldapmessage_controls_ext(Slapi_PBlock *pb, BerElement *ber, LDAPControl
+ int write_controls(BerElement *ber, LDAPControl **ctrls);
+ void add_control(LDAPControl ***ctrlsp, LDAPControl *newctrl);
+ 
++/*
++ * daemon.c
++ */
++int validate_num_config_reservedescriptors(void) ;
+ 
+ /*
+  * delete.c
+-- 
+2.41.0
+
