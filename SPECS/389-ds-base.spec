@@ -46,9 +46,9 @@ ExcludeArch: i686
 
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
-Version:          2.2.4
-Release:          5%{?dist}
-License:          GPLv3+ and (ASL 2.0 or MIT)
+Version:          2.3.6
+Release:          3%{?dist}
+License:          GPLv3+ and MIT and ASL 2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
 Conflicts:        freeipa-server < 4.0.3
@@ -67,7 +67,7 @@ Provides:  bundled(crate(autocfg)) = 1.1.0
 Provides:  bundled(crate(backtrace)) = 0.3.68
 Provides:  bundled(crate(base64)) = 0.13.1
 Provides:  bundled(crate(bitflags)) = 1.3.2
-Provides:  bundled(crate(bitflags)) = 2.4.0
+Provides:  bundled(crate(bitflags)) = 2.3.3
 Provides:  bundled(crate(byteorder)) = 1.4.3
 Provides:  bundled(crate(cbindgen)) = 0.9.1
 Provides:  bundled(crate(cc)) = 1.0.82
@@ -114,7 +114,7 @@ Provides:  bundled(crate(parking_lot)) = 0.11.2
 Provides:  bundled(crate(parking_lot_core)) = 0.8.6
 Provides:  bundled(crate(paste)) = 0.1.18
 Provides:  bundled(crate(paste-impl)) = 0.1.18
-Provides:  bundled(crate(pin-project-lite)) = 0.2.12
+Provides:  bundled(crate(pin-project-lite)) = 0.2.11
 Provides:  bundled(crate(pkg-config)) = 0.3.27
 Provides:  bundled(crate(ppv-lite86)) = 0.2.17
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
@@ -127,7 +127,7 @@ Provides:  bundled(crate(rand_core)) = 0.6.4
 Provides:  bundled(crate(redox_syscall)) = 0.2.16
 Provides:  bundled(crate(redox_syscall)) = 0.3.5
 Provides:  bundled(crate(rustc-demangle)) = 0.1.23
-Provides:  bundled(crate(rustix)) = 0.38.8
+Provides:  bundled(crate(rustix)) = 0.38.7
 Provides:  bundled(crate(ryu)) = 1.0.15
 Provides:  bundled(crate(scopeguard)) = 1.2.0
 Provides:  bundled(crate(serde)) = 1.0.183
@@ -141,7 +141,7 @@ Provides:  bundled(crate(syn)) = 1.0.109
 Provides:  bundled(crate(syn)) = 2.0.28
 Provides:  bundled(crate(tempfile)) = 3.7.1
 Provides:  bundled(crate(textwrap)) = 0.11.0
-Provides:  bundled(crate(tokio)) = 1.30.0
+Provides:  bundled(crate(tokio)) = 1.29.1
 Provides:  bundled(crate(tokio-macros)) = 2.1.0
 Provides:  bundled(crate(toml)) = 0.5.11
 Provides:  bundled(crate(unicode-ident)) = 1.0.11
@@ -165,7 +165,6 @@ Provides:  bundled(crate(windows_x86_64_gnullvm)) = 0.48.0
 Provides:  bundled(crate(windows_x86_64_msvc)) = 0.48.0
 Provides:  bundled(crate(zeroize)) = 1.6.0
 Provides:  bundled(crate(zeroize_derive)) = 1.4.2
-
 ##### Bundled cargo crates list - END #####
 
 BuildRequires:    nspr-devel >= 4.32
@@ -295,7 +294,8 @@ Source2:          %{name}-devel.README
 Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download/%{jemalloc_ver}/%{jemalloc_name}-%{jemalloc_ver}.tar.bz2
 %endif
 Source4:          389-ds-base.sysusers
-Patch01:          0001-Update-cargo-toml-file
+
+Patch1:		  0001-Issue-5848-Fix-condition-and-add-a-CI-test-5916.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -375,8 +375,8 @@ Requires: python%{python3_pkgversion}-dateutil
 Requires: python%{python3_pkgversion}-argcomplete
 Requires: python%{python3_pkgversion}-libselinux
 Requires: python%{python3_pkgversion}-setuptools
-%{?python_provide:%python_provide python%{python3_pkgversion}-lib389}
 Requires: python%{python3_pkgversion}-cryptography
+%{?python_provide:%python_provide python%{python3_pkgversion}-lib389}
 
 %description -n python%{python3_pkgversion}-lib389
 This module contains tools and libraries for accessing, testing,
@@ -556,6 +556,8 @@ fi
 # reload to pick up any changes to systemd files
 /bin/systemctl daemon-reload >$output 2>&1 || :
 
+# https://fedoraproject.org/wiki/Packaging:UsersAndGroups#Soft_static_allocation
+# Soft static allocation for UID and GID
 # sysusers.d format https://fedoraproject.org/wiki/Changes/Adopting_sysusers.d_format
 %sysusers_create_compat %{SOURCE4}
 
@@ -735,10 +737,33 @@ exit 0
 %endif
 
 %changelog
-* Mon Aug 14 2023 Mark Reynolds <mreynolds@redhat.com> - 2.2.4-5
-- Bump version to 2.2.4-5
+* Thu Sep 7 2023 Simon Pichugin <spichugi@redhat.com> - 2.3.6-3
+- Bump version to 2.3.6-3
+- Resolves: rhbz#2236163 - Regression: replication can't be enabled for consumer or hub role
+
+* Tue Aug 8 2023 Mark Reynolds <mreynolds@redhat.com> - 2.3.6-2
+- Bump version to 2.3.6-2
+- Resolves: rhbz#2225532 - 389-ds-base FTBFS with rust-1.71.0
+- Resolves: rhbz#2218209 - useradd: invalid user ID '389:389': installing 389-ds-base in container fails to create the dirsrv user
+- Resolves: rhbz#2207691 - python3-lib389: Python tarfile extraction needs change to avoid a warning
+- Resolves: rhbz#2179278 - dirsrv failed to start after reboot because "dirsrv" did not have access on /run/dirsrv
+
+* Mon Jul 24 2023 Mark Reynolds <mreynolds@redhat.com> - 2.3.4-3
+- Bump version to 2.3.4-3
+- Resolves: rhbz#2189954 - RFE Improve reponse time to filters containing 'nsrole'
+- Resolves: rhbz#2189946 - RFE support of slapi_memberof for plugins/core server
 - Resolves: rhbz#1974242 - Paged search impacts performance
-- Resolves: rhbz#2224503 - dsconf ERROR: Error: name 'log' is not defined
+
+* Fri May 19 2023 Mark Reynolds <mreynolds@redhat.com> - 2.3.4-2
+- Bump version to 2.3.4-2
+- Resolves: rhbz#2188627 - Fix license
+
+* Thu May 18 2023 Mark Reynolds <mreynolds@redhat.com> - 2.3.4-1
+- Bump version to 2.3.4-1
+- Resolves: rhbz#2188627 - Rebase 389-ds-base-2.3 in RHEL 9.3
+
+* Wed Mar 08 2023 Simon Pichugin <spichugi@redhat.com> - 2.2.4-4
+- Resolves: rhbz#2095366 - [RFE] 389-ds-base systemd-sysusers
 
 * Tue Dec 13 2022 Mark Reynolds <mreynolds@redhat.com> - 2.2.4-3
 - Bump version to 2.2.4-3
