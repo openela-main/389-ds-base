@@ -47,9 +47,9 @@ ExcludeArch: i686
 
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
-Version:          1.4.3.35
-Release:          %{?relprefix}2%{?prerel}%{?dist}
-License:          GPLv3+ and ASL 2.0 and MIT
+Version:          1.4.3.37
+Release:          %{?relprefix}1%{?prerel}%{?dist}
+License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
 Conflicts:        selinux-policy-base < 3.9.8
@@ -58,83 +58,96 @@ Obsoletes:        %{name} <= 1.4.0.9
 Provides:         ldif2ldbm >= 0
 
 ##### Bundled cargo crates list - START #####
+Provides:  bundled(crate(addr2line)) = 0.20.0
+Provides:  bundled(crate(adler)) = 1.0.2
 Provides:  bundled(crate(ahash)) = 0.7.6
 Provides:  bundled(crate(ansi_term)) = 0.12.1
 Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.1.0
+Provides:  bundled(crate(backtrace)) = 0.3.68
 Provides:  bundled(crate(base64)) = 0.13.1
 Provides:  bundled(crate(bitflags)) = 1.3.2
 Provides:  bundled(crate(byteorder)) = 1.4.3
 Provides:  bundled(crate(cbindgen)) = 0.9.1
-Provides:  bundled(crate(cc)) = 1.0.76
+Provides:  bundled(crate(cc)) = 1.0.79
 Provides:  bundled(crate(cfg-if)) = 1.0.0
 Provides:  bundled(crate(clap)) = 2.34.0
 Provides:  bundled(crate(concread)) = 0.2.21
 Provides:  bundled(crate(crossbeam)) = 0.8.2
-Provides:  bundled(crate(crossbeam-channel)) = 0.5.6
-Provides:  bundled(crate(crossbeam-deque)) = 0.8.2
-Provides:  bundled(crate(crossbeam-epoch)) = 0.9.11
-Provides:  bundled(crate(crossbeam-queue)) = 0.3.6
-Provides:  bundled(crate(crossbeam-utils)) = 0.8.12
+Provides:  bundled(crate(crossbeam-channel)) = 0.5.8
+Provides:  bundled(crate(crossbeam-deque)) = 0.8.3
+Provides:  bundled(crate(crossbeam-epoch)) = 0.9.15
+Provides:  bundled(crate(crossbeam-queue)) = 0.3.8
+Provides:  bundled(crate(crossbeam-utils)) = 0.8.16
 Provides:  bundled(crate(entryuuid)) = 0.1.0
 Provides:  bundled(crate(entryuuid_syntax)) = 0.1.0
-Provides:  bundled(crate(fastrand)) = 1.8.0
+Provides:  bundled(crate(errno)) = 0.3.1
+Provides:  bundled(crate(errno-dragonfly)) = 0.1.2
+Provides:  bundled(crate(fastrand)) = 1.9.0
 Provides:  bundled(crate(fernet)) = 0.1.4
 Provides:  bundled(crate(foreign-types)) = 0.3.2
 Provides:  bundled(crate(foreign-types-shared)) = 0.1.1
-Provides:  bundled(crate(getrandom)) = 0.2.8
+Provides:  bundled(crate(getrandom)) = 0.2.10
+Provides:  bundled(crate(gimli)) = 0.27.3
 Provides:  bundled(crate(hashbrown)) = 0.12.3
 Provides:  bundled(crate(hermit-abi)) = 0.1.19
+Provides:  bundled(crate(hermit-abi)) = 0.3.2
 Provides:  bundled(crate(instant)) = 0.1.12
-Provides:  bundled(crate(itoa)) = 1.0.4
-Provides:  bundled(crate(jobserver)) = 0.1.25
-Provides:  bundled(crate(libc)) = 0.2.137
+Provides:  bundled(crate(io-lifetimes)) = 1.0.11
+Provides:  bundled(crate(itoa)) = 1.0.8
+Provides:  bundled(crate(jobserver)) = 0.1.26
+Provides:  bundled(crate(libc)) = 0.2.147
 Provides:  bundled(crate(librnsslapd)) = 0.1.0
 Provides:  bundled(crate(librslapd)) = 0.1.0
-Provides:  bundled(crate(lock_api)) = 0.4.9
-Provides:  bundled(crate(log)) = 0.4.17
+Provides:  bundled(crate(linux-raw-sys)) = 0.3.8
+Provides:  bundled(crate(lock_api)) = 0.4.10
+Provides:  bundled(crate(log)) = 0.4.19
 Provides:  bundled(crate(lru)) = 0.7.8
-Provides:  bundled(crate(memoffset)) = 0.6.5
-Provides:  bundled(crate(once_cell)) = 1.16.0
-Provides:  bundled(crate(openssl)) = 0.10.42
-Provides:  bundled(crate(openssl-macros)) = 0.1.0
-Provides:  bundled(crate(openssl-sys)) = 0.9.77
+Provides:  bundled(crate(memchr)) = 2.5.0
+Provides:  bundled(crate(memoffset)) = 0.9.0
+Provides:  bundled(crate(miniz_oxide)) = 0.7.1
+Provides:  bundled(crate(object)) = 0.31.1
+Provides:  bundled(crate(once_cell)) = 1.18.0
+Provides:  bundled(crate(openssl)) = 0.10.55
+Provides:  bundled(crate(openssl-macros)) = 0.1.1
+Provides:  bundled(crate(openssl-sys)) = 0.9.90
 Provides:  bundled(crate(parking_lot)) = 0.11.2
-Provides:  bundled(crate(parking_lot_core)) = 0.8.5
+Provides:  bundled(crate(parking_lot_core)) = 0.8.6
 Provides:  bundled(crate(paste)) = 0.1.18
 Provides:  bundled(crate(paste-impl)) = 0.1.18
-Provides:  bundled(crate(pin-project-lite)) = 0.2.9
-Provides:  bundled(crate(pkg-config)) = 0.3.26
+Provides:  bundled(crate(pin-project-lite)) = 0.2.10
+Provides:  bundled(crate(pkg-config)) = 0.3.27
 Provides:  bundled(crate(ppv-lite86)) = 0.2.17
-Provides:  bundled(crate(proc-macro-hack)) = 0.5.19
-Provides:  bundled(crate(proc-macro2)) = 1.0.47
+Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
+Provides:  bundled(crate(proc-macro2)) = 1.0.64
 Provides:  bundled(crate(pwdchan)) = 0.1.0
-Provides:  bundled(crate(quote)) = 1.0.21
+Provides:  bundled(crate(quote)) = 1.0.29
 Provides:  bundled(crate(rand)) = 0.8.5
 Provides:  bundled(crate(rand_chacha)) = 0.3.1
 Provides:  bundled(crate(rand_core)) = 0.6.4
 Provides:  bundled(crate(redox_syscall)) = 0.2.16
-Provides:  bundled(crate(remove_dir_all)) = 0.5.3
+Provides:  bundled(crate(redox_syscall)) = 0.3.5
 Provides:  bundled(crate(rsds)) = 0.1.0
-Provides:  bundled(crate(ryu)) = 1.0.11
+Provides:  bundled(crate(rustc-demangle)) = 0.1.23
+Provides:  bundled(crate(rustix)) = 0.37.23
+Provides:  bundled(crate(ryu)) = 1.0.14
 Provides:  bundled(crate(scopeguard)) = 1.1.0
-Provides:  bundled(crate(serde)) = 1.0.147
-Provides:  bundled(crate(serde_derive)) = 1.0.147
-Provides:  bundled(crate(serde_json)) = 1.0.87
+Provides:  bundled(crate(serde)) = 1.0.171
+Provides:  bundled(crate(serde_derive)) = 1.0.171
+Provides:  bundled(crate(serde_json)) = 1.0.100
 Provides:  bundled(crate(slapd)) = 0.1.0
 Provides:  bundled(crate(slapi_r_plugin)) = 0.1.0
-Provides:  bundled(crate(smallvec)) = 1.10.0
+Provides:  bundled(crate(smallvec)) = 1.11.0
 Provides:  bundled(crate(strsim)) = 0.8.0
-Provides:  bundled(crate(syn)) = 1.0.103
-Provides:  bundled(crate(synstructure)) = 0.12.6
-Provides:  bundled(crate(tempfile)) = 3.3.0
+Provides:  bundled(crate(syn)) = 1.0.109
+Provides:  bundled(crate(syn)) = 2.0.25
+Provides:  bundled(crate(tempfile)) = 3.6.0
 Provides:  bundled(crate(textwrap)) = 0.11.0
-Provides:  bundled(crate(tokio)) = 1.21.2
-Provides:  bundled(crate(tokio-macros)) = 1.8.0
-Provides:  bundled(crate(toml)) = 0.5.9
-Provides:  bundled(crate(unicode-ident)) = 1.0.5
+Provides:  bundled(crate(tokio)) = 1.29.1
+Provides:  bundled(crate(tokio-macros)) = 2.1.0
+Provides:  bundled(crate(toml)) = 0.5.11
+Provides:  bundled(crate(unicode-ident)) = 1.0.10
 Provides:  bundled(crate(unicode-width)) = 0.1.10
-Provides:  bundled(crate(unicode-xid)) = 0.2.4
 Provides:  bundled(crate(uuid)) = 0.8.2
 Provides:  bundled(crate(vcpkg)) = 0.2.15
 Provides:  bundled(crate(vec_map)) = 0.8.2
@@ -143,8 +156,17 @@ Provides:  bundled(crate(wasi)) = 0.11.0+wasi_snapshot_preview1
 Provides:  bundled(crate(winapi)) = 0.3.9
 Provides:  bundled(crate(winapi-i686-pc-windows-gnu)) = 0.4.0
 Provides:  bundled(crate(winapi-x86_64-pc-windows-gnu)) = 0.4.0
-Provides:  bundled(crate(zeroize)) = 1.5.7
-Provides:  bundled(crate(zeroize_derive)) = 1.3.2
+Provides:  bundled(crate(windows-sys)) = 0.48.0
+Provides:  bundled(crate(windows-targets)) = 0.48.1
+Provides:  bundled(crate(windows_aarch64_gnullvm)) = 0.48.0
+Provides:  bundled(crate(windows_aarch64_msvc)) = 0.48.0
+Provides:  bundled(crate(windows_i686_gnu)) = 0.48.0
+Provides:  bundled(crate(windows_i686_msvc)) = 0.48.0
+Provides:  bundled(crate(windows_x86_64_gnu)) = 0.48.0
+Provides:  bundled(crate(windows_x86_64_gnullvm)) = 0.48.0
+Provides:  bundled(crate(windows_x86_64_msvc)) = 0.48.0
+Provides:  bundled(crate(zeroize)) = 1.6.0
+Provides:  bundled(crate(zeroize_derive)) = 1.4.2
 ##### Bundled cargo crates list - END #####
 
 BuildRequires:    nspr-devel >= 4.32
@@ -271,20 +293,8 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 %endif
 %if %{use_rust}
 Source4:          vendor-%{version}-1.tar.gz
-Source5:          Cargo-%{version}.lock
+Source5:          Cargo-%{version}-1.lock
 %endif
-Patch01:          0001-Issue-5789-Improve-ds-replcheck-error-handling.patch
-Patch02:          0002-Issue-5646-Various-memory-leaks-5725.patch
-Patch03:          0003-Issue-2375-CLI-Healthcheck-revise-and-add-new-checks.patch
-Patch04:          0004-Issue-5825-healthcheck-password-storage-scheme-warni.patch
-Patch05:          0005-Issue-4551-Paged-search-impacts-performance-5838.patch
-Patch06:          0006-Issue-5804-dtablesize-being-set-to-soft-maxfiledescr.patch
-Patch07:          0007-Issue-5825-healthcheck-update-allowed-password-schem.patch
-Patch08:          0008-Issue-5864-Server-fails-to-start-after-reboot-becaus.patch
-Patch09:          0009-Issue-2375-CLI-Healthcheck-revise-and-add-new-checks.patch
-Patch10:          0010-Issue-5883-Remove-connection-mutex-contention-risk-o.patch
-Patch11:          0011-Issue-4551-Part-2-Fix-build-warning-of-previous-PR-5.patch
-
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -394,8 +404,8 @@ Requires: python%{python3_pkgversion}-argcomplete
 Requires: python%{python3_pkgversion}-libselinux
 Requires: python%{python3_pkgversion}-setuptools
 Requires: python%{python3_pkgversion}-distro
-%{?python_provide:%python_provide python%{python3_pkgversion}-lib389}
 Requires: python%{python3_pkgversion}-cryptography
+%{?python_provide:%python_provide python%{python3_pkgversion}-lib389}
 
 %description -n python%{python3_pkgversion}-lib389
 This module contains tools and libraries for accessing, testing,
@@ -906,21 +916,25 @@ exit 0
 %doc README.md
 
 %changelog
-* Wed Aug 16 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.35-2
-- Bump version to 1.4.3.35-2
-- Resolves: rhbz#2232420 - Paged search impacts performance 
+* Wed Aug 16 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.37-1
+- Bump versionto 1.4.3.37-1
+- Resolves: rhbz#2224505 - Paged search impacts performance
+- Resolves: rhbz#2220890 - healthcheck tool needs to be updates for new default password storage scheme
+- Resolves: rhbz#2218235 - python3-lib389: Python tarfile extraction needs change to avoid a warning
+- Resolves: rhbz#2210491 - dtablesize being set to soft maxfiledescriptor limit causing massive slowdown in large enviroments.
+- Resolves: rhbz#2149967 - SELinux labeling for dirsrv files seen during ipa install/uninstall should be moved to DEBUG
 
-* Wed Jun 21 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.35-1
+* Tue Jul 11 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.36-2
+- Bump version to 1.4.3.36-2
+- Resolves: rhbz#2220890 - healthcheck tool needs to be updates for new default password storage scheme
+
+* Wed Jun 14 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.36-1
+- Bump version to 1.4.3.36-1
+- Resolves: rhbz#2188628 - Rebase 389-ds-base in RHEL 8.9 to 1.4.3.36
+
+* Mon May 22 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.35-1
 - Bump version to 1.4.3.35-1
-- Resolves: Bug 2213861 - unable to update 389-ds-base on RHEL8.8
-
-* Tue Dec 13 2022 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.32-3
-- Bump version to 1.4.3.32-3
-- Resolves: Bug 2149956 - change default password storage scheme to be backwards compatible with RHEL 7
-
-* Tue Dec 13 2022 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.32-2
-- Bump version to 1.4.3.32-2
-- Resolves: Bug 2149956 - ipa-server-install displays mdd failure Server is unwilling to perform
+- Resolves: rhbz#2188628 - Rebase 389-ds-base in RHEL 8.9 to 1.4.3.35
 
 * Tue Nov 15 2022 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.32-1
 - Bump version to 1.4.3.32-1
