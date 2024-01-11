@@ -1,0 +1,114 @@
+From ed9eaf319ea10de570849c0c1a1866d0abb192de Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Mon, 29 May 2023 09:38:21 +0000
+Subject: [PATCH 02/11] Issue 5646 - Various memory leaks (#5725)
+
+Bug description: A memory leak occurs when a sync repl search is run
+in refreshPersist mode. The connection from sync repl consumer is
+closed without freeing up the ldap req ctrls.
+
+Fix description: When the connection to the client is closed or on
+shutdown free the request control structure if it exists.
+
+relates: https://github.com/389ds/389-ds-base/issues/5646
+
+Reviewed by: @progier389, @droideck, @Firstyear, @tbordaz  (Thank you)
+---
+ dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py | 5 +----
+ ldap/servers/plugins/sync/sync_persist.c               | 7 +++++++
+ ldap/servers/plugins/sync/sync_util.c                  | 4 ++++
+ 3 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py b/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
+index 375517693..eb3770b78 100644
+--- a/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
++++ b/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
+@@ -231,7 +231,7 @@ class Sync_persist(threading.Thread, ReconnectLDAPObject, SyncreplConsumer):
+             print('syncrepl_poll: LDAP error (%s)', e)
+         self.result = ldap_connection.get_cookies()
+         log.info("ZZZ result = %s" % self.result)
+-        self.conn.unbind()
++        ldap_connection.unbind()
+ 
+ def test_sync_repl_mep(topology, request):
+     """Test sync repl with MEP plugin that triggers several
+@@ -406,12 +406,10 @@ def test_sync_repl_cookie_add_del(topology, init_sync_repl_plugins, request):
+       6.: succeeds
+     """
+     inst = topology[0]
+-
+     # create a sync repl client and wait 5 seconds to be sure it is running
+     sync_repl = Sync_persist(inst)
+     sync_repl.start()
+     time.sleep(5)
+-
+     # create users, that automember/memberof will generate nested updates
+     users = UserAccounts(inst, DEFAULT_SUFFIX)
+     users_set = []
+@@ -427,7 +425,6 @@ def test_sync_repl_cookie_add_del(topology, init_sync_repl_plugins, request):
+     # and wait a bit to let sync_repl thread time to set its result before fetching it.
+     inst.stop()
+     cookies = sync_repl.get_result()
+-
+     # checking that the cookie are in increasing and in an acceptable range (0..1000)
+     assert len(cookies) > 0
+     prev = -1
+diff --git a/ldap/servers/plugins/sync/sync_persist.c b/ldap/servers/plugins/sync/sync_persist.c
+index 12b23ebac..d2210b64c 100644
+--- a/ldap/servers/plugins/sync/sync_persist.c
++++ b/ldap/servers/plugins/sync/sync_persist.c
+@@ -903,6 +903,7 @@ sync_send_results(void *arg)
+     int conn_acq_flag = 0;
+     Slapi_Connection *conn = NULL;
+     Slapi_Operation *op = req->req_orig_op;
++    LDAPControl **ctrls = NULL;
+     int rc;
+     PRUint64 connid;
+     int opid;
+@@ -1049,6 +1050,12 @@ done:
+     slapi_ch_free((void **)&strFilter);
+     slapi_pblock_set(req->req_pblock, SLAPI_SEARCH_STRFILTER, NULL);
+ 
++    slapi_pblock_get(req->req_pblock, SLAPI_REQCONTROLS, &ctrls);
++    if (ctrls) {
++        ldap_controls_free(ctrls);
++        slapi_pblock_set(req->req_pblock, SLAPI_REQCONTROLS, NULL);
++    }
++
+     slapi_pblock_destroy(req->req_pblock);
+     req->req_pblock = NULL;
+ 
+diff --git a/ldap/servers/plugins/sync/sync_util.c b/ldap/servers/plugins/sync/sync_util.c
+index 21e160631..605ddf1f3 100644
+--- a/ldap/servers/plugins/sync/sync_util.c
++++ b/ldap/servers/plugins/sync/sync_util.c
+@@ -689,6 +689,7 @@ sync_pblock_copy(Slapi_PBlock *src)
+     Slapi_Operation *operation;
+     Slapi_Operation *operation_new;
+     Slapi_Connection *connection;
++    LDAPControl **ctrls = NULL;
+     int *scope;
+     int *deref;
+     int *filter_normalized;
+@@ -715,8 +716,10 @@ sync_pblock_copy(Slapi_PBlock *src)
+     slapi_pblock_get(src, SLAPI_REQUESTOR_ISROOT, &isroot);
+     slapi_pblock_get(src, SLAPI_SEARCH_SIZELIMIT, &sizelimit);
+     slapi_pblock_get(src, SLAPI_SEARCH_TIMELIMIT, &timelimit);
++    slapi_pblock_get(src, SLAPI_REQCONTROLS, &ctrls);
+     slapi_pblock_get(src, SLAPI_PLUGIN, &pi);
+ 
++
+     Slapi_PBlock *dest = slapi_pblock_new();
+     operation_new = slapi_operation_new(0);
+     msgid = slapi_operation_get_msgid(operation);
+@@ -737,6 +740,7 @@ sync_pblock_copy(Slapi_PBlock *src)
+     slapi_pblock_set(dest, SLAPI_REQUESTOR_ISROOT, &isroot);
+     slapi_pblock_set(dest, SLAPI_SEARCH_SIZELIMIT, &sizelimit);
+     slapi_pblock_set(dest, SLAPI_SEARCH_TIMELIMIT, &timelimit);
++    slapi_pblock_set(dest, SLAPI_REQCONTROLS, ctrls);
+     slapi_pblock_set(dest, SLAPI_PLUGIN, pi);
+ 
+     return dest;
+-- 
+2.41.0
+

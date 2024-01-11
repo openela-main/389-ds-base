@@ -1,0 +1,444 @@
+From 3c8836eff5e2047ba07a23c0d1bddb03bc98877c Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 22 Jun 2023 16:33:55 -0400
+Subject: [PATCH 03/11] Issue 2375 - CLI - Healthcheck - revise and add new
+ checks
+
+Description:
+
+Add check for
+
+- unauthorized binds are allowed
+- Access log buffering is disabled
+- Make mapping tree check more robust for case
+
+relates: https://github.com/389ds/389-ds-base/issues/2375
+
+Reviewed by: spichugi(Thanks!)
+---
+ .../suites/healthcheck/health_config_test.py  | 80 ++++++++++++++++++-
+ .../suites/healthcheck/healthcheck_test.py    | 15 +++-
+ src/cockpit/389-console/package-lock.json     | 36 ++++-----
+ src/lib389/lib389/backend.py                  |  4 +-
+ src/lib389/lib389/config.py                   | 24 +++++-
+ src/lib389/lib389/lint.py                     | 32 +++++++-
+ 6 files changed, 163 insertions(+), 28 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/healthcheck/health_config_test.py b/dirsrvtests/tests/suites/healthcheck/health_config_test.py
+index f0337f198..6d3d08bfa 100644
+--- a/dirsrvtests/tests/suites/healthcheck/health_config_test.py
++++ b/dirsrvtests/tests/suites/healthcheck/health_config_test.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2022 Red Hat, Inc.
++# Copyright (C) 2023 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -11,7 +11,7 @@ import pytest
+ import os
+ import subprocess
+ 
+-from lib389.backend import Backends
++from lib389.backend import Backends, DatabaseConfig
+ from lib389.cos import CosTemplates, CosPointerDefinitions
+ from lib389.dbgen import dbgen_users
+ from lib389.idm.account import Accounts
+@@ -119,6 +119,7 @@ def test_healthcheck_logging_format_should_be_revised(topology_st):
+ 
+     log.info('Set nsslapd-logging-hr-timestamps-enabled to off')
+     standalone.config.set('nsslapd-logging-hr-timestamps-enabled', 'off')
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
+ 
+     run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=RET_CODE)
+     run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=RET_CODE)
+@@ -364,6 +365,7 @@ def test_healthcheck_low_disk_space(topology_st):
+     RET_CODE = 'DSDSLE0001'
+ 
+     standalone = topology_st.standalone
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
+     file = '{}/foo'.format(standalone.ds_paths.log_dir)
+ 
+     log.info('Count the disk space to allocate')
+@@ -411,10 +413,13 @@ def test_healthcheck_notes_unindexed_search(topology_st, setup_ldif):
+     standalone = topology_st.standalone
+ 
+     log.info('Delete the previous access logs')
+-    topology_st.standalone.deleteAccessLogs()
++    standalone.deleteAccessLogs()
+ 
+     log.info('Set nsslapd-accesslog-logbuffering to off')
+     standalone.config.set("nsslapd-accesslog-logbuffering", "off")
++    db_cfg = DatabaseConfig(standalone)
++    db_cfg.set([('nsslapd-idlistscanlimit', '100')])
++
+ 
+     log.info('Stopping the server and running offline import...')
+     standalone.stop()
+@@ -429,6 +434,8 @@ def test_healthcheck_notes_unindexed_search(topology_st, setup_ldif):
+     log.info('Check that access log contains "notes=A"')
+     assert standalone.ds_access_log.match(r'.*notes=A.*')
+ 
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
++
+     run_healthcheck_and_flush_log(topology_st, standalone, RET_CODE, json=False)
+     run_healthcheck_and_flush_log(topology_st, standalone, RET_CODE, json=True)
+ 
+@@ -464,6 +471,8 @@ def test_healthcheck_notes_unknown_attribute(topology_st, setup_ldif):
+ 
+     log.info('Set nsslapd-accesslog-logbuffering to off')
+     standalone.config.set("nsslapd-accesslog-logbuffering", "off")
++    db_cfg = DatabaseConfig(standalone)
++    db_cfg.set([('nsslapd-idlistscanlimit', '100')])
+ 
+     log.info('Stopping the server and running offline import...')
+     standalone.stop()
+@@ -478,9 +487,74 @@ def test_healthcheck_notes_unknown_attribute(topology_st, setup_ldif):
+     log.info('Check that access log contains "notes=F"')
+     assert standalone.ds_access_log.match(r'.*notes=F.*')
+ 
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
+     run_healthcheck_and_flush_log(topology_st, standalone, RET_CODE, json=False)
+     run_healthcheck_and_flush_log(topology_st, standalone, RET_CODE, json=True)
+ 
++def test_healthcheck_unauth_binds(topology_st):
++    """Check if HealthCheck returns DSCLE0003 code when unauthorized binds are
++    allowed
++
++    :id: 13b88a3b-0dc5-4ce9-9fbf-058ad072339b
++    :setup: Standalone instance
++    :steps:
++        1. Create DS instance
++        2. Set nsslapd-allow-unauthenticated-binds to on
++        3. Use HealthCheck without --json option
++        4. Use HealthCheck with --json option
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Healthcheck reports DSCLE0003
++        4. Healthcheck reports DSCLE0003
++    """
++
++    RET_CODE = 'DSCLE0003'
++
++    inst = topology_st.standalone
++
++    log.info('nsslapd-allow-unauthenticated-binds to on')
++    inst.config.set("nsslapd-allow-unauthenticated-binds", "on")
++
++    run_healthcheck_and_flush_log(topology_st, inst, RET_CODE, json=False)
++    run_healthcheck_and_flush_log(topology_st, inst, RET_CODE, json=True)
++
++    # reset setting
++    log.info('Reset nsslapd-allow-unauthenticated-binds to off')
++    inst.config.set("nsslapd-allow-unauthenticated-binds", "off")
++
++def test_healthcheck_accesslog_buffering(topology_st):
++    """Check if HealthCheck returns DSCLE0004 code when acccess log biffering
++    is disabled
++
++    :id: 5a6512fd-1c7b-4557-9278-45150423148b
++    :setup: Standalone instance
++    :steps:
++        1. Create DS instance
++        2. Set nsslapd-accesslog-logbuffering to off
++        3. Use HealthCheck without --json option
++        4. Use HealthCheck with --json option
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Healthcheck reports DSCLE0004
++        4. Healthcheck reports DSCLE0004
++    """
++
++    RET_CODE = 'DSCLE0004'
++
++    inst = topology_st.standalone
++
++    log.info('nsslapd-accesslog-logbuffering to off')
++    inst.config.set("nsslapd-accesslog-logbuffering", "off")
++
++    run_healthcheck_and_flush_log(topology_st, inst, RET_CODE, json=False)
++    run_healthcheck_and_flush_log(topology_st, inst, RET_CODE, json=True)
++
++    # reset setting
++    log.info('Reset nsslapd-accesslog-logbuffering to on')
++    inst.config.set("nsslapd-accesslog-logbuffering", "on")
++
+ 
+ if __name__ == '__main__':
+     # Run isolated
+diff --git a/dirsrvtests/tests/suites/healthcheck/healthcheck_test.py b/dirsrvtests/tests/suites/healthcheck/healthcheck_test.py
+index 1c83b53ff..83b529024 100644
+--- a/dirsrvtests/tests/suites/healthcheck/healthcheck_test.py
++++ b/dirsrvtests/tests/suites/healthcheck/healthcheck_test.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2020 Red Hat, Inc.
++# Copyright (C) 2023 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -91,6 +91,7 @@ def test_healthcheck_disabled_suffix(topology_st):
+     mts = MappingTrees(topology_st.standalone)
+     mt = mts.get(DEFAULT_SUFFIX)
+     mt.replace("nsslapd-state", "disabled")
++    topology_st.standalone.config.set("nsslapd-accesslog-logbuffering", "on")
+ 
+     run_healthcheck_and_flush_log(topology_st, topology_st.standalone, RET_CODE, json=False)
+     run_healthcheck_and_flush_log(topology_st, topology_st.standalone, RET_CODE, json=True)
+@@ -187,6 +188,8 @@ def test_healthcheck_list_errors(topology_st):
+                    'DSCERTLE0002 :: Certificate expired',
+                    'DSCLE0001 :: Different log timestamp format',
+                    'DSCLE0002 :: Weak passwordStorageScheme',
++                   'DSCLE0003 :: Unauthorized Binds Allowed',
++                   'DSCLE0004 :: Access Log buffering disabled',
+                    'DSCLLE0001 :: Changelog trimming not configured',
+                    'DSDSLE0001 :: Low disk space',
+                    'DSELE0001 :: Weak TLS protocol version',
+@@ -231,6 +234,8 @@ def test_healthcheck_check_option(topology_st):
+ 
+     output_list = ['config:hr_timestamp',
+                    'config:passwordscheme',
++                   # 'config:accesslog_buffering',  Skip test access log buffering is disabled
++                   'config:unauth_binds',
+                    'backends:userroot:mappingtree',
+                    'backends:userroot:search',
+                    'backends:userroot:virt_attrs',
+@@ -238,9 +243,11 @@ def test_healthcheck_check_option(topology_st):
+                    'fschecks:file_perms',
+                    'refint:attr_indexes',
+                    'refint:update_delay',
++                   'memberof:member_attr_indexes',
+                    'monitor-disk-space:disk_space',
+                    'replication:agmts_status',
+                    'replication:conflicts',
++                   'replication:no_ruv',
+                    'dseldif:nsstate',
+                    'tls:certificate_expiration',
+                    'logs:notes']
+@@ -308,6 +315,8 @@ def test_healthcheck_replication(topology_m2):
+     # If we don't set changelog trimming, we will get error DSCLLE0001
+     set_changelog_trimming(M1)
+     set_changelog_trimming(M2)
++    M1.config.set("nsslapd-accesslog-logbuffering", "on")
++    M2.config.set("nsslapd-accesslog-logbuffering", "on")
+ 
+     log.info('Run healthcheck for supplier1')
+     run_healthcheck_and_flush_log(topology_m2, M1, CMD_OUTPUT, json=False)
+@@ -347,6 +356,8 @@ def test_healthcheck_replication_tls(topology_m2):
+     M2.enable_tls()
+ 
+     log.info('Run healthcheck for supplier1')
++    M1.config.set("nsslapd-accesslog-logbuffering", "on")
++    M2.config.set("nsslapd-accesslog-logbuffering", "on")
+     run_healthcheck_and_flush_log(topology_m2, M1, CMD_OUTPUT, json=False)
+     run_healthcheck_and_flush_log(topology_m2, M1, JSON_OUTPUT, json=True)
+ 
+@@ -399,7 +410,7 @@ def test_healthcheck_backend_missing_mapping_tree(topology_st):
+     mts.create(properties={
+         'cn': DEFAULT_SUFFIX,
+         'nsslapd-state': 'backend',
+-        'nsslapd-backend': 'userRoot',
++        'nsslapd-backend': 'USERROOT',
+     })
+ 
+     run_healthcheck_and_flush_log(topology_st, standalone, CMD_OUTPUT, json=False)
+diff --git a/src/cockpit/389-console/package-lock.json b/src/cockpit/389-console/package-lock.json
+index 787cc6b7a..cf2b4665c 100644
+--- a/src/cockpit/389-console/package-lock.json
++++ b/src/cockpit/389-console/package-lock.json
+@@ -2657,9 +2657,9 @@
+       }
+     },
+     "node_modules/audit-ci/node_modules/semver": {
+-      "version": "7.3.8",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.3.8.tgz",
+-      "integrity": "sha512-NB1ctGL5rlHrPJtFDVIVzTyQylMLu9N9VICA6HSFJo8MCGVTMW6gfpicwKmmK/dAjTOrqu5l63JJOpDSrAis3A==",
++      "version": "7.5.3",
++      "resolved": "https://registry.npmjs.org/semver/-/semver-7.5.3.tgz",
++      "integrity": "sha512-QBlUtyVk/5EeHbi7X0fw6liDZc7BBmEaSYn01fMU1OUYbf6GPsbTtd8WmnqbI20SeycoHSeiybkE/q1Q+qlThQ==",
+       "dev": true,
+       "dependencies": {
+         "lru-cache": "^6.0.0"
+@@ -3240,9 +3240,9 @@
+       }
+     },
+     "node_modules/css-loader/node_modules/semver": {
+-      "version": "7.3.8",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.3.8.tgz",
+-      "integrity": "sha512-NB1ctGL5rlHrPJtFDVIVzTyQylMLu9N9VICA6HSFJo8MCGVTMW6gfpicwKmmK/dAjTOrqu5l63JJOpDSrAis3A==",
++      "version": "7.5.3",
++      "resolved": "https://registry.npmjs.org/semver/-/semver-7.5.3.tgz",
++      "integrity": "sha512-QBlUtyVk/5EeHbi7X0fw6liDZc7BBmEaSYn01fMU1OUYbf6GPsbTtd8WmnqbI20SeycoHSeiybkE/q1Q+qlThQ==",
+       "dev": true,
+       "dependencies": {
+         "lru-cache": "^6.0.0"
+@@ -4469,9 +4469,9 @@
+       }
+     },
+     "node_modules/eslint/node_modules/semver": {
+-      "version": "7.3.8",
+-      "resolved": "https://registry.npmjs.org/semver/-/semver-7.3.8.tgz",
+-      "integrity": "sha512-NB1ctGL5rlHrPJtFDVIVzTyQylMLu9N9VICA6HSFJo8MCGVTMW6gfpicwKmmK/dAjTOrqu5l63JJOpDSrAis3A==",
++      "version": "7.5.3",
++      "resolved": "https://registry.npmjs.org/semver/-/semver-7.5.3.tgz",
++      "integrity": "sha512-QBlUtyVk/5EeHbi7X0fw6liDZc7BBmEaSYn01fMU1OUYbf6GPsbTtd8WmnqbI20SeycoHSeiybkE/q1Q+qlThQ==",
+       "dependencies": {
+         "lru-cache": "^6.0.0"
+       },
+@@ -10677,9 +10677,9 @@
+           }
+         },
+         "semver": {
+-          "version": "7.3.8",
+-          "resolved": "https://registry.npmjs.org/semver/-/semver-7.3.8.tgz",
+-          "integrity": "sha512-NB1ctGL5rlHrPJtFDVIVzTyQylMLu9N9VICA6HSFJo8MCGVTMW6gfpicwKmmK/dAjTOrqu5l63JJOpDSrAis3A==",
++          "version": "7.5.3",
++          "resolved": "https://registry.npmjs.org/semver/-/semver-7.5.3.tgz",
++          "integrity": "sha512-QBlUtyVk/5EeHbi7X0fw6liDZc7BBmEaSYn01fMU1OUYbf6GPsbTtd8WmnqbI20SeycoHSeiybkE/q1Q+qlThQ==",
+           "dev": true,
+           "requires": {
+             "lru-cache": "^6.0.0"
+@@ -11097,9 +11097,9 @@
+           }
+         },
+         "semver": {
+-          "version": "7.3.8",
+-          "resolved": "https://registry.npmjs.org/semver/-/semver-7.3.8.tgz",
+-          "integrity": "sha512-NB1ctGL5rlHrPJtFDVIVzTyQylMLu9N9VICA6HSFJo8MCGVTMW6gfpicwKmmK/dAjTOrqu5l63JJOpDSrAis3A==",
++          "version": "7.5.3",
++          "resolved": "https://registry.npmjs.org/semver/-/semver-7.5.3.tgz",
++          "integrity": "sha512-QBlUtyVk/5EeHbi7X0fw6liDZc7BBmEaSYn01fMU1OUYbf6GPsbTtd8WmnqbI20SeycoHSeiybkE/q1Q+qlThQ==",
+           "dev": true,
+           "requires": {
+             "lru-cache": "^6.0.0"
+@@ -11699,9 +11699,9 @@
+           }
+         },
+         "semver": {
+-          "version": "7.3.8",
+-          "resolved": "https://registry.npmjs.org/semver/-/semver-7.3.8.tgz",
+-          "integrity": "sha512-NB1ctGL5rlHrPJtFDVIVzTyQylMLu9N9VICA6HSFJo8MCGVTMW6gfpicwKmmK/dAjTOrqu5l63JJOpDSrAis3A==",
++          "version": "7.5.3",
++          "resolved": "https://registry.npmjs.org/semver/-/semver-7.5.3.tgz",
++          "integrity": "sha512-QBlUtyVk/5EeHbi7X0fw6liDZc7BBmEaSYn01fMU1OUYbf6GPsbTtd8WmnqbI20SeycoHSeiybkE/q1Q+qlThQ==",
+           "requires": {
+             "lru-cache": "^6.0.0"
+           }
+diff --git a/src/lib389/lib389/backend.py b/src/lib389/lib389/backend.py
+index d1094aa61..9acced205 100644
+--- a/src/lib389/lib389/backend.py
++++ b/src/lib389/lib389/backend.py
+@@ -498,11 +498,11 @@ class Backend(DSLdapObject):
+         * missing indices if we are local and have log access?
+         """
+         # Check for the missing mapping tree.
+-        suffix = self.get_attr_val_utf8('nsslapd-suffix')
++        suffix = self.get_attr_val_utf8_l('nsslapd-suffix')
+         bename = self.lint_uid()
+         try:
+             mt = self._mts.get(suffix)
+-            if mt.get_attr_val_utf8('nsslapd-backend') != bename and mt.get_attr_val_utf8('nsslapd-state') != 'backend':
++            if mt.get_attr_val_utf8_l('nsslapd-backend') != bename.lower() and mt.get_attr_val_utf8('nsslapd-state') != 'backend':
+                 raise ldap.NO_SUCH_OBJECT("We have a matching suffix, but not a backend or correct database name.")
+         except ldap.NO_SUCH_OBJECT:
+             result = DSBLE0001
+diff --git a/src/lib389/lib389/config.py b/src/lib389/lib389/config.py
+index 00d38463a..b1a474ebe 100644
+--- a/src/lib389/lib389/config.py
++++ b/src/lib389/lib389/config.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2020 Red Hat, Inc.
++# Copyright (C) 2023 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -22,7 +22,9 @@ from lib389._constants import *
+ from lib389 import Entry
+ from lib389._mapped_object import DSLdapObject
+ from lib389.utils import ensure_bytes, selinux_label_port,  selinux_present
+-from lib389.lint import DSCLE0001, DSCLE0002, DSELE0001
++from lib389.lint import (
++    DSCLE0001, DSCLE0002, DSCLE0003, DSCLE0004, DSELE0001
++)
+ 
+ class Config(DSLdapObject):
+     """
+@@ -218,6 +220,24 @@ class Config(DSLdapObject):
+             report['check'] = "config:passwordscheme"
+             yield report
+ 
++    def _lint_unauth_binds(self):
++        # Allow unauthenticated binds
++        unauthbinds = self.get_attr_val_utf8_l('nsslapd-allow-unauthenticated-binds')
++        if unauthbinds == "on":
++            report = copy.deepcopy(DSCLE0003)
++            report['fix'] = report['fix'].replace('YOUR_INSTANCE', self._instance.serverid)
++            report['check'] = "config:unauthorizedbinds"
++            yield report
++
++    def _lint_accesslog_buffering(self):
++        # access log buffering
++        buffering = self.get_attr_val_utf8_l('nsslapd-accesslog-logbuffering')
++        if buffering == "off":
++            report = copy.deepcopy(DSCLE0004)
++            report['fix'] = report['fix'].replace('YOUR_INSTANCE', self._instance.serverid)
++            report['check'] = "config:accesslogbuffering"
++            yield report
++
+     def disable_plaintext_port(self):
+         """
+         Configure the server to not-provide the plaintext port.
+diff --git a/src/lib389/lib389/lint.py b/src/lib389/lib389/lint.py
+index 0219801f4..7ca524315 100644
+--- a/src/lib389/lib389/lint.py
++++ b/src/lib389/lib389/lint.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2022 Red Hat, Inc.
++# Copyright (C) 2023 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -113,6 +113,36 @@ You can also use 'dsconf' to replace these values.  Here is an example:
+     # dsconf slapd-YOUR_INSTANCE config replace passwordStorageScheme=PBKDF2-SHA512 nsslapd-rootpwstoragescheme=PBKDF2-SHA512"""
+ }
+ 
++DSCLE0003 = {
++    'dsle': 'DSCLE0003',
++    'severity': 'MEDIUM',
++    'description': 'Unauthorized Binds Allowed',
++    'items': ['cn=config', ],
++    'detail': """nsslapd-allow-unauthenticated-binds is set to 'on' this can
++lead to unexpected results with clients and potential security issues
++""",
++    'fix': """Set nsslapd-allow-unauthenticated-binds to off.
++You can use 'dsconf' to set this attribute.  Here is an example:
++
++    # dsconf slapd-YOUR_INSTANCE config replace nsslapd-allow-unauthenticated-binds=off"""
++}
++
++DSCLE0004 = {
++    'dsle': 'DSCLE0004',
++    'severity': 'LOW',
++    'description': 'Access Log buffering disabled',
++    'items': ['cn=config', ],
++    'detail': """nsslapd-accesslog-logbuffering is set to 'off' this will cause high
++disk IO and can significantly impact server performance.  This should only be used
++for debug purposes
++""",
++    'fix': """Set nsslapd-accesslog-logbuffering to 'on'.
++You can use 'dsconf' to set this attribute.  Here is an example:
++
++    # dsconf slapd-YOUR_INSTANCE config replace nsslapd-accesslog-logbuffering=on
++"""
++}
++
+ # Security checks
+ DSELE0001 = {
+     'dsle': 'DSELE0001',
+-- 
+2.41.0
+
