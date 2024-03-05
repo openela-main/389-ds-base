@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.3.6
-Release:          3%{?dist}
+Release:          5%{?dist}
 License:          GPLv3+ and MIT and ASL 2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -295,7 +295,11 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 %endif
 Source4:          389-ds-base.sysusers
 
-Patch1:		  0001-Issue-5848-Fix-condition-and-add-a-CI-test-5916.patch
+Patch1:           0001-Issue-5848-Fix-condition-and-add-a-CI-test-5916.patch
+Patch2:           0002-Issue-5909-Multi-listener-hang-with-20k-connections-.patch
+Patch3:           0002-issue-5924-ASAN-server-build-crash-when-looping-open.patch
+Patch4:           0003-Issue-5984-Crash-when-paged-result-search-are-abando.patch
+Patch5:           0004-Issue-5984-Crash-when-paged-result-search-are-abando.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -737,6 +741,16 @@ exit 0
 %endif
 
 %changelog
+* Fri Dec 01 2023 Thierry Bordaz <tbordaz@redhat.com> - 2.3.6-5
+- Bump version to 2.3.6-5
+- Resolves: RHEL-17178 - Crash on open/close connections
+- Resolves: RHEL-16833 - ns-slapd crash in slapi_attr_basetype
+
+* Thu Nov 30 2023 Thierry Bordaz <tbordaz@redhat.com> - 2.3.6-4
+- Bump version to 2.3.6-4
+- Resolves: RHEL-17178 - Crash on open/close connections
+- Resolves: RHEL-16833 - ns-slapd crash in slapi_attr_basetype
+
 * Thu Sep 7 2023 Simon Pichugin <spichugi@redhat.com> - 2.3.6-3
 - Bump version to 2.3.6-3
 - Resolves: rhbz#2236163 - Regression: replication can't be enabled for consumer or hub role
