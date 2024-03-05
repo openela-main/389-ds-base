@@ -48,7 +48,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.37
-Release:          %{?relprefix}1%{?prerel}%{?dist}
+Release:          %{?relprefix}2%{?prerel}%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -295,6 +295,10 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 Source4:          vendor-%{version}-1.tar.gz
 Source5:          Cargo-%{version}-1.lock
 %endif
+
+Patch01:					0001-Issue-5870-ns-slapd-crashes-at-startup-if-a-backend-.patch
+Patch02:					0001-Issue-5984-Crash-when-paged-result-search-are-abando.patch
+Patch03:					0002-Issue-5984-Crash-when-paged-result-search-are-abando.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -916,8 +920,13 @@ exit 0
 %doc README.md
 
 %changelog
+* Sun Dec 03 2023 James Chapman <jachapma@redhat.com> - 1.4.3.37-2
+- Bump version to 1.4.3.37-2
+- Resolves: RHEL-12710 bdb_start - Detected Disorderly Shutdown directory server is not starting
+- Resolves: RHEL-16822 ns-slapd crash in slapi_attr_basetype
+
 * Wed Aug 16 2023 Mark Reynolds <mreynolds@redhat.com> - 1.4.3.37-1
-- Bump versionto 1.4.3.37-1
+- Bump version to 1.4.3.37-1
 - Resolves: rhbz#2224505 - Paged search impacts performance
 - Resolves: rhbz#2220890 - healthcheck tool needs to be updates for new default password storage scheme
 - Resolves: rhbz#2218235 - python3-lib389: Python tarfile extraction needs change to avoid a warning

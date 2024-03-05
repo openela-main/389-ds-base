@@ -1,0 +1,84 @@
+From c98a1f0d4ad35778204440a8a5fc497d476621a9 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Wed, 2 Aug 2023 14:44:42 +0200
+Subject: [PATCH] Issue 5870 - ns-slapd crashes at startup if a backend has no
+ suffix (#5871)
+
+Bug description:
+	With $5598, the server checks at startup if it exists
+	some referrals entries in the various backends/suffixes.
+	If a backend has no defined suffix (not clear how it
+	occurs except crafting dse.ldif) the checking
+	triggers a sigsev
+
+Fix description:
+	Check it exists a suffix before using it
+---
+ .../tests/suites/ds_logs/ds_logs_test.py      | 29 +++++++++++++++++++
+ ldap/servers/slapd/backend.c                  |  3 +-
+ 2 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+index 1a51ca548..812936c62 100644
+--- a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
++++ b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+@@ -11,6 +11,8 @@ import os
+ import time
+ import logging
+ import pytest
++import shutil
++from lib389.rootdse import RootDSE
+ import subprocess
+ from lib389.referral import Referrals, Referral
+ from lib389.backend import Backend
+@@ -1398,6 +1400,33 @@ def test_referral_subsuffix(topology_st, request):
+ 
+     request.addfinalizer(fin)
+ 
++def test_missing_backend_suffix(topology_st, request):
++    """Test that the server does not crash if a backend has no suffix
++
++    :id: 427c9780-4875-4a94-a3e4-afa11be7d1a9
++    :setup: Standalone instance
++    :steps:
++        1. Stop the instance
++        2. remove 'nsslapd-suffix' from the backend (userRoot)
++        3. start the instance
++        4. Check it started successfully with SRCH on rootDSE
++    :expectedresults:
++        all steps succeeds
++    """
++    topology_st.standalone.stop()
++    dse_ldif = topology_st.standalone.confdir + '/dse.ldif'
++    shutil.copy(dse_ldif, dse_ldif + '.correct')
++    os.system('sed -e "/nsslapd-suffix/d" %s > %s' % (dse_ldif + '.correct', dse_ldif))
++    topology_st.standalone.start()
++    rdse = RootDSE(topology_st.standalone)
++
++    def fin():
++        log.info('Restore dse.ldif')
++        topology_st.standalone.stop()
++        shutil.copy(dse_ldif + '.correct', dse_ldif)
++
++    request.addfinalizer(fin)
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/ldap/servers/slapd/backend.c b/ldap/servers/slapd/backend.c
+index ea8ccb88d..498f683b1 100644
+--- a/ldap/servers/slapd/backend.c
++++ b/ldap/servers/slapd/backend.c
+@@ -222,7 +222,8 @@ slapi_exist_referral(Slapi_Backend *be)
+         suffix = slapi_sdn_get_dn(slapi_be_getsuffix(be, 0));
+ 
+         /* ignore special backends */
+-        if ((strcmp(suffix, "cn=schema") == 0) ||
++        if ((suffix == NULL) ||
++            (strcmp(suffix, "cn=schema") == 0) ||
+             (strcmp(suffix, "cn=config") == 0)) {
+             return 0; /* it does not mean anything having a referral in those backends */
+         }
+-- 
+2.41.0
+
