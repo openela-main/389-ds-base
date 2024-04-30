@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.4.5
-Release:          5%{?dist}
+Release:          6%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT) and MIT and (Unlicense or MIT) and (0BSD or MIT or ASL 2.0) and MPLv2.0 and ASL 2.0 and (MIT or zlib or ASL 2.0) and ((MIT or ASL 2.0) and Unicode-DFS-2016) and (ASL 2.0 or Boost) and BSD
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -293,6 +293,8 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 %endif
 Source4:          389-ds-base.sysusers
 Patch0:           0001-Issue-3527-Support-HAProxy-and-Instance-on-the-same-.patch
+Patch1:           0002-Issue-6112-RFE-add-new-operation-note-for-MFA-authen.patch
+Patch2:           0003-Issue-6133-Move-slapi_pblock_set_flag_operation_note.patch
 
 
 %description
@@ -736,6 +738,10 @@ exit 0
 %endif
 
 %changelog
+* Thu Apr 04 2024 Viktor Ashirov <vashirov@redhat.com> - 2.4.5-6
+- Bump version to 2.4.5-6
+- Resolves: RHEL-30588 - [RFE] allows plugins to log multi-factor authentication notification
+
 * Mon Mar 18 2024 Simon Pichugin <spichugi@redhat.com> - 2.4.5-5
 - Bump version to 2.4.5-5
 - Rebuild for exception phase
