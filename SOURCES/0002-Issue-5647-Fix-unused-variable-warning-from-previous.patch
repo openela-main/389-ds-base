@@ -1,0 +1,27 @@
+From be7c2b82958e91ce08775bf6b5da3c311d3b00e5 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Mon, 20 Feb 2023 16:14:05 +0100
+Subject: [PATCH 2/2] Issue 5647 - Fix unused variable warning from previous
+ commit (#5670)
+
+* issue 5647 - memory leak in audit log when adding entries
+* Issue 5647 - Fix unused variable warning from previous commit
+---
+ ldap/servers/slapd/auditlog.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/auditlog.c b/ldap/servers/slapd/auditlog.c
+index 3128e0497..0597ecc6f 100644
+--- a/ldap/servers/slapd/auditlog.c
++++ b/ldap/servers/slapd/auditlog.c
+@@ -254,7 +254,6 @@ add_entry_attrs(Slapi_Entry *entry, lenstr *l)
+     } else {
+         /* Return all attributes */
+         for (; entry_attr; entry_attr = entry_attr->a_next) {
+-            Slapi_Value **vals = attr_get_present_values(entry_attr);
+             char *attr = NULL;
+ 
+             slapi_attr_get_type(entry_attr, &attr);
+-- 
+2.43.0
+

@@ -1,0 +1,147 @@
+From 692c4cec6cc5c0086cf58f83bcfa690c766c9887 Mon Sep 17 00:00:00 2001
+From: Thierry Bordaz <tbordaz@redhat.com>
+Date: Fri, 2 Feb 2024 14:14:28 +0100
+Subject: [PATCH] Issue 5407 - sync_repl crashes if enabled while dynamic
+ plugin is enabled (#5411)
+
+Bug description:
+        When dynamic plugin is enabled, if a MOD enables sync_repl plugin
+        then sync_repl init function registers the postop callback
+        that will be called for the MOD itself while the preop
+        has not been called.
+        postop expects preop to be called and so primary operation
+        to be set. When it is not set it crashes
+
+Fix description:
+        If the primary operation is not set, just return
+
+relates: #5407
+---
+ .../suites/syncrepl_plugin/basic_test.py      | 68 +++++++++++++++++++
+ ldap/servers/plugins/sync/sync_persist.c      | 23 ++++++-
+ 2 files changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py b/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
+index eb3770b78..cdf35eeaa 100644
+--- a/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
++++ b/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
+@@ -592,6 +592,74 @@ def test_sync_repl_cenotaph(topo_m2, request):
+ 
+     request.addfinalizer(fin)
+ 
++def test_sync_repl_dynamic_plugin(topology, request):
++    """Test sync_repl with dynamic plugin
++
++    :id: d4f84913-c18a-459f-8525-110f610ca9e6
++    :setup: install a standalone instance
++    :steps:
++        1. reset instance to standard (no retroCL, no sync_repl, no dynamic plugin)
++        2. Enable dynamic plugin
++        3. Enable retroCL/content_sync
++        4. Establish a sync_repl req
++    :expectedresults:
++        1. Should succeeds
++        2. Should succeeds
++        3. Should succeeds
++        4. Should succeeds
++    """
++
++    # Reset the instance in a default config
++    # Disable content sync plugin
++    topology.standalone.plugins.disable(name=PLUGIN_REPL_SYNC)
++
++    # Disable retro changelog
++    topology.standalone.plugins.disable(name=PLUGIN_RETRO_CHANGELOG)
++
++    # Disable dynamic plugins
++    topology.standalone.modify_s(DN_CONFIG, [(ldap.MOD_REPLACE, 'nsslapd-dynamic-plugins', b'off')])
++    topology.standalone.restart()
++
++    # Now start the test 
++    # Enable dynamic plugins
++    try:
++        topology.standalone.modify_s(DN_CONFIG, [(ldap.MOD_REPLACE, 'nsslapd-dynamic-plugins', b'on')])
++    except ldap.LDAPError as e:
++        log.error('Failed to enable dynamic plugin! {}'.format(e.args[0]['desc']))
++        assert False
++
++    # Enable retro changelog
++    topology.standalone.plugins.enable(name=PLUGIN_RETRO_CHANGELOG)
++
++    # Enbale content sync plugin
++    topology.standalone.plugins.enable(name=PLUGIN_REPL_SYNC)
++
++    # create a sync repl client and wait 5 seconds to be sure it is running
++    sync_repl = Sync_persist(topology.standalone)
++    sync_repl.start()
++    time.sleep(5)
++
++    # create users
++    users = UserAccounts(topology.standalone, DEFAULT_SUFFIX)
++    users_set = []
++    for i in range(10001, 10004):
++        users_set.append(users.create_test_user(uid=i))
++
++    time.sleep(10)
++    # delete users, that automember/memberof will generate nested updates
++    for user in users_set:
++        user.delete()
++    # stop the server to get the sync_repl result set (exit from while loop).
++    # Only way I found to acheive that.
++    # and wait a bit to let sync_repl thread time to set its result before fetching it.
++    topology.standalone.stop()
++    sync_repl.get_result()
++    sync_repl.join()
++    log.info('test_sync_repl_dynamic_plugin: PASS\n')
++
++    # Success
++    log.info('Test complete')
++
+ def test_sync_repl_invalid_cookie(topology, request):
+     """Test sync_repl with invalid cookie
+ 
+diff --git a/ldap/servers/plugins/sync/sync_persist.c b/ldap/servers/plugins/sync/sync_persist.c
+index d2210b64c..283607361 100644
+--- a/ldap/servers/plugins/sync/sync_persist.c
++++ b/ldap/servers/plugins/sync/sync_persist.c
+@@ -156,6 +156,17 @@ ignore_op_pl(Slapi_PBlock *pb)
+      * This is the same for ident
+      */
+     prim_op = get_thread_primary_op();
++    if (prim_op == NULL) {
++        /* This can happen if the PRE_OP (sync_update_persist_betxn_pre_op) was not called.
++         * The only known case it happens is with dynamic plugin enabled and an
++         * update that enable the sync_repl plugin. In such case sync_repl registers
++         * the postop (sync_update_persist_op) that is called while the preop was not called
++         */
++        slapi_log_err(SLAPI_LOG_PLUGIN, SYNC_PLUGIN_SUBSYSTEM,
++              "ignore_op_pl - Operation without primary op set (0x%lx)\n",
++              (ulong) op);
++        return;
++    }
+     ident = sync_persist_get_operation_extension(pb);
+ 
+     if (ident) {
+@@ -232,8 +243,18 @@ sync_update_persist_op(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eprev, ber
+ 
+ 
+     prim_op = get_thread_primary_op();
++    if (prim_op == NULL) {
++        /* This can happen if the PRE_OP (sync_update_persist_betxn_pre_op) was not called.
++         * The only known case it happens is with dynamic plugin enabled and an
++         * update that enable the sync_repl plugin. In such case sync_repl registers
++         * the postop (sync_update_persist_op) that is called while the preop was not called
++         */
++        slapi_log_err(SLAPI_LOG_PLUGIN, SYNC_PLUGIN_SUBSYSTEM,
++                      "sync_update_persist_op - Operation without primary op set (0x%lx)\n",
++                      (ulong) pb_op);
++        return;
++    }
+     ident = sync_persist_get_operation_extension(pb);
+-    PR_ASSERT(prim_op);
+ 
+     if ((ident == NULL) && operation_is_flag_set(pb_op, OP_FLAG_NOOP)) {
+         /* This happens for URP (add cenotaph, fixup rename, tombstone resurrect)
+-- 
+2.43.0
+

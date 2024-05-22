@@ -1,0 +1,840 @@
+From 8dc61a176323f0d41df730abd715ccff3034c2be Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Sun, 27 Nov 2022 09:37:19 -0500
+Subject: [PATCH] Issue 5547 - automember plugin improvements
+
+Description:
+
+Rebuild task has the following improvements:
+
+- Only one task allowed at a time
+- Do not cleanup previous members by default.  Add new CLI option to intentionally
+  cleanup memberships before rebuilding from scratch.
+- Add better task logging to show fixup progress
+
+To prevent automember from being called in a nested be_txn loop thread storage is
+used to check and skip these loops.
+
+relates: https://github.com/389ds/389-ds-base/issues/5547
+
+Reviewed by: spichugi(Thanks!)
+---
+ .../automember_plugin/automember_mod_test.py  |  43 +++-
+ ldap/servers/plugins/automember/automember.c  | 232 ++++++++++++++----
+ ldap/servers/slapd/back-ldbm/ldbm_add.c       |  11 +-
+ ldap/servers/slapd/back-ldbm/ldbm_delete.c    |  10 +-
+ ldap/servers/slapd/back-ldbm/ldbm_modify.c    |  11 +-
+ .../lib389/cli_conf/plugins/automember.py     |  10 +-
+ src/lib389/lib389/plugins.py                  |   7 +-
+ src/lib389/lib389/tasks.py                    |   9 +-
+ 8 files changed, 250 insertions(+), 83 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/automember_plugin/automember_mod_test.py b/dirsrvtests/tests/suites/automember_plugin/automember_mod_test.py
+index 8d25384bf..7a0ed3275 100644
+--- a/dirsrvtests/tests/suites/automember_plugin/automember_mod_test.py
++++ b/dirsrvtests/tests/suites/automember_plugin/automember_mod_test.py
+@@ -5,12 +5,13 @@
+ # License: GPL (version 3 or any later version).
+ # See LICENSE for details.
+ # --- END COPYRIGHT BLOCK ---
+-#
++import ldap
+ import logging
+ import pytest
+ import os
++import time
+ from lib389.utils import ds_is_older
+-from lib389._constants import *
++from lib389._constants import DEFAULT_SUFFIX
+ from lib389.plugins import AutoMembershipPlugin, AutoMembershipDefinitions
+ from lib389.idm.user import UserAccounts
+ from lib389.idm.group import Groups
+@@ -41,6 +42,11 @@ def automember_fixture(topo, request):
+     user_accts = UserAccounts(topo.standalone, DEFAULT_SUFFIX)
+     user = user_accts.create_test_user()
+ 
++    # Create extra users
++    users = UserAccounts(topo.standalone, DEFAULT_SUFFIX)
++    for i in range(0, 100):
++        users.create_test_user(uid=i)
++
+     # Create automember definitions and regex rules
+     automember_prop = {
+         'cn': 'testgroup_definition',
+@@ -59,7 +65,7 @@ def automember_fixture(topo, request):
+     automemberplugin.enable()
+     topo.standalone.restart()
+ 
+-    return (user, groups)
++    return user, groups
+ 
+ 
+ def test_mods(automember_fixture, topo):
+@@ -72,19 +78,21 @@ def test_mods(automember_fixture, topo):
+         2. Update user that should add it to group[1]
+         3. Update user that should add it to group[2]
+         4. Update user that should add it to group[0]
+-        5. Test rebuild task correctly moves user to group[1]
++        5. Test rebuild task adds user to group[1]
++        6. Test rebuild task cleanups groups and only adds it to group[1]
+     :expectedresults:
+         1. Success
+         2. Success
+         3. Success
+         4. Success
+         5. Success
++        6. Success
+     """
+     (user, groups) = automember_fixture
+ 
+     # Update user which should go into group[0]
+     user.replace('cn', 'whatever')
+-    groups[0].is_member(user.dn)
++    assert groups[0].is_member(user.dn)
+     if groups[1].is_member(user.dn):
+         assert False
+     if groups[2].is_member(user.dn):
+@@ -92,7 +100,7 @@ def test_mods(automember_fixture, topo):
+ 
+     # Update user0 which should go into group[1]
+     user.replace('cn', 'mark')
+-    groups[1].is_member(user.dn)
++    assert groups[1].is_member(user.dn)
+     if groups[0].is_member(user.dn):
+         assert False
+     if groups[2].is_member(user.dn):
+@@ -100,7 +108,7 @@ def test_mods(automember_fixture, topo):
+ 
+     # Update user which should go into group[2]
+     user.replace('cn', 'simon')
+-    groups[2].is_member(user.dn)
++    assert groups[2].is_member(user.dn)
+     if groups[0].is_member(user.dn):
+         assert False
+     if groups[1].is_member(user.dn):
+@@ -108,7 +116,7 @@ def test_mods(automember_fixture, topo):
+ 
+     # Update user which should go back into group[0] (full circle)
+     user.replace('cn', 'whatever')
+-    groups[0].is_member(user.dn)
++    assert groups[0].is_member(user.dn)
+     if groups[1].is_member(user.dn):
+         assert False
+     if groups[2].is_member(user.dn):
+@@ -128,12 +136,24 @@ def test_mods(automember_fixture, topo):
+     automemberplugin.enable()
+     topo.standalone.restart()
+ 
+-    # Run rebuild task
++    # Run rebuild task (no cleanup)
+     task = automemberplugin.fixup(DEFAULT_SUFFIX, "objectclass=posixaccount")
++    with pytest.raises(ldap.UNWILLING_TO_PERFORM):
++        # test only one fixup task is allowed at a time
++        automemberplugin.fixup(DEFAULT_SUFFIX, "objectclass=top")
+     task.wait()
+ 
+-    # Test membership
+-    groups[1].is_member(user.dn)
++    # Test membership (user should still be in groups[0])
++    assert groups[1].is_member(user.dn)
++    if not groups[0].is_member(user.dn):
++        assert False
++
++    # Run rebuild task with cleanup
++    task = automemberplugin.fixup(DEFAULT_SUFFIX, "objectclass=posixaccount", cleanup=True)
++    task.wait()
++
++    # Test membership (user should only be in groups[1])
++    assert groups[1].is_member(user.dn)
+     if groups[0].is_member(user.dn):
+         assert False
+     if groups[2].is_member(user.dn):
+@@ -148,4 +168,3 @@ if __name__ == '__main__':
+     # -s for DEBUG mode
+     CURRENT_FILE = os.path.realpath(__file__)
+     pytest.main(["-s", CURRENT_FILE])
+-
+diff --git a/ldap/servers/plugins/automember/automember.c b/ldap/servers/plugins/automember/automember.c
+index 3494d0343..419adb052 100644
+--- a/ldap/servers/plugins/automember/automember.c
++++ b/ldap/servers/plugins/automember/automember.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2011 Red Hat, Inc.
++ * Copyright (C) 2022 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -14,7 +14,7 @@
+  * Auto Membership Plug-in
+  */
+ #include "automember.h"
+-
++#include <pthread.h>
+ 
+ /*
+  * Plug-in globals
+@@ -22,7 +22,9 @@
+ static PRCList *g_automember_config = NULL;
+ static Slapi_RWLock *g_automember_config_lock = NULL;
+ static uint64_t abort_rebuild_task = 0;
+-
++static pthread_key_t td_automem_block_nested;
++static PRBool fixup_running = PR_FALSE;
++static PRLock *fixup_lock = NULL;
+ static void *_PluginID = NULL;
+ static Slapi_DN *_PluginDN = NULL;
+ static Slapi_DN *_ConfigAreaDN = NULL;
+@@ -93,9 +95,43 @@ static void automember_task_export_destructor(Slapi_Task *task);
+ static void automember_task_map_destructor(Slapi_Task *task);
+ 
+ #define DEFAULT_FILE_MODE PR_IRUSR | PR_IWUSR
++#define FIXUP_PROGRESS_LIMIT 1000
+ static uint64_t plugin_do_modify = 0;
+ static uint64_t plugin_is_betxn = 0;
+ 
++/* automember_plugin fixup task and add operations should block other be_txn
++ * plugins from calling automember_post_op_mod() */
++static int32_t
++slapi_td_block_nested_post_op(void)
++{
++    int32_t val = 12345;
++
++    if (pthread_setspecific(td_automem_block_nested, (void *)&val) != 0) {
++        return PR_FAILURE;
++    }
++    return PR_SUCCESS;
++}
++
++static int32_t
++slapi_td_unblock_nested_post_op(void)
++{
++    if (pthread_setspecific(td_automem_block_nested, NULL) != 0) {
++        return PR_FAILURE;
++    }
++    return PR_SUCCESS;
++}
++
++static int32_t
++slapi_td_is_post_op_nested(void)
++{
++    int32_t *value = pthread_getspecific(td_automem_block_nested);
++
++    if (value == NULL) {
++        return 0;
++    }
++    return 1;
++}
++
+ /*
+  * Config cache locking functions
+  */
+@@ -317,6 +353,14 @@ automember_start(Slapi_PBlock *pb)
+         return -1;
+     }
+ 
++    if (fixup_lock == NULL) {
++        if ((fixup_lock = PR_NewLock()) == NULL) {
++            slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                          "automember_start - Failed to create fixup lock.\n");
++            return -1;
++        }
++    }
++
+     /*
+      * Get the plug-in target dn from the system
+      * and store it for future use. */
+@@ -360,6 +404,11 @@ automember_start(Slapi_PBlock *pb)
+         }
+     }
+ 
++    if (pthread_key_create(&td_automem_block_nested, NULL) != 0) {
++        slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                      "automember_start - pthread_key_create failed\n");
++    }
++
+     slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                   "automember_start - ready for service\n");
+     slapi_log_err(SLAPI_LOG_TRACE, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+@@ -394,6 +443,8 @@ automember_close(Slapi_PBlock *pb __attribute__((unused)))
+     slapi_sdn_free(&_ConfigAreaDN);
+     slapi_destroy_rwlock(g_automember_config_lock);
+     g_automember_config_lock = NULL;
++    PR_DestroyLock(fixup_lock);
++    fixup_lock = NULL;
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                   "<-- automember_close\n");
+@@ -1619,7 +1670,6 @@ out:
+     return rc;
+ }
+ 
+-
+ /*
+  * automember_update_member_value()
+  *
+@@ -1634,7 +1684,7 @@ automember_update_member_value(Slapi_Entry *member_e, const char *group_dn, char
+     LDAPMod *mods[2];
+     char *vals[2];
+     char *member_value = NULL;
+-    int rc = 0;
++    int rc = LDAP_SUCCESS;
+     Slapi_DN *group_sdn;
+ 
+     /* First thing check that the group still exists */
+@@ -1653,7 +1703,7 @@ automember_update_member_value(Slapi_Entry *member_e, const char *group_dn, char
+                       "automember_update_member_value - group (default or target) can not be retrieved (%s) err=%d\n",
+                       group_dn, rc);
+         }
+-        return rc;
++        goto out;
+     }
+ 
+     /* If grouping_value is dn, we need to fetch the dn instead. */
+@@ -1879,6 +1929,13 @@ automember_mod_post_op(Slapi_PBlock *pb)
+     PRCList *list = NULL;
+     int rc = SLAPI_PLUGIN_SUCCESS;
+ 
++    if (slapi_td_is_post_op_nested()) {
++        /* don't process op twice in the same thread */
++        return rc;
++    } else {
++        slapi_td_block_nested_post_op();
++    }
++
+     slapi_log_err(SLAPI_LOG_TRACE, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                   "--> automember_mod_post_op\n");
+ 
+@@ -2005,6 +2062,7 @@ automember_mod_post_op(Slapi_PBlock *pb)
+             }
+         }
+     }
++    slapi_td_unblock_nested_post_op();
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                   "<-- automember_mod_post_op (%d)\n", rc);
+@@ -2024,6 +2082,13 @@ automember_add_post_op(Slapi_PBlock *pb)
+     slapi_log_err(SLAPI_LOG_TRACE, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                   "--> automember_add_post_op\n");
+ 
++    if (slapi_td_is_post_op_nested()) {
++        /* don't process op twice in the same thread */
++        return rc;
++    } else {
++        slapi_td_block_nested_post_op();
++    }
++
+     /* Reload config if a config entry was added. */
+     if ((sdn = automember_get_sdn(pb))) {
+         if (automember_dn_is_config(sdn)) {
+@@ -2039,7 +2104,7 @@ automember_add_post_op(Slapi_PBlock *pb)
+ 
+     /* If replication, just bail. */
+     if (automember_isrepl(pb)) {
+-        return SLAPI_PLUGIN_SUCCESS;
++        goto bail;
+     }
+ 
+     /* Get the newly added entry. */
+@@ -2052,7 +2117,7 @@ automember_add_post_op(Slapi_PBlock *pb)
+                                                              tombstone);
+         slapi_value_free(&tombstone);
+         if (is_tombstone) {
+-            return SLAPI_PLUGIN_SUCCESS;
++            goto bail;
+         }
+ 
+         /* Check if a config entry applies
+@@ -2063,21 +2128,19 @@ automember_add_post_op(Slapi_PBlock *pb)
+             list = PR_LIST_HEAD(g_automember_config);
+             while (list != g_automember_config) {
+                 config = (struct configEntry *)list;
+-
+                 /* Does the entry meet scope and filter requirements? */
+                 if (slapi_dn_issuffix(slapi_sdn_get_dn(sdn), config->scope) &&
+-                    (slapi_filter_test_simple(e, config->filter) == 0)) {
++                    (slapi_filter_test_simple(e, config->filter) == 0))
++                {
+                     /* Find out what membership changes are needed and make them. */
+                     if (automember_update_membership(config, e, NULL) == SLAPI_PLUGIN_FAILURE) {
+                         rc = SLAPI_PLUGIN_FAILURE;
+                         break;
+                     }
+                 }
+-
+                 list = PR_NEXT_LINK(list);
+             }
+         }
+-
+         automember_config_unlock();
+     } else {
+         slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+@@ -2098,6 +2161,7 @@ bail:
+         slapi_pblock_set(pb, SLAPI_RESULT_CODE, &result);
+         slapi_pblock_set(pb, SLAPI_PB_RESULT_TEXT, &errtxt);
+     }
++    slapi_td_unblock_nested_post_op();
+ 
+     return rc;
+ }
+@@ -2138,6 +2202,7 @@ typedef struct _task_data
+     Slapi_DN *base_dn;
+     char *bind_dn;
+     int scope;
++    PRBool cleanup;
+ } task_data;
+ 
+ static void
+@@ -2270,6 +2335,7 @@ automember_task_abort_thread(void *arg)
+  *    basedn: dc=example,dc=com
+  *    filter: (uid=*)
+  *    scope: sub
++ *    cleanup: yes/on  (default is off)
+  *
+  *    basedn and filter are required. If scope is omitted, the default is sub
+  */
+@@ -2284,9 +2350,22 @@ automember_task_add(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter __attr
+     const char *base_dn;
+     const char *filter;
+     const char *scope;
++    const char *cleanup_str;
++    PRBool cleanup = PR_FALSE;
+ 
+     *returncode = LDAP_SUCCESS;
+ 
++    PR_Lock(fixup_lock);
++    if (fixup_running) {
++        PR_Unlock(fixup_lock);
++        *returncode = LDAP_UNWILLING_TO_PERFORM;
++        slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                "automember_task_add - there is already a fixup task running\n");
++        rv = SLAPI_DSE_CALLBACK_ERROR;
++        goto out;
++    }
++    PR_Unlock(fixup_lock);
++
+     /*
+      *  Grab the task params
+      */
+@@ -2300,6 +2379,12 @@ automember_task_add(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter __attr
+         rv = SLAPI_DSE_CALLBACK_ERROR;
+         goto out;
+     }
++    if ((cleanup_str = slapi_entry_attr_get_ref(e, "cleanup"))) {
++        if (strcasecmp(cleanup_str, "yes") == 0 || strcasecmp(cleanup_str, "on")) {
++            cleanup = PR_TRUE;
++        }
++    }
++
+     scope = slapi_fetch_attr(e, "scope", "sub");
+     /*
+      *  setup our task data
+@@ -2315,6 +2400,7 @@ automember_task_add(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter __attr
+     mytaskdata->bind_dn = slapi_ch_strdup(bind_dn);
+     mytaskdata->base_dn = slapi_sdn_new_dn_byval(base_dn);
+     mytaskdata->filter_str = slapi_ch_strdup(filter);
++    mytaskdata->cleanup = cleanup;
+ 
+     if (scope) {
+         if (strcasecmp(scope, "sub") == 0) {
+@@ -2334,6 +2420,9 @@ automember_task_add(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter __attr
+     task = slapi_plugin_new_task(slapi_entry_get_ndn(e), arg);
+     slapi_task_set_destructor_fn(task, automember_task_destructor);
+     slapi_task_set_data(task, mytaskdata);
++    PR_Lock(fixup_lock);
++    fixup_running = PR_TRUE;
++    PR_Unlock(fixup_lock);
+     /*
+      *  Start the task as a separate thread
+      */
+@@ -2345,6 +2434,9 @@ automember_task_add(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter __attr
+                       "automember_task_add - Unable to create task thread!\n");
+         *returncode = LDAP_OPERATIONS_ERROR;
+         slapi_task_finish(task, *returncode);
++        PR_Lock(fixup_lock);
++        fixup_running = PR_FALSE;
++        PR_Unlock(fixup_lock);
+         rv = SLAPI_DSE_CALLBACK_ERROR;
+     } else {
+         rv = SLAPI_DSE_CALLBACK_OK;
+@@ -2372,6 +2464,9 @@ automember_rebuild_task_thread(void *arg)
+     PRCList *list = NULL;
+     PRCList *include_list = NULL;
+     int result = 0;
++    int64_t fixup_progress_count = 0;
++    int64_t fixup_progress_elapsed = 0;
++    int64_t fixup_start_time = 0;
+     size_t i = 0;
+ 
+     /* Reset abort flag */
+@@ -2380,6 +2475,7 @@ automember_rebuild_task_thread(void *arg)
+     if (!task) {
+         return; /* no task */
+     }
++
+     slapi_task_inc_refcount(task);
+     slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                   "automember_rebuild_task_thread - Refcount incremented.\n");
+@@ -2393,9 +2489,11 @@ automember_rebuild_task_thread(void *arg)
+     slapi_task_log_status(task, "Automember rebuild task starting (base dn: (%s) filter (%s)...",
+                           slapi_sdn_get_dn(td->base_dn), td->filter_str);
+     /*
+-     *  Set the bind dn in the local thread data
++     *  Set the bind dn in the local thread data, and block post op mods
+      */
+     slapi_td_set_dn(slapi_ch_strdup(td->bind_dn));
++    slapi_td_block_nested_post_op();
++    fixup_start_time = slapi_current_rel_time_t();
+     /*
+      *  Take the config lock now and search the database
+      */
+@@ -2426,6 +2524,21 @@ automember_rebuild_task_thread(void *arg)
+      * Loop over the entries
+      */
+     for (i = 0; entries && (entries[i] != NULL); i++) {
++        fixup_progress_count++;
++        if (fixup_progress_count % FIXUP_PROGRESS_LIMIT == 0 ) {
++            slapi_task_log_notice(task,
++                                  "Processed %ld entries in %ld seconds (+%ld seconds)",
++                                  fixup_progress_count,
++                                  slapi_current_rel_time_t() - fixup_start_time,
++                                  slapi_current_rel_time_t() - fixup_progress_elapsed);
++            slapi_task_log_status(task,
++                                  "Processed %ld entries in %ld seconds (+%ld seconds)",
++                                  fixup_progress_count,
++                                  slapi_current_rel_time_t() - fixup_start_time,
++                                  slapi_current_rel_time_t() - fixup_progress_elapsed);
++            slapi_task_inc_progress(task);
++            fixup_progress_elapsed = slapi_current_rel_time_t();
++        }
+         if (slapi_atomic_load_64(&abort_rebuild_task, __ATOMIC_ACQUIRE) == 1) {
+             /* The task was aborted */
+             slapi_task_log_notice(task, "Automember rebuild task was intentionally aborted");
+@@ -2443,48 +2556,66 @@ automember_rebuild_task_thread(void *arg)
+                 if (slapi_dn_issuffix(slapi_entry_get_dn(entries[i]), config->scope) &&
+                     (slapi_filter_test_simple(entries[i], config->filter) == 0))
+                 {
+-                    /* First clear out all the defaults groups */
+-                    for (size_t ii = 0; config->default_groups && config->default_groups[ii]; ii++) {
+-                        if ((result = automember_update_member_value(entries[i], config->default_groups[ii],
+-                                config->grouping_attr, config->grouping_value, NULL, DEL_MEMBER)))
+-                        {
+-                            slapi_task_log_notice(task, "Automember rebuild membership task unable to delete "
+-                                                        "member from default group (%s) error (%d)",
+-                                                        config->default_groups[ii], result);
+-                            slapi_task_log_status(task, "Automember rebuild membership task unable to delete "
+-                                                        "member from default group (%s) error (%d)",
+-                                                        config->default_groups[ii], result);
+-                            slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+-                                          "automember_rebuild_task_thread - Unable to unable to delete from (%s) error (%d)\n",
+-                                          config->default_groups[ii], result);
+-                            goto out;
+-                        }
+-                    }
+-
+-                    /* Then clear out the non-default group */
+-                    if (config->inclusive_rules && !PR_CLIST_IS_EMPTY((PRCList *)config->inclusive_rules)) {
+-                        include_list = PR_LIST_HEAD((PRCList *)config->inclusive_rules);
+-                        while (include_list != (PRCList *)config->inclusive_rules) {
+-                            struct automemberRegexRule *curr_rule = (struct automemberRegexRule *)include_list;
+-                            if ((result = automember_update_member_value(entries[i], slapi_sdn_get_dn(curr_rule->target_group_dn),
+-                                    config->grouping_attr, config->grouping_value, NULL, DEL_MEMBER)))
++                    if (td->cleanup) {
++
++                        slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                                      "automember_rebuild_task_thread - Cleaning up groups (config %s)\n",
++                                      config->dn);
++                        /* First clear out all the defaults groups */
++                        for (size_t ii = 0; config->default_groups && config->default_groups[ii]; ii++) {
++                            if ((result = automember_update_member_value(entries[i],
++                                                                         config->default_groups[ii],
++                                                                         config->grouping_attr,
++                                                                         config->grouping_value,
++                                                                         NULL, DEL_MEMBER)))
+                             {
+                                 slapi_task_log_notice(task, "Automember rebuild membership task unable to delete "
+-                                                            "member from group (%s) error (%d)",
+-                                                            slapi_sdn_get_dn(curr_rule->target_group_dn), result);
++                                                      "member from default group (%s) error (%d)",
++                                                      config->default_groups[ii], result);
+                                 slapi_task_log_status(task, "Automember rebuild membership task unable to delete "
+-                                                            "member from group (%s) error (%d)",
+-                                                            slapi_sdn_get_dn(curr_rule->target_group_dn), result);
++                                                      "member from default group (%s) error (%d)",
++                                                      config->default_groups[ii], result);
+                                 slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+                                               "automember_rebuild_task_thread - Unable to unable to delete from (%s) error (%d)\n",
+-                                              slapi_sdn_get_dn(curr_rule->target_group_dn), result);
++                                              config->default_groups[ii], result);
+                                 goto out;
+                             }
+-                            include_list = PR_NEXT_LINK(include_list);
+                         }
++
++                        /* Then clear out the non-default group */
++                        if (config->inclusive_rules && !PR_CLIST_IS_EMPTY((PRCList *)config->inclusive_rules)) {
++                            include_list = PR_LIST_HEAD((PRCList *)config->inclusive_rules);
++                            while (include_list != (PRCList *)config->inclusive_rules) {
++                                struct automemberRegexRule *curr_rule = (struct automemberRegexRule *)include_list;
++                                if ((result = automember_update_member_value(entries[i],
++                                                                             slapi_sdn_get_dn(curr_rule->target_group_dn),
++                                                                             config->grouping_attr,
++                                                                             config->grouping_value,
++                                                                             NULL, DEL_MEMBER)))
++                                {
++                                    slapi_task_log_notice(task, "Automember rebuild membership task unable to delete "
++                                                          "member from group (%s) error (%d)",
++                                                          slapi_sdn_get_dn(curr_rule->target_group_dn), result);
++                                    slapi_task_log_status(task, "Automember rebuild membership task unable to delete "
++                                                          "member from group (%s) error (%d)",
++                                                          slapi_sdn_get_dn(curr_rule->target_group_dn), result);
++                                    slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                                                  "automember_rebuild_task_thread - Unable to unable to delete from (%s) error (%d)\n",
++                                                  slapi_sdn_get_dn(curr_rule->target_group_dn), result);
++                                    goto out;
++                                }
++                                include_list = PR_NEXT_LINK(include_list);
++                            }
++                        }
++                        slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                                      "automember_rebuild_task_thread - Finished cleaning up groups (config %s)\n",
++                                      config->dn);
+                     }
+ 
+                     /* Update the memberships for this entries */
++                    slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
++                                  "automember_rebuild_task_thread - Updating membership (config %s)\n",
++                                  config->dn);
+                     if (slapi_is_shutting_down() ||
+                         automember_update_membership(config, entries[i], NULL) == SLAPI_PLUGIN_FAILURE)
+                     {
+@@ -2508,15 +2639,22 @@ out:
+         slapi_task_log_notice(task, "Automember rebuild task aborted.  Error (%d)", result);
+         slapi_task_log_status(task, "Automember rebuild task aborted.  Error (%d)", result);
+     } else {
+-        slapi_task_log_notice(task, "Automember rebuild task finished. Processed (%d) entries.", (int32_t)i);
+-        slapi_task_log_status(task, "Automember rebuild task finished. Processed (%d) entries.", (int32_t)i);
++        slapi_task_log_notice(task, "Automember rebuild task finished. Processed (%ld) entries in %ld seconds",
++                (int64_t)i, slapi_current_rel_time_t() - fixup_start_time);
++        slapi_task_log_status(task, "Automember rebuild task finished. Processed (%ld) entries in %ld seconds",
++                (int64_t)i, slapi_current_rel_time_t() - fixup_start_time);
+     }
+     slapi_task_inc_progress(task);
+     slapi_task_finish(task, result);
+     slapi_task_dec_refcount(task);
+     slapi_atomic_store_64(&abort_rebuild_task, 0, __ATOMIC_RELEASE);
++    slapi_td_unblock_nested_post_op();
++    PR_Lock(fixup_lock);
++    fixup_running = PR_FALSE;
++    PR_Unlock(fixup_lock);
++
+     slapi_log_err(SLAPI_LOG_PLUGIN, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+-                  "automember_rebuild_task_thread - Refcount decremented.\n");
++                  "automember_rebuild_task_thread - task finished, refcount decremented.\n");
+ }
+ 
+ /*
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_add.c b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+index ba2d73a84..ce4c314a1 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_add.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2022 Red Hat, Inc.
+  * Copyright (C) 2009 Hewlett-Packard Development Company, L.P.
+  * All rights reserved.
+  *
+@@ -1264,10 +1264,6 @@ ldbm_back_add(Slapi_PBlock *pb)
+     goto common_return;
+ 
+ error_return:
+-    /* Revert the caches if this is the parent operation */
+-    if (parent_op && betxn_callback_fails) {
+-        revert_cache(inst, &parent_time);
+-    }
+     if (addingentry_id_assigned) {
+         next_id_return(be, addingentry->ep_id);
+     }
+@@ -1376,6 +1372,11 @@ diskfull_return:
+         if (!not_an_error) {
+             rc = SLAPI_FAIL_GENERAL;
+         }
++
++        /* Revert the caches if this is the parent operation */
++        if (parent_op && betxn_callback_fails) {
++            revert_cache(inst, &parent_time);
++        }
+     }
+ 
+ common_return:
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_delete.c b/ldap/servers/slapd/back-ldbm/ldbm_delete.c
+index de23190c3..27f0ac58a 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_delete.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_delete.c
+@@ -1407,11 +1407,6 @@ commit_return:
+     goto common_return;
+ 
+ error_return:
+-    /* Revert the caches if this is the parent operation */
+-    if (parent_op && betxn_callback_fails) {
+-        revert_cache(inst, &parent_time);
+-    }
+-
+     if (tombstone) {
+         if (cache_is_in_cache(&inst->inst_cache, tombstone)) {
+             tomb_ep_id = tombstone->ep_id; /* Otherwise, tombstone might have been freed. */
+@@ -1496,6 +1491,11 @@ error_return:
+                       conn_id, op_id, parent_modify_c.old_entry, parent_modify_c.new_entry, myrc);
+     }
+ 
++    /* Revert the caches if this is the parent operation */
++    if (parent_op && betxn_callback_fails) {
++        revert_cache(inst, &parent_time);
++    }
++
+ common_return:
+     if (orig_entry) {
+         /* NOTE: #define SLAPI_DELETE_BEPREOP_ENTRY SLAPI_ENTRY_PRE_OP */
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modify.c b/ldap/servers/slapd/back-ldbm/ldbm_modify.c
+index 537369055..64b293001 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modify.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modify.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2022 Red Hat, Inc.
+  * Copyright (C) 2009 Hewlett-Packard Development Company, L.P.
+  * All rights reserved.
+  *
+@@ -1043,11 +1043,6 @@ ldbm_back_modify(Slapi_PBlock *pb)
+     goto common_return;
+ 
+ error_return:
+-    /* Revert the caches if this is the parent operation */
+-    if (parent_op && betxn_callback_fails) {
+-        revert_cache(inst, &parent_time);
+-    }
+-
+     if (postentry != NULL) {
+         slapi_entry_free(postentry);
+         postentry = NULL;
+@@ -1103,6 +1098,10 @@ error_return:
+         if (!not_an_error) {
+             rc = SLAPI_FAIL_GENERAL;
+         }
++        /* Revert the caches if this is the parent operation */
++        if (parent_op && betxn_callback_fails) {
++            revert_cache(inst, &parent_time);
++        }
+     }
+ 
+     /* if ec is in cache, remove it, then add back e if we still have it */
+diff --git a/src/lib389/lib389/cli_conf/plugins/automember.py b/src/lib389/lib389/cli_conf/plugins/automember.py
+index 15b00c633..568586ad8 100644
+--- a/src/lib389/lib389/cli_conf/plugins/automember.py
++++ b/src/lib389/lib389/cli_conf/plugins/automember.py
+@@ -155,7 +155,7 @@ def fixup(inst, basedn, log, args):
+     log.info('Attempting to add task entry... This will fail if Automembership plug-in is not enabled.')
+     if not plugin.status():
+         log.error("'%s' is disabled. Rebuild membership task can't be executed" % plugin.rdn)
+-    fixup_task = plugin.fixup(args.DN, args.filter)
++    fixup_task = plugin.fixup(args.DN, args.filter, args.cleanup)
+     if args.wait:
+         log.info(f'Waiting for fixup task "{fixup_task.dn}" to complete.  You can safely exit by pressing Control C ...')
+         fixup_task.wait(timeout=args.timeout)
+@@ -225,8 +225,8 @@ def create_parser(subparsers):
+     subcommands = automember.add_subparsers(help='action')
+     add_generic_plugin_parsers(subcommands, AutoMembershipPlugin)
+ 
+-    list = subcommands.add_parser('list', help='List Automembership definitions or regex rules.')
+-    subcommands_list = list.add_subparsers(help='action')
++    automember_list = subcommands.add_parser('list', help='List Automembership definitions or regex rules.')
++    subcommands_list = automember_list.add_subparsers(help='action')
+     list_definitions = subcommands_list.add_parser('definitions', help='Lists Automembership definitions.')
+     list_definitions.set_defaults(func=definition_list)
+     list_regexes = subcommands_list.add_parser('regexes', help='List Automembership regex rules.')
+@@ -269,6 +269,8 @@ def create_parser(subparsers):
+     fixup_task.add_argument('-f', '--filter', required=True, help='Sets the LDAP filter for entries to fix up')
+     fixup_task.add_argument('-s', '--scope', required=True, choices=['sub', 'base', 'one'], type=str.lower,
+                             help='Sets the LDAP search scope for entries to fix up')
++    fixup_task.add_argument('--cleanup', action='store_true',
++                            help="Clean up previous group memberships before rebuilding")
+     fixup_task.add_argument('--wait', action='store_true',
+                             help="Wait for the task to finish, this could take a long time")
+     fixup_task.add_argument('--timeout', default=0, type=int,
+@@ -279,7 +281,7 @@ def create_parser(subparsers):
+     fixup_status.add_argument('--dn', help="The task entry's DN")
+     fixup_status.add_argument('--show-log', action='store_true', help="Display the task log")
+     fixup_status.add_argument('--watch', action='store_true',
+-                       help="Watch the task's status and wait for it to finish")
++                              help="Watch the task's status and wait for it to finish")
+ 
+     abort_fixup = subcommands.add_parser('abort-fixup', help='Abort the rebuild membership task.')
+     abort_fixup.set_defaults(func=abort)
+diff --git a/src/lib389/lib389/plugins.py b/src/lib389/lib389/plugins.py
+index 52691a44c..a1ad0a45b 100644
+--- a/src/lib389/lib389/plugins.py
++++ b/src/lib389/lib389/plugins.py
+@@ -1141,13 +1141,15 @@ class AutoMembershipPlugin(Plugin):
+     def __init__(self, instance, dn="cn=Auto Membership Plugin,cn=plugins,cn=config"):
+         super(AutoMembershipPlugin, self).__init__(instance, dn)
+ 
+-    def fixup(self, basedn, _filter=None):
++    def fixup(self, basedn, _filter=None, cleanup=False):
+         """Create an automember rebuild membership task
+ 
+         :param basedn: Basedn to fix up
+         :type basedn: str
+         :param _filter: a filter for entries to fix up
+         :type _filter: str
++        :param cleanup: cleanup old group memberships
++        :type cleanup: boolean
+ 
+         :returns: an instance of Task(DSLdapObject)
+         """
+@@ -1156,6 +1158,9 @@ class AutoMembershipPlugin(Plugin):
+         task_properties = {'basedn': basedn}
+         if _filter is not None:
+             task_properties['filter'] = _filter
++        if cleanup:
++            task_properties['cleanup'] = "yes"
++
+         task.create(properties=task_properties)
+ 
+         return task
+diff --git a/src/lib389/lib389/tasks.py b/src/lib389/lib389/tasks.py
+index 1a16bbb83..193805780 100644
+--- a/src/lib389/lib389/tasks.py
++++ b/src/lib389/lib389/tasks.py
+@@ -1006,12 +1006,13 @@ class Tasks(object):
+         return exitCode
+ 
+     def automemberRebuild(self, suffix=DEFAULT_SUFFIX, scope='sub',
+-                          filterstr='objectclass=top', args=None):
++                          filterstr='objectclass=top', cleanup=False, args=None):
+         '''
+-        @param suffix - The suffix the task should examine - defualt is
++        @param suffix - The suffix the task should examine - default is
+                         "dc=example,dc=com"
+         @param scope - The scope of the search to find entries
+-        @param fitlerstr - THe search filter to find entries
++        @param fitlerstr - The search filter to find entries
++        @param cleanup - reset/clear the old group mmeberships prior to rebuilding
+         @param args - is a dictionary that contains modifier of the task
+                 wait: True/[False] - If True,  waits for the completion of
+                                      the task before to return
+@@ -1027,6 +1028,8 @@ class Tasks(object):
+         entry.setValues('basedn', suffix)
+         entry.setValues('filter', filterstr)
+         entry.setValues('scope', scope)
++        if cleanup:
++            entry.setValues('cleanup', 'yes')
+ 
+         # start the task and possibly wait for task completion
+         try:
+-- 
+2.43.0
+
