@@ -47,8 +47,8 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.4.5
-Release:          6%{?dist}
-License:          GPLv3+ and (ASL 2.0 or MIT) and MIT and (Unlicense or MIT) and (0BSD or MIT or ASL 2.0) and MPLv2.0 and ASL 2.0 and (MIT or zlib or ASL 2.0) and ((MIT or ASL 2.0) and Unicode-DFS-2016) and (ASL 2.0 or Boost) and BSD
+Release:          8%{?dist}
+License:          GPL-3.0-or-later AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-DFS-2016 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
 Conflicts:        freeipa-server < 4.0.3
@@ -66,7 +66,6 @@ Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.1.0
 Provides:  bundled(crate(backtrace)) = 0.3.69
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 1.3.2
 Provides:  bundled(crate(bitflags)) = 2.4.1
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.9.1
@@ -80,8 +79,6 @@ Provides:  bundled(crate(crossbeam-deque)) = 0.8.5
 Provides:  bundled(crate(crossbeam-epoch)) = 0.9.18
 Provides:  bundled(crate(crossbeam-queue)) = 0.3.11
 Provides:  bundled(crate(crossbeam-utils)) = 0.8.19
-Provides:  bundled(crate(entryuuid)) = 0.1.0
-Provides:  bundled(crate(entryuuid_syntax)) = 0.1.0
 Provides:  bundled(crate(errno)) = 0.3.8
 Provides:  bundled(crate(fastrand)) = 2.0.1
 Provides:  bundled(crate(fernet)) = 0.1.4
@@ -95,8 +92,6 @@ Provides:  bundled(crate(instant)) = 0.1.12
 Provides:  bundled(crate(itoa)) = 1.0.10
 Provides:  bundled(crate(jobserver)) = 0.1.27
 Provides:  bundled(crate(libc)) = 0.2.152
-Provides:  bundled(crate(librnsslapd)) = 0.1.0
-Provides:  bundled(crate(librslapd)) = 0.1.0
 Provides:  bundled(crate(linux-raw-sys)) = 0.4.12
 Provides:  bundled(crate(lock_api)) = 0.4.11
 Provides:  bundled(crate(log)) = 0.4.20
@@ -117,25 +112,20 @@ Provides:  bundled(crate(pkg-config)) = 0.3.28
 Provides:  bundled(crate(ppv-lite86)) = 0.2.17
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
 Provides:  bundled(crate(proc-macro2)) = 1.0.76
-Provides:  bundled(crate(pwdchan)) = 0.1.0
 Provides:  bundled(crate(quote)) = 1.0.35
 Provides:  bundled(crate(rand)) = 0.8.5
 Provides:  bundled(crate(rand_chacha)) = 0.3.1
 Provides:  bundled(crate(rand_core)) = 0.6.4
-Provides:  bundled(crate(redox_syscall)) = 0.2.16
 Provides:  bundled(crate(redox_syscall)) = 0.4.1
 Provides:  bundled(crate(rustc-demangle)) = 0.1.23
-Provides:  bundled(crate(rustix)) = 0.38.28
+Provides:  bundled(crate(rustix)) = 0.38.30
 Provides:  bundled(crate(ryu)) = 1.0.16
 Provides:  bundled(crate(scopeguard)) = 1.2.0
 Provides:  bundled(crate(serde)) = 1.0.195
 Provides:  bundled(crate(serde_derive)) = 1.0.195
 Provides:  bundled(crate(serde_json)) = 1.0.111
-Provides:  bundled(crate(slapd)) = 0.1.0
-Provides:  bundled(crate(slapi_r_plugin)) = 0.1.0
-Provides:  bundled(crate(smallvec)) = 1.11.2
+Provides:  bundled(crate(smallvec)) = 1.12.0
 Provides:  bundled(crate(strsim)) = 0.8.0
-Provides:  bundled(crate(syn)) = 1.0.109
 Provides:  bundled(crate(syn)) = 2.0.48
 Provides:  bundled(crate(tempfile)) = 3.9.0
 Provides:  bundled(crate(textwrap)) = 0.11.0
@@ -295,6 +285,8 @@ Source4:          389-ds-base.sysusers
 Patch0:           0001-Issue-3527-Support-HAProxy-and-Instance-on-the-same-.patch
 Patch1:           0002-Issue-6112-RFE-add-new-operation-note-for-MFA-authen.patch
 Patch2:           0003-Issue-6133-Move-slapi_pblock_set_flag_operation_note.patch
+Patch3:           0004-CVE-2024-2199.patch
+Patch4:           0005-CVE-2024-3657.patch
 
 
 %description
@@ -738,6 +730,15 @@ exit 0
 %endif
 
 %changelog
+* Fri May 31 2024 Viktor Ashirov <vashirov@redhat.com> - 2.4.5-8
+- Bump version to 2.4.5-8
+- Fix License tag
+
+* Tue Apr 30 2024 James Chapman <jachapma@redhat.com> - 2.4.5-7
+- Bump version to 2.4.5-7
+- Resolves: RHEL-34819 - redhat-ds:11/389-ds-base: Malformed userPassword may cause crash at do_modify in slapd/modify.c
+- Resolves: RHEL-34825 - redhat-ds:11/389-ds-base: potential denial of service via specially crafted kerberos AS-REQ requ
+
 * Thu Apr 04 2024 Viktor Ashirov <vashirov@redhat.com> - 2.4.5-6
 - Bump version to 2.4.5-6
 - Resolves: RHEL-30588 - [RFE] allows plugins to log multi-factor authentication notification
