@@ -1,0 +1,143 @@
+From 6e5f03d5872129963106024f53765234a282406c Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Fri, 16 Feb 2024 11:13:16 +0000
+Subject: [PATCH] Issue 6096 - Improve connection timeout error logging (#6097)
+
+Bug description: When a paged result search is run with a time limit,
+if the time limit is exceed the server closes the connection with
+closed IO timeout (nsslapd-ioblocktimeout) - T2. This error message
+is incorrect as the reason the connection has been closed was because
+the specified time limit on a paged result search has been exceeded.
+
+Fix description: Correct error message
+
+Relates: https://github.com/389ds/389-ds-base/issues/6096
+
+Reviewed by: @tbordaz (Thank you)
+---
+ ldap/admin/src/logconv.pl                     | 24 ++++++++++++++++++-
+ ldap/servers/slapd/daemon.c                   |  4 ++--
+ ldap/servers/slapd/disconnect_error_strings.h |  1 +
+ ldap/servers/slapd/disconnect_errors.h        |  2 +-
+ 4 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/admin/src/logconv.pl b/ldap/admin/src/logconv.pl
+index 7698c383a..2a933c4a3 100755
+--- a/ldap/admin/src/logconv.pl
++++ b/ldap/admin/src/logconv.pl
+@@ -267,7 +267,7 @@ my $optimeAvg = 0;
+ my %cipher = ();
+ my @removefiles = ();
+ 
+-my @conncodes = qw(A1 B1 B4 T1 T2 B2 B3 R1 P1 P2 U1);
++my @conncodes = qw(A1 B1 B4 T1 T2 T3 B2 B3 R1 P1 P2 U1);
+ my %conn = ();
+ map {$conn{$_} = $_} @conncodes;
+ 
+@@ -355,6 +355,7 @@ $connmsg{"B1"} = "Bad Ber Tag Encountered";
+ $connmsg{"B4"} = "Server failed to flush data (response) back to Client";
+ $connmsg{"T1"} = "Idle Timeout Exceeded";
+ $connmsg{"T2"} = "IO Block Timeout Exceeded or NTSSL Timeout";
++$connmsg{"T3"} = "Paged Search Time Limit Exceeded";
+ $connmsg{"B2"} = "Ber Too Big";
+ $connmsg{"B3"} = "Ber Peek";
+ $connmsg{"R1"} = "Revents";
+@@ -1723,6 +1724,10 @@ if ($usage =~ /j/i || $verb eq "yes"){
+ 		print "\n $recCount.  You have some coonections that are being closed by the ioblocktimeout setting. You may want to increase the ioblocktimeout.\n";
+ 		$recCount++;
+ 	}
++	if (defined($conncount->{"T3"}) and $conncount->{"T3"} > 0){
++		print "\n $recCount.  You have some connections that are being closed because a paged result search limit has been exceeded. You may want to increase the search time limit.\n";
++		$recCount++;
++	}
+ 	# compare binds to unbinds, if the difference is more than 30% of the binds, then report a issue
+ 	if (($bindCount - $unbindCount) > ($bindCount*.3)){
+ 		print "\n $recCount.  You have a significant difference between binds and unbinds.  You may want to investigate this difference.\n";
+@@ -2366,6 +2371,7 @@ sub parseLineNormal
+ 		$brokenPipeCount++;
+ 		if (m/- T1/){ $hashes->{rc}->{"T1"}++; }
+ 		elsif (m/- T2/){ $hashes->{rc}->{"T2"}++; }
++		elsif (m/- T3/){ $hashes->{rc}->{"T3"}++; }
+ 		elsif (m/- A1/){ $hashes->{rc}->{"A1"}++; }
+ 		elsif (m/- B1/){ $hashes->{rc}->{"B1"}++; }
+ 		elsif (m/- B4/){ $hashes->{rc}->{"B4"}++; }
+@@ -2381,6 +2387,7 @@ sub parseLineNormal
+ 		$connResetByPeerCount++;
+ 		if (m/- T1/){ $hashes->{src}->{"T1"}++; }
+ 		elsif (m/- T2/){ $hashes->{src}->{"T2"}++; }
++		elsif (m/- T3/){ $hashes->{src}->{"T3"}++; }
+ 		elsif (m/- A1/){ $hashes->{src}->{"A1"}++; }
+ 		elsif (m/- B1/){ $hashes->{src}->{"B1"}++; }
+ 		elsif (m/- B4/){ $hashes->{src}->{"B4"}++; }
+@@ -2396,6 +2403,7 @@ sub parseLineNormal
+ 		$resourceUnavailCount++;
+ 		if (m/- T1/){ $hashes->{rsrc}->{"T1"}++; }
+ 		elsif (m/- T2/){ $hashes->{rsrc}->{"T2"}++; }
++		elsif (m/- T3/){ $hashes->{rsrc}->{"T3"}++; }
+ 		elsif (m/- A1/){ $hashes->{rsrc}->{"A1"}++; }
+ 		elsif (m/- B1/){ $hashes->{rsrc}->{"B1"}++; }
+ 		elsif (m/- B4/){ $hashes->{rsrc}->{"B4"}++; }
+@@ -2494,6 +2502,20 @@ sub parseLineNormal
+ 				}
+ 			}
+ 		}
++		if (m/- T3/){
++			if ($_ =~ /conn= *([0-9A-Z]+)/i) {
++				$exc = "no";
++				$ip = getIPfromConn($1, $serverRestartCount);
++				for (my $xxx = 0; $xxx < $#excludeIP; $xxx++){
++					if ($ip eq $excludeIP[$xxx]){$exc = "yes";}
++				}
++				if ($exc ne "yes"){
++					$hashes->{T3}->{$ip}++;
++					$hashes->{conncount}->{"T3"}++;
++					$connCodeCount++;
++				}
++			}
++		}
+ 		if (m/- B2/){
+ 			if ($_ =~ /conn= *([0-9A-Z]+)/i) {
+ 				$exc = "no";
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 5a48aa66f..bb80dae36 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -1599,9 +1599,9 @@ setup_pr_read_pds(Connection_Table *ct)
+                     int add_fd = 1;
+                     /* check timeout for PAGED RESULTS */
+                     if (pagedresults_is_timedout_nolock(c)) {
+-                        /* Exceeded the timelimit; disconnect the client */
++                        /* Exceeded the paged search timelimit; disconnect the client */
+                         disconnect_server_nomutex(c, c->c_connid, -1,
+-                                                  SLAPD_DISCONNECT_IO_TIMEOUT,
++                                                  SLAPD_DISCONNECT_PAGED_SEARCH_LIMIT,
+                                                   0);
+                         connection_table_move_connection_out_of_active_list(ct,
+                                                                             c);
+diff --git a/ldap/servers/slapd/disconnect_error_strings.h b/ldap/servers/slapd/disconnect_error_strings.h
+index f7a31d728..c2d9e283b 100644
+--- a/ldap/servers/slapd/disconnect_error_strings.h
++++ b/ldap/servers/slapd/disconnect_error_strings.h
+@@ -27,6 +27,7 @@ ER2(SLAPD_DISCONNECT_BER_FLUSH, "B4")
+ ER2(SLAPD_DISCONNECT_IDLE_TIMEOUT, "T1")
+ ER2(SLAPD_DISCONNECT_REVENTS, "R1")
+ ER2(SLAPD_DISCONNECT_IO_TIMEOUT, "T2")
++ER2(SLAPD_DISCONNECT_PAGED_SEARCH_LIMIT, "T3")
+ ER2(SLAPD_DISCONNECT_PLUGIN, "P1")
+ ER2(SLAPD_DISCONNECT_UNBIND, "U1")
+ ER2(SLAPD_DISCONNECT_POLL, "P2")
+diff --git a/ldap/servers/slapd/disconnect_errors.h b/ldap/servers/slapd/disconnect_errors.h
+index a0484f1c2..e118f674c 100644
+--- a/ldap/servers/slapd/disconnect_errors.h
++++ b/ldap/servers/slapd/disconnect_errors.h
+@@ -35,6 +35,6 @@
+ #define SLAPD_DISCONNECT_SASL_FAIL SLAPD_DISCONNECT_ERROR_BASE + 12
+ #define SLAPD_DISCONNECT_PROXY_INVALID_HEADER SLAPD_DISCONNECT_ERROR_BASE + 13
+ #define SLAPD_DISCONNECT_PROXY_UNKNOWN SLAPD_DISCONNECT_ERROR_BASE + 14
+-
++#define SLAPD_DISCONNECT_PAGED_SEARCH_LIMIT SLAPD_DISCONNECT_ERROR_BASE + 15
+ 
+ #endif /* __DISCONNECT_ERRORS_H_ */
+-- 
+2.45.0
+

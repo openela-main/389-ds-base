@@ -48,7 +48,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}3%{?prerel}%{?dist}
+Release:          %{?relprefix}7%{?prerel}%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -297,7 +297,12 @@ Patch01:          0001-issue-5647-covscan-memory-leak-in-audit-log-when-add.patc
 Patch02:          0002-Issue-5647-Fix-unused-variable-warning-from-previous.patch
 Patch03:          0003-Issue-5407-sync_repl-crashes-if-enabled-while-dynami.patch
 Patch04:          0004-Issue-5547-automember-plugin-improvements.patch
-Patch05:          0001-Issue-3527-Support-HAProxy-and-Instance-on-the-same-.patch
+Patch05:          0005-Issue-3527-Support-HAProxy-and-Instance-on-the-same-.patch
+Patch06:          0006-CVE-2024-2199.patch
+Patch07:          0007-CVE-2024-3657.patch
+Patch08:          0008-Issue-6096-Improve-connection-timeout-error-logging-.patch
+Patch09:          0009-Issue-6103-New-connection-timeout-error-breaks-error.patch
+Patch10:          0010-Issue-6103-New-connection-timeout-error-breaks-error.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -919,6 +924,23 @@ exit 0
 %doc README.md
 
 %changelog
+* Thu Jun 13 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-7
+- Bump version to 1.4.3.39-7
+- Resolves: RHEL-16277 - LDAP connections are closed with code T2 before the IO block timeout is reached. [rhel-8.10.0.z]
+
+* Thu Jun 13 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-6
+- Bump version to 1.4.3.39-6
+- Resolves: RHEL-16277 - LDAP connections are closed with code T2 before the IO block timeout is reached. [rhel-8.10.0.z]
+
+* Tue Jun 11 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-5
+- Bump version to 1.4.3.39-5
+- Resolves: RHEL-16277 - LDAP connections are closed with code T2 before the IO block timeout is reached. [rhel-8.10.0.z]
+
+* Thu Jun 06 2024 James Chapman <jachapma@redhat.com> - 1.4.3.39-4
+- Bump version to 1.4.3.39-4
+- Resolves: RHEL-34818 - redhat-ds:11/389-ds-base: Malformed userPassword may cause crash at do_modify in slapd/modify.c
+- Resolves: RHEL-34824 - redhat-ds:11/389-ds-base: potential denial of service via specially crafted kerberos AS-REQ request
+
 * Thu Mar 14 2024 Simon Pichugin <spichugi@redhat.com> - 1.4.3.39-3
 - Bump version to 1.4.3.39-3
 - Resolves: RHEL-19240 - RFE Add PROXY protocol support to 389-ds-base via confiuration item - similar to Postfix

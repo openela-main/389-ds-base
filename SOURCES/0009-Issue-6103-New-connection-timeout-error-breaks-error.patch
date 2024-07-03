@@ -1,0 +1,44 @@
+From a112394af3a20787755029804684d57a9c3ffa9a Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Wed, 21 Feb 2024 12:43:03 +0000
+Subject: [PATCH] Issue 6103 - New connection timeout error breaks errormap
+ (#6104)
+
+Bug description: A recent addition to the connection disconnect error
+messaging, conflicts with how errormap.c maps error codes/strings.
+
+Fix description: errormap expects error codes/strings to be in ascending
+order. Moved the new error code to the bottom of the list.
+
+Relates: https://github.com/389ds/389-ds-base/issues/6103
+
+Reviewed by: @droideck. @progier389  (Thank you)
+---
+ ldap/servers/slapd/disconnect_error_strings.h | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/ldap/servers/slapd/disconnect_error_strings.h b/ldap/servers/slapd/disconnect_error_strings.h
+index c2d9e283b..f603a08ce 100644
+--- a/ldap/servers/slapd/disconnect_error_strings.h
++++ b/ldap/servers/slapd/disconnect_error_strings.h
+@@ -14,7 +14,8 @@
+ /* disconnect_error_strings.h
+  *
+  * Strings describing the errors used in logging the reason a connection
+- * was closed.
++ * was closed. Ensure definitions are in the same order as the error codes
++ * defined in disconnect_errors.h
+  */
+ #ifndef __DISCONNECT_ERROR_STRINGS_H_
+ #define __DISCONNECT_ERROR_STRINGS_H_
+@@ -35,6 +36,6 @@ ER2(SLAPD_DISCONNECT_NTSSL_TIMEOUT, "T2")
+ ER2(SLAPD_DISCONNECT_SASL_FAIL, "S1")
+ ER2(SLAPD_DISCONNECT_PROXY_INVALID_HEADER, "P3")
+ ER2(SLAPD_DISCONNECT_PROXY_UNKNOWN, "P4")
+-
++ER2(SLAPD_DISCONNECT_PAGED_SEARCH_LIMIT, "T3")
+ 
+ #endif /* __DISCONNECT_ERROR_STRINGS_H_ */
+-- 
+2.45.0
+

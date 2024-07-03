@@ -1,4 +1,4 @@
-From 7d1bc439a07c51b5f4f37405b6b27a1990b8cb28 Mon Sep 17 00:00:00 2001
+From 9319d5b022918f14cacb00e3faef85a6ab730a26 Mon Sep 17 00:00:00 2001
 From: Simon Pichugin <spichugi@redhat.com>
 Date: Tue, 27 Feb 2024 16:30:47 -0800
 Subject: [PATCH] Issue 3527 - Support HAProxy and Instance on the same machine
@@ -79,5 +79,5 @@ index d28a39bf7..10a8cc577 100644
                              slapi_log_err(SLAPI_LOG_CONNS, "connection_read_operation", "HAProxy header received from unknown source.\n");
                              disconnect_server_nomutex(conn, conn->c_connid, -1, SLAPD_DISCONNECT_PROXY_UNKNOWN, EPROTO);
 -- 
-2.43.0
+2.45.0
 

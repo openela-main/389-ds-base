@@ -1,0 +1,30 @@
+From edd9abc8901604dde1d739d87ca2906734d53dd3 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Thu, 13 Jun 2024 13:35:09 +0200
+Subject: [PATCH] Issue 6103 - New connection timeout error breaks errormap
+
+Description:
+Remove duplicate SLAPD_DISCONNECT_PAGED_SEARCH_LIMIT error code.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6103
+
+Reviewed by: @tbordaz (Thanks!)
+---
+ ldap/servers/slapd/disconnect_error_strings.h | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/disconnect_error_strings.h b/ldap/servers/slapd/disconnect_error_strings.h
+index f603a08ce..d49cc79a2 100644
+--- a/ldap/servers/slapd/disconnect_error_strings.h
++++ b/ldap/servers/slapd/disconnect_error_strings.h
+@@ -28,7 +28,6 @@ ER2(SLAPD_DISCONNECT_BER_FLUSH, "B4")
+ ER2(SLAPD_DISCONNECT_IDLE_TIMEOUT, "T1")
+ ER2(SLAPD_DISCONNECT_REVENTS, "R1")
+ ER2(SLAPD_DISCONNECT_IO_TIMEOUT, "T2")
+-ER2(SLAPD_DISCONNECT_PAGED_SEARCH_LIMIT, "T3")
+ ER2(SLAPD_DISCONNECT_PLUGIN, "P1")
+ ER2(SLAPD_DISCONNECT_UNBIND, "U1")
+ ER2(SLAPD_DISCONNECT_POLL, "P2")
+-- 
+2.45.0
+
