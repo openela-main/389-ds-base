@@ -48,7 +48,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}7%{?prerel}%{?dist}
+Release:          %{?relprefix}8%{?prerel}%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -303,6 +303,8 @@ Patch07:          0007-CVE-2024-3657.patch
 Patch08:          0008-Issue-6096-Improve-connection-timeout-error-logging-.patch
 Patch09:          0009-Issue-6103-New-connection-timeout-error-breaks-error.patch
 Patch10:          0010-Issue-6103-New-connection-timeout-error-breaks-error.patch
+Patch11:          0011-Issue-6172-RFE-improve-the-performance-of-evaluation.patch
+Patch12:          0012-Security-fix-for-CVE-2024-5953.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -924,6 +926,11 @@ exit 0
 %doc README.md
 
 %changelog
+* Mon Sep 09 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-8
+- Bump version to 1.4.3.39-8
+- Resolves: RHEL-40943 - CVE-2024-5953 389-ds:1.4/389-ds-base: Malformed userPassword hash may cause Denial of Service [rhel-8.10.z]
+- Resolves: RHEL-58069 - perf search result investigation for many large static groups and members [rhel-8.10.0.z]
+
 * Thu Jun 13 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-7
 - Bump version to 1.4.3.39-7
 - Resolves: RHEL-16277 - LDAP connections are closed with code T2 before the IO block timeout is reached. [rhel-8.10.0.z]
