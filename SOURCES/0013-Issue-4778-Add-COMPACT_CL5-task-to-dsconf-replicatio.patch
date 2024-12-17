@@ -1,0 +1,178 @@
+From e8a5b1deef1b455aafecb71efc029d2407b1b06f Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Tue, 16 Jul 2024 08:32:21 -0700
+Subject: [PATCH] Issue 4778 - Add COMPACT_CL5 task to dsconf replication
+ (#6260)
+
+Description: In 1.4.3, the changelog is not part of a backend.
+It can be compacted with nsds5task: CAMPACT_CL5 as part of the replication entry.
+Add the task as a compact-changelog command under the dsconf replication tool.
+Add tests for the feature and fix old tests.
+
+Related: https://github.com/389ds/389-ds-base/issues/4778
+
+Reviewed by: @progier389 (Thanks!)
+---
+ .../tests/suites/config/compact_test.py       | 36 ++++++++++++++---
+ src/lib389/lib389/cli_conf/replication.py     | 10 +++++
+ src/lib389/lib389/replica.py                  | 40 +++++++++++++++++++
+ 3 files changed, 81 insertions(+), 5 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/config/compact_test.py b/dirsrvtests/tests/suites/config/compact_test.py
+index 317258d0e..31d98d10c 100644
+--- a/dirsrvtests/tests/suites/config/compact_test.py
++++ b/dirsrvtests/tests/suites/config/compact_test.py
+@@ -13,14 +13,14 @@ import time
+ import datetime
+ from lib389.tasks import DBCompactTask
+ from lib389.backend import DatabaseConfig
+-from lib389.replica import Changelog5
++from lib389.replica import Changelog5, Replicas
+ from lib389.topologies import topology_m1 as topo
+ 
+ log = logging.getLogger(__name__)
+ 
+ 
+ def test_compact_db_task(topo):
+-    """Specify a test case purpose or name here
++    """Test compaction of database
+ 
+     :id: 1b3222ef-a336-4259-be21-6a52f76e1859
+     :setup: Standalone Instance
+@@ -48,7 +48,7 @@ def test_compact_db_task(topo):
+ 
+ 
+ def test_compaction_interval_and_time(topo):
+-    """Specify a test case purpose or name here
++    """Test compaction interval and time for database and changelog
+ 
+     :id: f361bee9-d7e7-4569-9255-d7b60dd9d92e
+     :setup: Supplier Instance
+@@ -95,10 +95,36 @@ def test_compaction_interval_and_time(topo):
+ 
+     # Check compaction occurred as expected
+     time.sleep(45)
+-    assert not inst.searchErrorsLog("Compacting databases")
++    assert not inst.searchErrorsLog("compacting replication changelogs")
+ 
+     time.sleep(90)
+-    assert inst.searchErrorsLog("Compacting databases")
++    assert inst.searchErrorsLog("compacting replication changelogs")
++    inst.deleteErrorLogs(restart=False)
++
++
++def test_compact_cl5_task(topo):
++    """Test compaction of changelog5 database
++
++    :id: aadfa9f7-73c0-463a-912c-0a29aa1f8167
++    :setup: Standalone Instance
++    :steps:
++        1. Run compaction task
++        2. Check errors log to show task was run
++    :expectedresults:
++        1. Success
++        2. Success
++    """
++    inst = topo.ms["supplier1"]
++
++    replicas = Replicas(inst)
++    replicas.compact_changelog(log=log)
++
++    # Check compaction occurred as expected. But instead of time.sleep(5) check 1 sec in loop
++    for _ in range(5):
++        time.sleep(1)
++        if inst.searchErrorsLog("compacting replication changelogs"):
++            break
++    assert inst.searchErrorsLog("compacting replication changelogs")
+     inst.deleteErrorLogs(restart=False)
+ 
+ 
+diff --git a/src/lib389/lib389/cli_conf/replication.py b/src/lib389/lib389/cli_conf/replication.py
+index 352c0ee5b..ccc394255 100644
+--- a/src/lib389/lib389/cli_conf/replication.py
++++ b/src/lib389/lib389/cli_conf/replication.py
+@@ -1199,6 +1199,11 @@ def restore_cl_dir(inst, basedn, log, args):
+     replicas.restore_changelog(replica_roots=args.REPLICA_ROOTS, log=log)
+ 
+ 
++def compact_cl5(inst, basedn, log, args):
++    replicas = Replicas(inst)
++    replicas.compact_changelog(replica_roots=args.REPLICA_ROOTS, log=log)
++
++
+ def create_parser(subparsers):
+ 
+     ############################################
+@@ -1326,6 +1331,11 @@ def create_parser(subparsers):
+                               help="Specify one replica root whose changelog you want to restore. "
+                                    "The replica root will be consumed from the LDIF file name if the option is omitted.")
+ 
++    compact_cl = repl_subcommands.add_parser('compact-changelog', help='Compact the changelog database')
++    compact_cl.set_defaults(func=compact_cl5)
++    compact_cl.add_argument('REPLICA_ROOTS', nargs="+",
++                            help="Specify replica roots whose changelog you want to compact.")
++
+     restore_changelogdir = restore_subcommands.add_parser('from-changelogdir', help='Restore LDIF files from changelogdir.')
+     restore_changelogdir.set_defaults(func=restore_cl_dir)
+     restore_changelogdir.add_argument('REPLICA_ROOTS', nargs="+",
+diff --git a/src/lib389/lib389/replica.py b/src/lib389/lib389/replica.py
+index 94e1fdad5..1f321972d 100644
+--- a/src/lib389/lib389/replica.py
++++ b/src/lib389/lib389/replica.py
+@@ -1648,6 +1648,11 @@ class Replica(DSLdapObject):
+         """
+         self.replace('nsds5task', 'ldif2cl')
+ 
++    def begin_task_compact_cl5(self):
++        """Begin COMPACT_CL5 task
++        """
++        self.replace('nsds5task', 'COMPACT_CL5')
++
+     def get_suffix(self):
+         """Return the suffix
+         """
+@@ -1829,6 +1834,41 @@ class Replicas(DSLdapObjects):
+                 log.error(f"Changelog LDIF for '{repl_root}' was not found")
+                 continue
+ 
++    def compact_changelog(self, replica_roots=[], log=None):
++        """Compact Directory Server replication changelog
++
++        :param replica_roots: Replica suffixes that need to be processed (and optional LDIF file path)
++        :type replica_roots: list of str
++        :param log: The logger object
++        :type log: logger
++        """
++
++        if log is None:
++            log = self._log
++
++        # Check if the changelog entry exists
++        try:
++            cl = Changelog5(self._instance)
++            cl.get_attr_val_utf8_l("nsslapd-changelogdir")
++        except ldap.NO_SUCH_OBJECT:
++            raise ValueError("Changelog entry was not found. Probably, the replication is not enabled on this instance")
++
++        # Get all the replicas on the server if --replica-roots option is not specified
++        repl_roots = []
++        if not replica_roots:
++            for replica in self.list():
++                repl_roots.append(replica.get_attr_val_utf8("nsDS5ReplicaRoot"))
++        else:
++            for repl_root in replica_roots:
++                repl_roots.append(repl_root)
++
++        # Dump the changelog for the replica
++
++        # Dump the changelog for the replica
++        for repl_root in repl_roots:
++            replica = self.get(repl_root)
++            replica.begin_task_compact_cl5()
++
+ 
+ class BootstrapReplicationManager(DSLdapObject):
+     """A Replication Manager credential for bootstrapping the repl process.
+-- 
+2.47.0
+

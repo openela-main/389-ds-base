@@ -48,7 +48,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}8%{?prerel}%{?dist}
+Release:          %{?relprefix}9%{?prerel}%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -305,6 +305,7 @@ Patch09:          0009-Issue-6103-New-connection-timeout-error-breaks-error.patc
 Patch10:          0010-Issue-6103-New-connection-timeout-error-breaks-error.patch
 Patch11:          0011-Issue-6172-RFE-improve-the-performance-of-evaluation.patch
 Patch12:          0012-Security-fix-for-CVE-2024-5953.patch
+Patch13:          0013-Issue-4778-Add-COMPACT_CL5-task-to-dsconf-replicatio.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -432,7 +433,7 @@ Requires:         python%{python3_pkgversion}-lib389
 A cockpit UI Plugin for configuring and administering the 389 Directory Server
 
 %prep
-%autosetup -p1 -v -n %{name}-%{version}%{?prerel}
+%autosetup -p1 -n %{name}-%{version}%{?prerel}
 %if %{use_rust}
 tar xvzf %{SOURCE4}
 cp %{SOURCE5} src/Cargo.lock
@@ -926,6 +927,9 @@ exit 0
 %doc README.md
 
 %changelog
+* Fri Nov 22 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-9
+- Resolves: RHEL-64360 - Cannot compact the replication changelog using dsconf. [rhel-8.10.z]
+
 * Mon Sep 09 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-8
 - Bump version to 1.4.3.39-8
 - Resolves: RHEL-40943 - CVE-2024-5953 389-ds:1.4/389-ds-base: Malformed userPassword hash may cause Denial of Service [rhel-8.10.z]
