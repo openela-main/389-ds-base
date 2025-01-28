@@ -48,7 +48,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}9%{?prerel}%{?dist}
+Release:          %{?relprefix}10%{?prerel}%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -306,7 +306,13 @@ Patch10:          0010-Issue-6103-New-connection-timeout-error-breaks-error.patc
 Patch11:          0011-Issue-6172-RFE-improve-the-performance-of-evaluation.patch
 Patch12:          0012-Security-fix-for-CVE-2024-5953.patch
 Patch13:          0013-Issue-4778-Add-COMPACT_CL5-task-to-dsconf-replicatio.patch
-
+Patch14:          0014-Issue-6417-If-an-entry-RDN-is-identical-to-the-suffi.patch
+Patch15:          0015-Issue-6224-d2entry-Could-not-open-id2entry-err-0-at-.patch
+Patch16:          0016-Issue-6224-Fix-merge-issue-in-389-ds-base-2.1-for-ds.patch
+Patch17:          0017-Issue-6224-Remove-test_referral_subsuffix-from-ds_lo.patch
+Patch18:          0018-Issue-6417-2nd-If-an-entry-RDN-is-identical-to-the-s.patch
+Patch19:          0019-Issue-6417-2nd-fix-typo.patch
+Patch20:          0020-Issue-6417-3rd-If-an-entry-RDN-is-identical-to-the-s.patch
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
 the LDAP server and command line utilities for server administration.
@@ -435,7 +441,7 @@ A cockpit UI Plugin for configuring and administering the 389 Directory Server
 %prep
 %autosetup -p1 -n %{name}-%{version}%{?prerel}
 %if %{use_rust}
-tar xvzf %{SOURCE4}
+tar xzf %{SOURCE4}
 cp %{SOURCE5} src/Cargo.lock
 %endif
 %if %{bundle_jemalloc}
@@ -927,6 +933,10 @@ exit 0
 %doc README.md
 
 %changelog
+* Fri Jan 17 2025 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-10
+- Resolves: RHEL-69822 - "Duplicated DN detected" errors when creating indexes or importing entries. [rhel-8.10.z]
+- Resolves: RHEL-71215 - Sub suffix causes "id2entry - Could not open id2entry err 0" error when the Directory Server starts [rhel-8.10.z]
+
 * Fri Nov 22 2024 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-9
 - Resolves: RHEL-64360 - Cannot compact the replication changelog using dsconf. [rhel-8.10.z]
 

@@ -1,0 +1,32 @@
+From ab06b3cebbe0287ef557c0307ca2ee86fe8cb761 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Thu, 21 Nov 2024 16:26:02 +0100
+Subject: [PATCH] Issue 6224 - Fix merge issue in 389-ds-base-2.1 for
+ ds_log_test.py (#6414)
+
+Fix a merge issue during cherry-pick over 389-ds-base-2.1 and 389-ds-base-1.4.3 branches
+
+Issue: #6224
+
+Reviewed by: @mreynolds389
+
+(cherry picked from commit 2b541c64b8317209e4dafa4f82918d714039907c)
+---
+ dirsrvtests/tests/suites/ds_logs/ds_logs_test.py | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+index 84a9c6ec8..812936c62 100644
+--- a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
++++ b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+@@ -1222,7 +1222,6 @@ def test_referral_check(topology_st, request):
+ 
+     request.addfinalizer(fin)
+ 
+-<<<<<<< HEAD
+ def test_referral_subsuffix(topology_st, request):
+     """Test the results of an inverted parent suffix definition in the configuration.
+ 
+-- 
+2.48.0
+

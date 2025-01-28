@@ -1,0 +1,75 @@
+From 9e1284122a929fe14633a2aa6e2de4d72891f98f Mon Sep 17 00:00:00 2001
+From: Thierry Bordaz <tbordaz@redhat.com>
+Date: Mon, 13 Jan 2025 17:41:18 +0100
+Subject: [PATCH] Issue 6417 - (3rd) If an entry RDN is identical to the
+ suffix, then Entryrdn gets broken during a reindex (#6480)
+
+Bug description:
+        The previous fix had a flaw.
+        In case entryrdn_lookup_dn is called with an undefined suffix
+        the lookup of the suffix trigger a crash.
+        For example it can occur during internal search of an
+        unexisting map (view plugin).
+        The issue exists in all releases but is hidden since 2.3.
+
+Fix description:
+        testing the suffix is defined
+
+fixes: #6417
+
+Reviewed by: Pierre Rogier (THnaks !)
+---
+ ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c | 36 +++++++++++---------
+ 1 file changed, 20 insertions(+), 16 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+index e2b8273a2..01c77156f 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+@@ -1176,23 +1176,27 @@ entryrdn_lookup_dn(backend *be,
+     /* Setting the bulk fetch buffer */
+     data.flags = DB_DBT_MALLOC;
+ 
+-    /* Just in case the suffix ID is not '1' retrieve it from the database */
+-    keybuf = slapi_ch_strdup(slapi_sdn_get_ndn(be->be_suffix));
+-    key.data = keybuf;
+-    key.size = key.ulen = strlen(keybuf) + 1;
+-    key.flags = DB_DBT_USERMEM;
+-    rc = cursor->c_get(cursor, &key, &data, DB_SET);
+-    if (rc) {
+-        slapi_log_err(SLAPI_LOG_WARNING, "entryrdn_lookup_dn",
+-                      "Fails to retrieve the ID of suffix %s - keep the default value '%d'\n",
+-                      slapi_sdn_get_ndn(be->be_suffix),
+-                      suffix_id);
+-    } else {
+-        elem = (rdn_elem *)data.data;
+-        suffix_id = id_stored_to_internal(elem->rdn_elem_id);
++    /* Just in case the suffix ID is not '1' retrieve it from the database
++     * if the suffix is not defined suffix_id remains '1'
++     */
++    if (be->be_suffix) {
++        keybuf = slapi_ch_strdup(slapi_sdn_get_ndn(be->be_suffix));
++        key.data = keybuf;
++        key.size = key.ulen = strlen(keybuf) + 1;
++        key.flags = DB_DBT_USERMEM;
++        rc = cursor->c_get(cursor, &key, &data, DB_SET);
++        if (rc) {
++            slapi_log_err(SLAPI_LOG_WARNING, "entryrdn_lookup_dn",
++                    "Fails to retrieve the ID of suffix %s - keep the default value '%d'\n",
++                    slapi_sdn_get_ndn(be->be_suffix),
++                    suffix_id);
++        } else {
++            elem = (rdn_elem *) data.data;
++            suffix_id = id_stored_to_internal(elem->rdn_elem_id);
++        }
++        slapi_ch_free(&data.data);
++        slapi_ch_free_string(&keybuf);
+     }
+-    slapi_ch_free(&data.data);
+-    slapi_ch_free_string(&keybuf);
+ 
+     do {
+         /* Setting up a key for the node to get its parent */
+-- 
+2.48.0
+

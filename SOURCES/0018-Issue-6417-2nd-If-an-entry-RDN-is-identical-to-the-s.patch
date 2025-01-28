@@ -1,0 +1,90 @@
+From 4121ffe7a44fbacf513758661e71e483eb11ee3c Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Mon, 6 Jan 2025 14:00:39 +0100
+Subject: [PATCH] Issue 6417 - (2nd) If an entry RDN is identical to the
+ suffix, then Entryrdn gets broken during a reindex (#6460)
+
+Bug description:
+	The primary fix has a flaw as it assumes that the
+	suffix ID is '1'.
+	If the RUV entry is the first entry of the database
+	the server loops indefinitely
+
+Fix description:
+	Read the suffix ID from the entryrdn index
+
+fixes: #6417
+
+Reviewed by: Pierre Rogier (also reviewed the first fix)
+---
+ .../suites/replication/regression_m2_test.py  |  9 +++++++++
+ ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c  | 19 ++++++++++++++++++-
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/dirsrvtests/tests/suites/replication/regression_m2_test.py b/dirsrvtests/tests/suites/replication/regression_m2_test.py
+index abac46ada..72d4b9f89 100644
+--- a/dirsrvtests/tests/suites/replication/regression_m2_test.py
++++ b/dirsrvtests/tests/suites/replication/regression_m2_test.py
+@@ -1010,6 +1010,15 @@ def test_online_reinit_may_hang(topo_with_sigkill):
+     """
+     M1 = topo_with_sigkill.ms["supplier1"]
+     M2 = topo_with_sigkill.ms["supplier2"]
++
++    # The RFE 5367 (when enabled) retrieves the DN
++    # from the dncache. This hides an issue
++    # with primary fix for 6417.
++    # We need to disable the RFE to verify that the primary
++    # fix is properly fixed.
++    if ds_is_newer('2.3.1'):
++        M1.config.replace('nsslapd-return-original-entrydn', 'off')
++
+     M1.stop()
+     ldif_file = '%s/supplier1.ldif' % M1.get_ldif_dir()
+     M1.db2ldif(bename=DEFAULT_BENAME, suffixes=[DEFAULT_SUFFIX],
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+index 83b041192..1bbb6252a 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+@@ -1115,6 +1115,7 @@ entryrdn_lookup_dn(backend *be,
+     rdn_elem *elem = NULL;
+     int maybesuffix = 0;
+     int db_retry = 0;
++    ID suffix_id = 1;
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, "entryrdn_lookup_dn",
+                   "--> entryrdn_lookup_dn\n");
+@@ -1175,6 +1176,22 @@ entryrdn_lookup_dn(backend *be,
+     /* Setting the bulk fetch buffer */
+     data.flags = DB_DBT_MALLOC;
+ 
++    /* Just in case the suffix ID is not '1' retrieve it from the database */
++    keybuf = slapi_ch_strdup(slapi_sdn_get_ndn(be->be_suffix));
++    dblayer_value_set(be, &key, keybuf, strlen(keybuf) + 1);
++    rc = dblayer_cursor_op(&ctx.cursor, DBI_OP_MOVE_TO_KEY, &key, &data);
++    if (rc) {
++        slapi_log_err(SLAPI_LOG_WARNING, "entryrdn_lookup_dn",
++                      "Fails to retrieve the ID of suffix %s - keep the default value '%d'\n",
++                      slapi_sdn_get_ndn(be->be_suffix),
++                      suffix_id);
++    } else {
++        elem = (rdn_elem *)data.data;
++        suffix_id = id_stored_to_internal(elem->rdn_elem_id);
++    }
++    dblayer_value_free(be, &data);
++    dblayer_value_free(be, &key);
++
+     do {
+         /* Setting up a key for the node to get its parent */
+         slapi_ch_free_string(&keybuf);
+@@ -1224,7 +1241,7 @@ entryrdn_lookup_dn(backend *be,
+                     }
+                     goto bail;
+                 }
+-                if (workid == 1) {
++                if (workid == suffix_id) {
+                     /* The loop (workid) iterates from the starting 'id'
+                      * up to the suffix ID (i.e. '1').
+                      * A corner case (#6417) is if an entry, on the path
+-- 
+2.48.0
+

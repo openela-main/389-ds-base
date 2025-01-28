@@ -1,0 +1,55 @@
+From d1cd9a5675e2953b7c8034ebb87a434cdd3ce0c3 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Mon, 2 Dec 2024 17:18:32 +0100
+Subject: [PATCH] Issue 6417 - If an entry RDN is identical to the suffix, then
+ Entryrdn gets broken during a reindex (#6418)
+
+Bug description:
+        During a reindex, the entryrdn index is built at the end from
+        each entry in the suffix.
+        If one entry has a RDN that is identical to the suffix DN,
+        then entryrdn_lookup_dn may erroneously return the suffix DN
+        as the DN of the entry.
+
+Fix description:
+        When the lookup entry has no parent (because index is under
+        work) the loop lookup the entry using the RDN.
+        If this RDN matches the suffix DN, then it exits from the loop
+        with the suffix DN.
+        Before exiting it checks that the original lookup entryID
+        is equal to suffix entryID. If it does not match
+        the function fails and then the DN from the entry will be
+        built from id2enty
+
+fixes: #6417
+
+Reviewed by: Pierre Rogier, Simon Pichugin (Thanks !!!)
+---
+ ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+index 5797dd779..83b041192 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+@@ -1224,7 +1224,16 @@ entryrdn_lookup_dn(backend *be,
+                     }
+                     goto bail;
+                 }
+-                maybesuffix = 1;
++                if (workid == 1) {
++                    /* The loop (workid) iterates from the starting 'id'
++                     * up to the suffix ID (i.e. '1').
++                     * A corner case (#6417) is if an entry, on the path
++                     * 'id' -> suffix, has the same RDN than the suffix.
++                     * In order to erroneously believe the loop hits the suffix
++                     * we need to check that 'workid' is '1' (suffix)
++                     */
++                    maybesuffix = 1;
++                }
+             } else {
+                 _entryrdn_cursor_print_error("entryrdn_lookup_dn",
+                                              key.data, data.size, data.ulen, rc);
+-- 
+2.48.0
+
