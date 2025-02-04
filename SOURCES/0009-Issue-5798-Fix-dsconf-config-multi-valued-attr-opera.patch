@@ -1,0 +1,686 @@
+From 569628ce405f214a7e35deb96b4e6c22519a4268 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Wed, 4 Dec 2024 22:29:11 -0500
+Subject: [PATCH] Issue 5798 - Fix dsconf config multi-valued attr operations
+ (#6426)
+
+Description:
+Fix add operation to properly handle multi-valued attributes
+so they persist after server restart.
+Add support for multiple values at once via dsconf config.
+Handle delete operation in a more flexible way.
+Refactor attribute handling code for better error handling and consistency.
+*Add CI test suite
+
+Fixes: https://github.com/389ds/389-ds-base/issues/5798
+
+Reviewed by: @progier389 (Thanks!)
+---
+ .../tests/suites/clu/dsconf_config_test.py    | 347 ++++++++++++++++++
+ src/lib389/lib389/_mapped_object.py           |  55 +--
+ src/lib389/lib389/cli_conf/config.py          | 172 +++++----
+ 3 files changed, 481 insertions(+), 93 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/clu/dsconf_config_test.py
+
+diff --git a/dirsrvtests/tests/suites/clu/dsconf_config_test.py b/dirsrvtests/tests/suites/clu/dsconf_config_test.py
+new file mode 100644
+index 000000000..d67679adf
+--- /dev/null
++++ b/dirsrvtests/tests/suites/clu/dsconf_config_test.py
+@@ -0,0 +1,347 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2024 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++
++import subprocess
++import logging
++import pytest
++from lib389._constants import DN_DM
++from lib389.topologies import topology_st
++
++pytestmark = pytest.mark.tier1
++
++log = logging.getLogger(__name__)
++
++HAPROXY_IPS = {
++    'single': '192.168.1.1',
++    'multiple': ['10.0.0.1', '172.16.0.1', '192.168.2.1']
++}
++
++REFERRALS = {
++    'single': 'ldap://primary.example.com',
++    'multiple': [
++        'ldap://server1.example.com',
++        'ldap://server2.example.com',
++        'ldap://server3.example.com'
++    ]
++}
++
++TEST_ATTRS = [
++    ('nsslapd-haproxy-trusted-ip', HAPROXY_IPS),
++    ('nsslapd-referral', REFERRALS)
++]
++
++
++def execute_dsconf_command(dsconf_cmd, subcommands):
++    """Execute dsconf command and return output and return code"""
++
++    cmdline = dsconf_cmd + subcommands
++    proc = subprocess.Popen(cmdline, stdout=subprocess.PIPE)
++    out, _ = proc.communicate()
++    return out.decode('utf-8'), proc.returncode
++
++
++def get_dsconf_base_cmd(topology):
++    """Return base dsconf command list"""
++
++    return ['/usr/sbin/dsconf', topology.standalone.serverid,
++            '-D', DN_DM, '-w', 'password']
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_single_value_add(topology_st, attr_name, values_dict):
++    """Test adding a single value to an attribute
++
++    :id: ffc912a6-c188-413d-9c35-7f4b3774d946
++    :setup: Standalone DS instance
++    :steps:
++        1. Add a single value to the specified attribute
++        2. Verify the value was added correctly
++    :expectedresults:
++        1. Command should execute successfully
++        2. Added value should be present in the configuration
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        value = values_dict['single']
++        test_attr = f"{attr_name}={value}"
++
++        # Add single value
++        output, rc = execute_dsconf_command(dsconf_cmd, ['config', 'add', test_attr])
++        assert rc == 0
++
++        # Verify
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert value in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_single_value_replace(topology_st, attr_name, values_dict):
++    """Test replacing a single value in configuration attributes
++
++    :id: 112e3e5e-8db8-4974-9ea4-ed789c2d02f2
++    :setup: Standalone DS instance
++    :steps:
++        1. Add initial value to the specified attribute
++        2. Replace the value with a new one
++        3. Verify the replacement was successful
++    :expectedresults:
++        1. Initial value should be added successfully
++        2. Replace command should execute successfully
++        3. New value should be present and old value should be absent
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add initial value
++        value = values_dict['single']
++        test_attr = f"{attr_name}={value}"
++        execute_dsconf_command(dsconf_cmd, ['config', 'add', test_attr])
++
++        # Replace with new value
++        new_value = values_dict['multiple'][0]
++        replace_attr = f"{attr_name}={new_value}"
++        output, rc = execute_dsconf_command(dsconf_cmd, ['config', 'replace', replace_attr])
++        assert rc == 0
++
++        # Verify
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert new_value in output
++        assert value not in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_multi_value_batch_add(topology_st, attr_name, values_dict):
++    """Test adding multiple values in a single batch command
++
++    :id: 4c34c7f8-16cc-4ab6-938a-967537be5470
++    :setup: Standalone DS instance
++    :steps:
++        1. Add multiple values to the attribute in a single command
++        2. Verify all values were added correctly
++    :expectedresults:
++        1. Batch add command should execute successfully
++        2. All added values should be present in the configuration
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add multiple values in one command
++        attr_values = [f"{attr_name}={val}" for val in values_dict['multiple']]
++        output, rc = execute_dsconf_command(dsconf_cmd, ['config', 'add'] + attr_values)
++        assert rc == 0
++
++        # Verify all values
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        for value in values_dict['multiple']:
++            assert value in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_multi_value_batch_replace(topology_st, attr_name, values_dict):
++    """Test replacing with multiple values in a single batch command
++
++    :id: 05cf28b8-000e-4856-a10b-7e1df012737d
++    :setup: Standalone DS instance
++    :steps:
++        1. Add initial single value
++        2. Replace with multiple values in a single command
++        3. Verify the replacement was successful
++    :expectedresults:
++        1. Initial value should be added successfully
++        2. Batch replace command should execute successfully
++        3. All new values should be present and initial value should be absent
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add initial value
++        initial_value = values_dict['single']
++        execute_dsconf_command(dsconf_cmd, ['config', 'add', f"{attr_name}={initial_value}"])
++
++        # Replace with multiple values
++        attr_values = [f"{attr_name}={val}" for val in values_dict['multiple']]
++        output, rc = execute_dsconf_command(dsconf_cmd, ['config', 'replace'] + attr_values)
++        assert rc == 0
++
++        # Verify
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert initial_value not in output
++        for value in values_dict['multiple']:
++            assert value in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_multi_value_specific_delete(topology_st, attr_name, values_dict):
++    """Test deleting specific values from multi-valued attribute
++
++    :id: bb325c9a-eae8-438a-b577-bd63540b91cb
++    :setup: Standalone DS instance
++    :steps:
++        1. Add multiple values to the attribute
++        2. Delete a specific value
++        3. Verify the deletion was successful
++    :expectedresults:
++        1. Multiple values should be added successfully
++        2. Specific delete command should execute successfully
++        3. Deleted value should be absent while others remain present
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add multiple values
++        attr_values = [f"{attr_name}={val}" for val in values_dict['multiple']]
++        execute_dsconf_command(dsconf_cmd, ['config', 'add'] + attr_values)
++
++        # Delete middle value
++        delete_value = values_dict['multiple'][1]
++        output, rc = execute_dsconf_command(dsconf_cmd,
++                                          ['config', 'delete', f"{attr_name}={delete_value}"])
++        assert rc == 0
++
++        # Verify remaining values
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert delete_value not in output
++        assert values_dict['multiple'][0] in output
++        assert values_dict['multiple'][2] in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_multi_value_batch_delete(topology_st, attr_name, values_dict):
++    """Test deleting multiple values in a single batch command
++
++    :id: 4b105824-b060-4f83-97d7-001a01dba1a5
++    :setup: Standalone DS instance
++    :steps:
++        1. Add multiple values to the attribute
++        2. Delete multiple values in a single command
++        3. Verify the batch deletion was successful
++    :expectedresults:
++        1. Multiple values should be added successfully
++        2. Batch delete command should execute successfully
++        3. Deleted values should be absent while others remain present
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add all values
++        attr_values = [f"{attr_name}={val}" for val in values_dict['multiple']]
++        execute_dsconf_command(dsconf_cmd, ['config', 'add'] + attr_values)
++
++        # Delete multiple values in one command
++        delete_values = [f"{attr_name}={val}" for val in values_dict['multiple'][:2]]
++        output, rc = execute_dsconf_command(dsconf_cmd, ['config', 'delete'] + delete_values)
++        assert rc == 0
++
++        # Verify
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert values_dict['multiple'][2] in output
++        assert values_dict['multiple'][0] not in output
++        assert values_dict['multiple'][1] not in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_single_value_persists_after_restart(topology_st, attr_name, values_dict):
++    """Test single value persists after server restart
++
++    :id: be1a7e3d-a9ca-48a1-a3bc-062990d4f3e9
++    :setup: Standalone DS instance
++    :steps:
++        1. Add single value to the attribute
++        2. Verify the value is present
++        3. Restart the server
++        4. Verify the value persists after restart
++    :expectedresults:
++        1. Value should be added successfully
++        2. Value should be present before restart
++        3. Server should restart successfully
++        4. Value should still be present after restart
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add single value
++        value = values_dict['single']
++        output, rc = execute_dsconf_command(dsconf_cmd,
++                                          ['config', 'add', f"{attr_name}={value}"])
++        assert rc == 0
++
++        # Verify before restart
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert value in output
++
++        # Restart the server
++        topology_st.standalone.restart(timeout=10)
++
++        # Verify after restart
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        assert value in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
++
++
++@pytest.mark.parametrize("attr_name,values_dict", TEST_ATTRS)
++def test_multi_value_batch_persists_after_restart(topology_st, attr_name, values_dict):
++    """Test multiple values added in batch persist after server restart
++
++    :id: fd0435e2-90b1-465a-8968-d3a375c8fb22
++    :setup: Standalone DS instance
++    :steps:
++        1. Add multiple values in a single batch command
++        2. Verify all values are present
++        3. Restart the server
++        4. Verify all values persist after restart
++    :expectedresults:
++        1. Batch add command should execute successfully
++        2. All values should be present before restart
++        3. Server should restart successfully
++        4. All values should still be present after restart
++    """
++    dsconf_cmd = get_dsconf_base_cmd(topology_st)
++
++    try:
++        # Add multiple values
++        attr_values = [f"{attr_name}={val}" for val in values_dict['multiple']]
++        output, rc = execute_dsconf_command(dsconf_cmd, ['config', 'add'] + attr_values)
++        assert rc == 0
++
++        # Verify before restart
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        for value in values_dict['multiple']:
++            assert value in output
++
++        # Restart the server
++        topology_st.standalone.restart(timeout=10)
++
++        # Verify after restart
++        output, _ = execute_dsconf_command(dsconf_cmd, ['config', 'get', attr_name])
++        for value in values_dict['multiple']:
++            assert value in output
++
++    finally:
++        execute_dsconf_command(dsconf_cmd, ['config', 'delete', attr_name])
+diff --git a/src/lib389/lib389/_mapped_object.py b/src/lib389/lib389/_mapped_object.py
+index 9799b8839..af5aab71e 100644
+--- a/src/lib389/lib389/_mapped_object.py
++++ b/src/lib389/lib389/_mapped_object.py
+@@ -321,25 +321,31 @@ class DSLdapObject(DSLogging, DSLint):
+         This is useful for configuration changes that require
+         atomic operation, and ease of use.
+ 
+-        An example of usage is add_many((key, value), (key, value))
++        An example of usage is add_many((key, value), (key, [value1, value2]))
+ 
+         No wrapping list is needed for the arguments.
+ 
+-        :param *args: tuples of key,value to replace.
+-        :type *args: (str, str)
++        :param *args: tuples of key,value to add. Value can be a single value
++                    or a collection (list, tuple, set) of values.
++        :type *args: (str, str) or (str, list/tuple/set)
+         """
+-
+         mods = []
+         for arg in args:
+-            if isinstance(arg[1], list) or isinstance(arg[1], tuple):
+-                value = ensure_list_bytes(arg[1])
++            key, value = arg
++            if isinstance(value, (list, tuple, set)):
++                value = ensure_list_bytes(list(value))
+             else:
+-                value = [ensure_bytes(arg[1])]
+-            mods.append((ldap.MOD_ADD, ensure_str(arg[0]), value))
+-        return _modify_ext_s(self._instance,self._dn, mods, serverctrls=self._server_controls,
+-                                            clientctrls=self._client_controls, escapehatch='i am sure')
++                value = [ensure_bytes(value)]
++
++            mods.append((ldap.MOD_ADD, ensure_str(key), value))
++
++        return _modify_ext_s(self._instance,
++                            self._dn,
++                            mods,
++                            serverctrls=self._server_controls,
++                            clientctrls=self._client_controls,
++                            escapehatch='i am sure')
+ 
+-    # Basically what it means;
+     def replace(self, key, value):
+         """Replace an attribute with a value
+ 
+@@ -355,23 +361,30 @@ class DSLdapObject(DSLogging, DSLint):
+         This is useful for configuration changes that require
+         atomic operation, and ease of use.
+ 
+-        An example of usage is replace_many((key, value), (key, value))
++        An example of usage is replace_many((key, value), (key, [value1, value2]))
+ 
+         No wrapping list is needed for the arguments.
+ 
+-        :param *args: tuples of key,value to replace.
+-        :type *args: (str, str)
++        :param *args: tuples of key,value to replace. Value can be a single value
++                    or a collection (list, tuple, set) of values.
++        :type *args: (str, str) or (str, list/tuple/set)
+         """
+-
+         mods = []
+         for arg in args:
+-            if isinstance(arg[1], list) or isinstance(arg[1], tuple):
+-                value = ensure_list_bytes(arg[1])
++            key, value = arg
++            if isinstance(value, (list, tuple, set)):
++                value = ensure_list_bytes(list(value))
+             else:
+-                value = [ensure_bytes(arg[1])]
+-            mods.append((ldap.MOD_REPLACE, ensure_str(arg[0]), value))
+-        return _modify_ext_s(self._instance,self._dn, mods, serverctrls=self._server_controls,
+-                                           clientctrls=self._client_controls, escapehatch='i am sure')
++                value = [ensure_bytes(value)]
++
++            mods.append((ldap.MOD_REPLACE, ensure_str(key), value))
++
++        return _modify_ext_s(self._instance,
++                            self._dn,
++                            mods,
++                            serverctrls=self._server_controls,
++                            clientctrls=self._client_controls,
++                            escapehatch='i am sure')
+ 
+     # This needs to work on key + val, and key
+     def remove(self, key, value):
+diff --git a/src/lib389/lib389/cli_conf/config.py b/src/lib389/lib389/cli_conf/config.py
+index fb4c68f8b..6f4eddc8c 100644
+--- a/src/lib389/lib389/cli_conf/config.py
++++ b/src/lib389/lib389/cli_conf/config.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2023 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -12,12 +12,9 @@ from lib389.config import Config
+ from lib389.cli_base import (
+     _generic_get_entry,
+     _generic_get_attr,
+-    _generic_replace_attr,
+     CustomHelpFormatter
+     )
+ 
+-OpType = Enum("OpType", "add delete")
+-
+ 
+ def _config_display_ldapimaprootdn_warning(log, args):
+     """If we update the rootdn we need to update the ldapi settings too"""
+@@ -28,44 +25,48 @@ def _config_display_ldapimaprootdn_warning(log, args):
+                         "For LDAPI configuration, \"nsslapd-rootdn\" is used instead.")
+ 
+ 
+-def _config_get_existing_attrs(conf, args, op_type):
+-    """Get the existing attribute from the server and return them in a dict
+-    so we can add them back after the operation is done.
+-
+-    For op_type == OpType.delete, we delete them from the server so we can add
+-    back only those that are not specified in the command line.
+-    (i.e delete nsslapd-haproxy-trusted-ip="192.168.0.1", but
+-    nsslapd-haproxy-trusted-ip has 192.168.0.1 and 192.168.0.2 values.
+-    So we want only 192.168.0.1 to be deleted in the end)
+-    """
+-
+-    existing_attrs = {}
+-    if args and args.attr:
+-        for attr in args.attr:
+-            if "=" in attr:
+-                [attr_name, val] = attr.split("=", 1)
+-                # We should process only multi-valued attributes this way
+-                if attr_name.lower() == "nsslapd-haproxy-trusted-ip" or \
+-                   attr_name.lower() == "nsslapd-referral":
+-                    if attr_name not in existing_attrs.keys():
+-                        existing_attrs[attr_name] = conf.get_attr_vals_utf8(attr_name)
+-                    existing_attrs[attr_name] = [x for x in existing_attrs[attr_name] if x != val]
+-
+-                    if op_type == OpType.add:
+-                        if existing_attrs[attr_name] == []:
+-                            del existing_attrs[attr_name]
+-
+-                    if op_type == OpType.delete:
+-                        conf.remove_all(attr_name)
+-            else:
+-                if op_type == OpType.delete:
+-                    conf.remove_all(attr)
+-                else:
+-                    raise ValueError(f"You must specify a value to add for the attribute ({attr_name})")
+-        return existing_attrs
+-    else:
+-        # Missing value
+-        raise ValueError(f"Missing attribute to {op_type.name}")
++def _format_values_for_display(values):
++    """Format a set of values for display"""
++
++    if not values:
++        return ""
++    if len(values) == 1:
++        return f"'{next(iter(values))}'"
++    return ', '.join(f"'{value}'" for value in sorted(values))
++
++
++def _parse_attr_value_pairs(attrs, allow_no_value=False):
++    """Parse attribute value pairs from a list of strings in the format 'attr=value'"""
++
++    attr_values = {}
++    attrs_without_values = set()
++
++    for attr in attrs:
++        if "=" in attr:
++            attr_name, val = attr.split("=", 1)
++            if attr_name not in attr_values:
++                attr_values[attr_name] = set()
++            attr_values[attr_name].add(val)
++        elif allow_no_value:
++            attrs_without_values.add(attr)
++        else:
++            raise ValueError(f"Invalid attribute format: {attr}. Must be in format 'attr=value'")
++
++    return attr_values, attrs_without_values
++
++
++def _handle_attribute_operation(conf, operation_type, attr_values, log):
++    """Handle attribute operations (add, replace) with consistent error handling"""
++
++    if operation_type == "add":
++        conf.add_many(*[(k, v) for k, v in attr_values.items()])
++    elif operation_type == "replace":
++        conf.replace_many(*[(k, v) for k, v in attr_values.items()])
++
++    for attr_name, values in attr_values.items():
++        formatted_values = _format_values_for_display(values)
++        operation_past = "added" if operation_type == "add" else f"{operation_type}d"
++        log.info(f"Successfully {operation_past} value(s) for '{attr_name}': {formatted_values}")
+ 
+ 
+ def config_get(inst, basedn, log, args):
+@@ -77,49 +78,76 @@ def config_get(inst, basedn, log, args):
+ 
+ 
+ def config_replace_attr(inst, basedn, log, args):
+-    _generic_replace_attr(inst, basedn, log.getChild('config_replace_attr'), Config, args)
++    if not args or not args.attr:
++        raise ValueError("Missing attribute to replace")
+ 
++    conf = Config(inst, basedn)
++    attr_values, _ = _parse_attr_value_pairs(args.attr)
++    _handle_attribute_operation(conf, "replace", attr_values, log)
+     _config_display_ldapimaprootdn_warning(log, args)
+ 
+ 
+ def config_add_attr(inst, basedn, log, args):
++    if not args or not args.attr:
++        raise ValueError("Missing attribute to add")
++
+     conf = Config(inst, basedn)
+-    final_mods = []
+-
+-    existing_attrs = _config_get_existing_attrs(conf, args, OpType.add)
+-
+-    if args and args.attr:
+-        for attr in args.attr:
+-            if "=" in attr:
+-                [attr_name, val] = attr.split("=", 1)
+-                if attr_name in existing_attrs:
+-                    for v in existing_attrs[attr_name]:
+-                        final_mods.append((attr_name, v))
+-                final_mods.append((attr_name, val))
+-                try:
+-                    conf.add_many(*set(final_mods))
+-                except ldap.TYPE_OR_VALUE_EXISTS:
+-                    pass
+-            else:
+-                raise ValueError(f"You must specify a value to add for the attribute ({attr_name})")
+-    else:
+-        # Missing value
+-        raise ValueError("Missing attribute to add")    
++    attr_values, _ = _parse_attr_value_pairs(args.attr)
+ 
++    # Validate no values already exist
++    for attr_name, values in attr_values.items():
++        existing_vals = set(conf.get_attr_vals_utf8(attr_name) or [])
++        duplicate_vals = values & existing_vals
++        if duplicate_vals:
++            raise ldap.ALREADY_EXISTS(
++                f"Values {duplicate_vals} already exist for attribute '{attr_name}'")
++
++    _handle_attribute_operation(conf, "add", attr_values, log)
+     _config_display_ldapimaprootdn_warning(log, args)
+ 
+ 
+ def config_del_attr(inst, basedn, log, args):
+-    conf = Config(inst, basedn)
+-    final_mods = []
++    if not args or not args.attr:
++        raise ValueError("Missing attribute to delete")
+ 
+-    existing_attrs = _config_get_existing_attrs(conf, args, OpType.delete)
++    conf = Config(inst, basedn)
++    attr_values, attrs_to_remove = _parse_attr_value_pairs(args.attr, allow_no_value=True)
++
++    # Handle complete attribute removal
++    for attr in attrs_to_remove:
++        try:
++            if conf.get_attr_vals_utf8(attr):
++                conf.remove_all(attr)
++                log.info(f"Removed attribute '{attr}' completely")
++            else:
++                log.warning(f"Attribute '{attr}' does not exist - skipping")
++        except ldap.NO_SUCH_ATTRIBUTE:
++            log.warning(f"Attribute '{attr}' does not exist - skipping")
++
++    # Validate and handle value-specific deletion
++    if attr_values:
++        for attr_name, values in attr_values.items():
++            try:
++                existing_values = set(conf.get_attr_vals_utf8(attr_name) or [])
++                values_to_delete = values & existing_values
++                values_not_found = values - existing_values
++
++                if values_not_found:
++                    formatted_values = _format_values_for_display(values_not_found)
++                    log.warning(f"Values {formatted_values} do not exist for attribute '{attr_name}' - skipping")
++
++                if values_to_delete:
++                    remaining_values = existing_values - values_to_delete
++                    if not remaining_values:
++                        conf.remove_all(attr_name)
++                    else:
++                        conf.replace_many((attr_name, remaining_values))
++                    formatted_values = _format_values_for_display(values_to_delete)
++                    log.info(f"Successfully deleted values {formatted_values} from '{attr_name}'")
++            except ldap.NO_SUCH_ATTRIBUTE:
++                log.warning(f"Attribute '{attr_name}' does not exist - skipping")
+ 
+-    # Then add the attributes back all except the one we need to remove
+-    for attr_name in existing_attrs.keys():
+-        for val in existing_attrs[attr_name]:
+-            final_mods.append((attr_name, val))
+-        conf.add_many(*set(final_mods))
++    _config_display_ldapimaprootdn_warning(log, args)
+ 
+ 
+ def create_parser(subparsers):
+-- 
+2.48.0
+

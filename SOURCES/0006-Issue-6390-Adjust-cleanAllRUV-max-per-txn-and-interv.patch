@@ -1,0 +1,460 @@
+From 1ffc8c7c97b158e8cefd22bd0402aa0285b2baba Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 31 Oct 2024 08:09:09 -0400
+Subject: [PATCH] Issue 6390 - Adjust cleanAllRUV max per txn and interval
+ limits
+
+The cleanAllRUV changelog purging and the "normal" changelog trimming are
+using different limits. The cleanAllRUV "purging" holds the transaction 10
+times longer than the "trimming" does. When we use the same/smaller limits
+the CPU still gets high but it's spread out and it should not block other
+threads from running.
+
+Improved overall work flow of cleanAllRUV - changed changelog purging to
+be a function and not a thread which simplifies other parts of the code.
+
+Also fixed typo in repl logs (issue 6369), and deadlock with lmdb during
+purging (issue 6396)
+
+relates: https://github.com/389ds/389-ds-base/issues/6390
+fixes: https://github.com/389ds/389-ds-base/issues/6396
+fixes: https://github.com/389ds/389-ds-base/issues/6369
+
+Reviewed by: jchapman & progier (Thanks!!)
+---
+ ldap/servers/plugins/replication/cl5_api.c    | 127 ++++++++----------
+ ldap/servers/plugins/replication/cl5_api.h    |  41 +++---
+ ldap/servers/plugins/replication/repl5.h      |   8 +-
+ .../plugins/replication/repl5_protocol_util.c |   2 +-
+ .../plugins/replication/repl_cleanallruv.c    |  30 ++---
+ 5 files changed, 91 insertions(+), 117 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/cl5_api.c b/ldap/servers/plugins/replication/cl5_api.c
+index a944d3b29..92fb776dc 100644
+--- a/ldap/servers/plugins/replication/cl5_api.c
++++ b/ldap/servers/plugins/replication/cl5_api.c
+@@ -90,8 +90,6 @@
+ #define MAX_RETRIES 10 /* Maximum number of retry in case of db retryable error */
+ #define CL5_TRIM_MAX_PER_TRANSACTION 100
+ #define CL5_TRIM_MAX_LOOKUP_PER_TRANSACTION 10000
+-#define CL5_PURGE_MAX_PER_TRANSACTION 1000
+-#define CL5_PURGE_MAX_LOOKUP_PER_TRANSACTION 10000
+ 
+ /***** Data Definitions *****/
+ 
+@@ -246,14 +244,13 @@ static int _cl5CheckMissingCSN(const CSN *minCsn, const RUV *supplierRUV, cldb_H
+ static int cldb_IsTrimmingEnabled(cldb_Handle *cldb);
+ static int _cl5TrimMain(void *param);
+ void _cl5TrimReplica(Replica *r);
+-void _cl5PurgeRID(cleanruv_purge_data *data, cldb_Handle *cldb);
++int32_t _cl5PurgeRID(cleanruv_data *data, cldb_Handle *cldb);
+ static PRBool _cl5CanTrim(time_t time, long *numToTrim, Replica *replica, CL5Config *dbTrim);
+ int _cl5ConstructRUVs (cldb_Handle *cldb);
+ int _cl5ReadRUVs(cldb_Handle *cldb);
+ static int _cl5WriteRUV(cldb_Handle *cldb, PRBool purge);
+ static int _cl5UpdateRUV (cldb_Handle *cldb, CSN *csn, PRBool newReplica, PRBool purge);
+ static int _cl5GetRUV2Purge2(Replica *r, RUV **ruv);
+-void trigger_cl_purging_thread(void *rid);
+ 
+ /* bakup/recovery, import/export */
+ static int _cl5LDIF2Operation(char *ldifEntry, slapi_operation_parameters *op, char **replGen);
+@@ -1844,9 +1841,13 @@ _cl5Iterate(cldb_Handle *cldb, dbi_iterate_cb_t *action_cb, DBLCI_CTX *dblcictx,
+ 
+     dblcictx->finished = PR_FALSE;
+     dblcictx->cldb = cldb;
+-    while ( !slapi_is_shutting_down() &&
+-            ((rc == CL5_SUCCESS && dblcictx->finished == PR_FALSE) ||
+-             (rc == CL5_DB_RETRY && nbtries < MAX_RETRIES))) {
++    while ((rc == CL5_SUCCESS && dblcictx->finished == PR_FALSE) ||
++           (rc == CL5_DB_RETRY && nbtries < MAX_RETRIES))
++    {
++        if (slapi_is_shutting_down()) {
++            return CL5_SHUTDOWN;
++        }
++
+         nbtries++;
+         dblcictx->changed.nb = 0;
+         dblcictx->seen.nb = 0;
+@@ -2502,7 +2503,7 @@ _cl5TrimMain(void *param)
+     cldb->trimmingOnGoing = 1;
+     slapi_counter_increment(cldb->clThreads);
+ 
+-    while (cldb->dbState == CL5_STATE_OPEN)
++    while (cldb->dbState == CL5_STATE_OPEN && !slapi_is_shutting_down())
+     {
+         pthread_mutex_unlock(&(cldb->stLock));
+ 
+@@ -2548,24 +2549,28 @@ _cl5TrimMain(void *param)
+  * We are purging a changelog after a cleanAllRUV task.  Find the specific
+  * changelog for the backend that is being cleaned, and purge all the records
+  * with the cleaned rid.
++ *
++ * If we encounter a shutdown _cl5PurgeRID will return 1
+  */
+-static void
+-_cl5DoPurging(cleanruv_purge_data *purge_data)
++static int32_t
++_cl5DoPurging(cleanruv_data *purge_data)
+ {
+     cldb_Handle *cldb = replica_get_cl_info(purge_data->replica);
++    int32_t rc = 0;
++
+     if (cldb == NULL) {
+         slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name_cl,
+                       "_cl5DoPurging - Changelog info was NULL - is your replication configuration valid?\n");
+-        return;
++        return rc;
+     }
+ 
+     pthread_mutex_lock(&(cldb->clLock));
+ 
+-    _cl5PurgeRID(purge_data, cldb);
++    rc = _cl5PurgeRID(purge_data, cldb);
+ 
+     pthread_mutex_unlock(&(cldb->clLock));
+ 
+-    return;
++    return rc;
+ }
+ 
+ static inline int
+@@ -2651,7 +2656,7 @@ _cl5PurgeRidOnEntry(dbi_val_t *key, dbi_val_t *data, void *ctx)
+ }
+ 
+ /*
+- *  _cl5PurgeRID(cleanruv_purge_data, cleaned_rid)
++ *  _cl5PurgeRID(cleanruv_data, cleaned_rid)
+  *
+  *  Clean the entire changelog of updates from the "cleaned rid" via CLEANALLRUV
+  *  Delete entries in batches so we don't consume too many db locks, and we don't
+@@ -2659,19 +2664,28 @@ _cl5PurgeRidOnEntry(dbi_val_t *key, dbi_val_t *data, void *ctx)
+  *  We save the key from the last iteration so we don't have to start from the
+  *  beginning for each new iteration.
+  */
+-void
+-_cl5PurgeRID(cleanruv_purge_data *data, cldb_Handle *cldb)
++int32_t
++_cl5PurgeRID(cleanruv_data *data, cldb_Handle *cldb)
+ {
+     DBLCI_CTX dblcictx = {0};
+     int32_t rc = 0;
+ 
+-    dblcictx.seen.nbmax = CL5_PURGE_MAX_LOOKUP_PER_TRANSACTION;
+-    dblcictx.changed.nbmax = CL5_PURGE_MAX_PER_TRANSACTION;
+-    dblcictx.rid2purge = data->cleaned_rid;
++    if (dblayer_is_lmdb(cldb->be)) {
++        dblcictx.seen.nbmax = 5000;
++        dblcictx.changed.nbmax = 50;
++    } else {
++        dblcictx.seen.nbmax = 10000;
++        dblcictx.changed.nbmax = 50;
++    }
++    dblcictx.rid2purge = data->rid;
+ 
+     rc = _cl5Iterate(cldb, _cl5PurgeRidOnEntry, &dblcictx, PR_FALSE);
+-    if (rc != CL5_SUCCESS && rc != CL5_NOTFOUND) {
+-        cleanruv_log(data->task, data->cleaned_rid, CLEANALLRUV_ID,
++    if (rc == CL5_SHUTDOWN) {
++        cleanruv_log(data->task, data->rid, CLEANALLRUV_ID, SLAPI_LOG_NOTICE,
++                     "Server shutting down.  Process will resume at server "
++                     "startup");
++    } else if (rc != CL5_SUCCESS && rc != CL5_NOTFOUND) {
++        cleanruv_log(data->task, data->rid, CLEANALLRUV_ID,
+                      SLAPI_LOG_ERR,
+                      "Purging failed to iterate through the entire changelog "
+                      "(error %d). There is a chance the rid was not fully "
+@@ -2679,11 +2693,14 @@ _cl5PurgeRID(cleanruv_purge_data *data, cldb_Handle *cldb)
+                      "again.",
+                      rc);
+     } else {
+-        cleanruv_log(data->task, data->cleaned_rid, CLEANALLRUV_ID,
++        cleanruv_log(data->task, data->rid, CLEANALLRUV_ID,
+                      SLAPI_LOG_INFO,
+-                     "Purged %ld records from the changelog",
+-                     dblcictx.changed.tot);
++                     "Scanned %ld records, and purged %ld records from the "
++                     "changelog",
++                     dblcictx.seen.tot, dblcictx.changed.tot);
+     }
++
++    return rc;
+ }
+ 
+ /*
+@@ -4292,7 +4309,7 @@ _cl5ExportFile(PRFileDesc *prFile, cldb_Handle *cldb)
+     }
+     slapi_write_buffer(prFile, "\n", strlen("\n"));
+ 
+-    dblcictx.seen.nbmax = CL5_PURGE_MAX_LOOKUP_PER_TRANSACTION;
++    dblcictx.seen.nbmax = CL5_TRIM_MAX_LOOKUP_PER_TRANSACTION;
+     dblcictx.exportFile = prFile;
+     rc = _cl5Iterate(cldb, _cl5ExportEntry2File, &dblcictx, PR_TRUE);
+ 
+@@ -4415,68 +4432,40 @@ cl5CleanRUV(ReplicaId rid, Replica *replica)
+     ruv_delete_replica(cldb->maxRUV, rid);
+ }
+ 
+-static void
+-free_purge_data(cleanruv_purge_data *purge_data)
+-{
+-    slapi_ch_free((void **)&purge_data);
+-}
+-
+-/*
+- * Create a thread to purge a changelog of cleaned RIDs
+- */
+-void
+-trigger_cl_purging(cleanruv_purge_data *purge_data)
+-{
+-    PRThread *trim_tid = NULL;
+-
+-    trim_tid = PR_CreateThread(PR_USER_THREAD, (VFP)(void *)trigger_cl_purging_thread,
+-                               (void *)purge_data, PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD,
+-                               PR_UNJOINABLE_THREAD, DEFAULT_THREAD_STACKSIZE);
+-    if (NULL == trim_tid) {
+-        slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name_cl,
+-                      "trigger_cl_purging - Failed to create cl purging "
+-                      "thread; NSPR error - %d\n",
+-                      PR_GetError());
+-        free_purge_data(purge_data);
+-    } else {
+-        /* need a little time for the thread to get started */
+-        DS_Sleep(PR_SecondsToInterval(1));
+-    }
+-}
+-
+ /*
+  * Purge a changelog of entries that originated from a particular replica(rid)
+  */
+-void
+-trigger_cl_purging_thread(void *arg)
++int32_t
++cldb_purge_rid(cleanruv_data *purge_data)
+ {
+-    cleanruv_purge_data *purge_data = (cleanruv_purge_data *)arg;
+-    Replica *replica = purge_data->replica;
+-    cldb_Handle *cldb = replica_get_cl_info(replica);
++    cldb_Handle *cldb = replica_get_cl_info(purge_data->replica);
++    int32_t rc = -1;
+ 
+     if (cldb == NULL) {
+-        return;
++        return rc;
+     }
+ 
+     pthread_mutex_lock(&(cldb->stLock));
++
+     /* Make sure we have a change log, and we aren't closing it */
+     if (cldb->dbState != CL5_STATE_OPEN) {
+-        goto free_and_return;
++        pthread_mutex_unlock(&(cldb->stLock));
++        return rc;
+     }
+-
+     slapi_counter_increment(cldb->clThreads);
++    pthread_mutex_unlock(&(cldb->stLock));
+ 
+     /* Purge the changelog */
+-    _cl5DoPurging(purge_data);
+-
+-    /* Remove the rid from the internal list */
+-    remove_cleaned_rid(purge_data->cleaned_rid);
++    rc = _cl5DoPurging(purge_data);
+ 
+     slapi_counter_decrement(cldb->clThreads);
+ 
+-free_and_return:
+-    pthread_mutex_unlock(&(cldb->stLock));
+-    free_purge_data(purge_data);
++    /* Handle result code */
++    if (rc == CL5_SUCCESS || rc == CL5_NOTFOUND) {
++        return LDAP_SUCCESS;
++    } else {
++        return -1;
++    }
+ }
+ 
+ char *
+diff --git a/ldap/servers/plugins/replication/cl5_api.h b/ldap/servers/plugins/replication/cl5_api.h
+index a690eee37..e4b4f11ee 100644
+--- a/ldap/servers/plugins/replication/cl5_api.h
++++ b/ldap/servers/plugins/replication/cl5_api.h
+@@ -81,26 +81,27 @@ typedef enum {
+ /* error codes */
+ enum
+ {
+-    CL5_SUCCESS,       /* successful operation */
+-    CL5_BAD_DATA,      /* invalid parameter passed to the function */
+-    CL5_BAD_FORMAT,    /* db data has unexpected format */
+-    CL5_BAD_STATE,     /* changelog is in an incorrect state for attempted operation */
+-    CL5_BAD_DBVERSION, /* changelog has invalid dbversion */
+-    CL5_DB_ERROR,      /* database error */
+-    CL5_NOTFOUND,      /* requested entry or value was not found */
+-    CL5_MEMORY_ERROR,  /* memory allocation failed */
+-    CL5_SYSTEM_ERROR,  /* NSPR error occured, use PR_Error for furhter info */
+-    CL5_CSN_ERROR,     /* CSN API failed */
+-    CL5_RUV_ERROR,     /* RUV API failed */
+-    CL5_OBJSET_ERROR,  /* namedobjset api failed */
+-    CL5_DB_LOCK_ERROR, /* bdb returns error 12 when the db runs out of locks,
++    CL5_SUCCESS,        /* successful operation */
++    CL5_BAD_DATA,       /* invalid parameter passed to the function */
++    CL5_BAD_FORMAT,     /* db data has unexpected format */
++    CL5_BAD_STATE,      /* changelog is in an incorrect state for attempted operation */
++    CL5_BAD_DBVERSION,  /* changelog has invalid dbversion */
++    CL5_DB_ERROR,       /* database error */
++    CL5_NOTFOUND,       /* requested entry or value was not found */
++    CL5_MEMORY_ERROR,   /* memory allocation failed */
++    CL5_SYSTEM_ERROR,   /* NSPR error occured, use PR_Error for furhter info */
++    CL5_CSN_ERROR,      /* CSN API failed */
++    CL5_RUV_ERROR,      /* RUV API failed */
++    CL5_OBJSET_ERROR,   /* namedobjset api failed */
++    CL5_DB_LOCK_ERROR,  /* bdb returns error 12 when the db runs out of locks,
+                            this var needs to be in slot 12 of the list.
+                            Do not re-order enum above! */
+-    CL5_PURGED_DATA,   /* requested data has been purged */
+-    CL5_MISSING_DATA,  /* data should be in the changelog, but is missing */
+-    CL5_UNKNOWN_ERROR, /* unclassified error */
+-    CL5_IGNORE_OP,     /* ignore this updated - used by CLEANALLRUV task */
+-    CL5_DB_RETRY,      /* Retryable database error  */
++    CL5_PURGED_DATA,    /* requested data has been purged */
++    CL5_MISSING_DATA,   /* data should be in the changelog, but is missing */
++    CL5_UNKNOWN_ERROR,  /* unclassified error */
++    CL5_IGNORE_OP,      /* ignore this updated - used by CLEANALLRUV task */
++    CL5_DB_RETRY,       /* Retryable database error  */
++    CL5_SHUTDOWN,       /* server shutdown during changelog iteration */
+     CL5_LAST_ERROR_CODE /* Should always be last in this enum */
+ };
+ 
+@@ -140,7 +141,7 @@ int cl5Open(void);
+ int cl5Close(void);
+ 
+ /* Name:        cldb_RemoveReplicaDB
+-   Description: Clear the cldb information from the replica 
++   Description: Clear the cldb information from the replica
+                 and delete the database file
+ */
+ int cldb_RemoveReplicaDB(Replica *replica);
+@@ -328,7 +329,7 @@ int cl5NotifyRUVChange(Replica *replica);
+ 
+ void cl5CleanRUV(ReplicaId rid, Replica *replica);
+ void cl5NotifyCleanup(int rid);
+-void trigger_cl_purging(cleanruv_purge_data *purge_data);
++int32_t cldb_purge_rid(cleanruv_data *purge_data);
+ int cldb_SetReplicaDB(Replica *replica, void *arg);
+ int cldb_UnSetReplicaDB(Replica *replica, void *arg);
+ int cldb_StartTrimming(Replica *replica);
+diff --git a/ldap/servers/plugins/replication/repl5.h b/ldap/servers/plugins/replication/repl5.h
+index 45b42be0f..2ba2cfaa7 100644
+--- a/ldap/servers/plugins/replication/repl5.h
++++ b/ldap/servers/plugins/replication/repl5.h
+@@ -827,13 +827,6 @@ typedef struct _cleanruv_data
+     PRBool original_task;
+ } cleanruv_data;
+ 
+-typedef struct _cleanruv_purge_data
+-{
+-    int cleaned_rid;
+-    Replica *replica;
+-    Slapi_Task *task;
+-} cleanruv_purge_data;
+-
+ typedef struct _csngen_test_data
+ {
+     Slapi_Task *task;
+@@ -927,5 +920,6 @@ void cleanruv_log(Slapi_Task *task, int rid, char *task_type, int sev_level, cha
+ char *replica_cleanallruv_get_local_maxcsn(ReplicaId rid, char *base_dn);
+ int replica_execute_cleanruv_task(Replica *r, ReplicaId rid, char *returntext);
+ int replica_execute_cleanall_ruv_task(Replica *r, ReplicaId rid, Slapi_Task *task, const char *force_cleaning, PRBool original_task, char *returntext);
++void delete_cleaned_rid_config(cleanruv_data *data);
+ 
+ #endif /* _REPL5_H_ */
+diff --git a/ldap/servers/plugins/replication/repl5_protocol_util.c b/ldap/servers/plugins/replication/repl5_protocol_util.c
+index 78fa863bb..25173e5cd 100644
+--- a/ldap/servers/plugins/replication/repl5_protocol_util.c
++++ b/ldap/servers/plugins/replication/repl5_protocol_util.c
+@@ -361,7 +361,7 @@ acquire_replica(Private_Repl_Protocol *prp, char *prot_oid, RUV **ruv)
+                         /* remote replica detected a duplicate ReplicaID */
+                         slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name,
+                                       "acquire_replica - "
+-                                      "%s: Unable to aquire replica: the replica "
++                                      "%s: Unable to acquire replica: the replica "
+                                       "has the same Replica ID as this one. "
+                                       "Replication is aborting.\n",
+                                       agmt_get_long_name(prp->agmt));
+diff --git a/ldap/servers/plugins/replication/repl_cleanallruv.c b/ldap/servers/plugins/replication/repl_cleanallruv.c
+index a985e691f..b62c2fae0 100644
+--- a/ldap/servers/plugins/replication/repl_cleanallruv.c
++++ b/ldap/servers/plugins/replication/repl_cleanallruv.c
+@@ -41,7 +41,7 @@ static int replica_cleanallruv_send_abort_extop(Repl_Agmt *ra, Slapi_Task *task,
+ static int replica_cleanallruv_check_maxcsn(Repl_Agmt *agmt, char *basedn, char *rid_text, char *maxcsn, Slapi_Task *task);
+ static int replica_cleanallruv_replica_alive(Repl_Agmt *agmt);
+ static int replica_cleanallruv_check_ruv(char *repl_root, Repl_Agmt *ra, char *rid_text, Slapi_Task *task, char *force);
+-static void delete_cleaned_rid_config(cleanruv_data *data);
++
+ static int replica_cleanallruv_is_finished(Repl_Agmt *agmt, char *filter, Slapi_Task *task);
+ static void check_replicas_are_done_cleaning(cleanruv_data *data);
+ static void check_replicas_are_done_aborting(cleanruv_data *data);
+@@ -791,7 +791,7 @@ delete_aborted_rid(Replica *r, ReplicaId rid, char *repl_root, char *certify_all
+ /*
+  *  Just remove the dse.ldif config, but we need to keep the cleaned rids in memory until we know we are done
+  */
+-static void
++void
+ delete_cleaned_rid_config(cleanruv_data *clean_data)
+ {
+     Slapi_PBlock *pb, *modpb;
+@@ -2087,7 +2087,6 @@ static void
+ replica_cleanallruv_thread(void *arg)
+ {
+     cleanruv_data *data = arg;
+-    cleanruv_purge_data *purge_data = NULL;
+     Object *agmt_obj = NULL;
+     Object *ruv_obj = NULL;
+     Repl_Agmt *agmt = NULL;
+@@ -2351,13 +2350,11 @@ done:
+         /*
+          * Success - the rid has been cleaned!
+          *
+-         * Delete the cleaned rid config.
+          * Make sure all the replicas have been "pre_cleaned"
+          * Remove the keep alive entry if present
+          * Clean the agreements' RUV
+-         * Remove the rid from the internal clean list
++         * Purge the changelog
+          */
+-        delete_cleaned_rid_config(data);
+         check_replicas_are_done_cleaning(data);
+         if (data->original_task) {
+             cleanruv_log(data->task, data->rid, CLEANALLRUV_ID, SLAPI_LOG_INFO,
+@@ -2369,21 +2366,14 @@ done:
+         }
+         clean_agmts(data);
+ 
+-        /*
+-         * Now purge the changelog.  The purging thread will free the
+-         * purge_data and update the cleaned rid list
+-         */
+-        purge_data = (cleanruv_purge_data *)slapi_ch_calloc(1, sizeof(cleanruv_purge_data));
+-        purge_data->cleaned_rid = data->rid;
+-        purge_data->replica = data->replica;
+-        purge_data->task = data->task;
+         cleanruv_log(data->task, data->rid, CLEANALLRUV_ID, SLAPI_LOG_INFO,
+-                     "Triggering changelog purge thread. This might complete "
+-                     "after the cleaning task finishes.");
+-        trigger_cl_purging(purge_data);
+-
+-        cleanruv_log(data->task, data->rid, CLEANALLRUV_ID, SLAPI_LOG_INFO,
+-                     "Successfully cleaned rid(%d)", data->rid);
++                     "Purging changelog...");
++        if (cldb_purge_rid(data) == LDAP_SUCCESS) {
++            delete_cleaned_rid_config(data);
++            remove_cleaned_rid(data->rid);
++            cleanruv_log(data->task, data->rid, CLEANALLRUV_ID, SLAPI_LOG_INFO,
++                         "Successfully cleaned rid(%d)", data->rid);
++        }
+     } else {
+         /*
+          *  Shutdown or abort
+-- 
+2.47.1
+

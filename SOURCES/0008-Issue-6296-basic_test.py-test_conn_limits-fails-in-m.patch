@@ -1,0 +1,54 @@
+From 47709ccde40a50eb908bf43e11cce3dc68fa0ef5 Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Wed, 21 Aug 2024 23:00:37 +0100
+Subject: [PATCH] Issue 6296 - basic_test.py::test_conn_limits fails in main
+ branch (#6300)
+
+Description:
+A CI test to validate connection management functionality by
+configuring an instance with a very small connection table fails,
+with the instance failing to start.
+
+Fix description:
+In a multi list connection table configuration, the connection table
+code has been updated to expand the connection table size to include
+a head for each list. This expanded size needs to be accounted for
+when we determine if we can accept new connections and on final check
+at server starup time.
+
+Relates: https://github.com/389ds/389-ds-base/issues/6296
+
+Reviewed by: @droideck  (Thank you)
+---
+ ldap/servers/slapd/daemon.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 9e2f32c43..56e20bd13 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -829,8 +829,8 @@ accept_thread(void *vports)
+     num_poll = setup_pr_accept_pds(n_tcps, s_tcps, i_unix, &fds);
+ 
+     while (!g_get_shutdown()) {
+-        /* Do we need to accept new connections? */
+-        int accept_new_connections = (ct->size > ct->conn_next_offset);
++        /* Do we need to accept new connections, account for ct->size including list heads. */
++        int accept_new_connections = ((ct->size - ct->list_num) > ct->conn_next_offset);
+         if (!accept_new_connections) {
+             if (last_accept_new_connections) {
+                 slapi_log_err(SLAPI_LOG_ERR, "accept_thread",
+@@ -2081,8 +2081,8 @@ unfurl_banners(Connection_Table *ct, daemon_ports_t *ports, PRFileDesc **n_tcps,
+     slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
+     char addrbuf[256];
+     int isfirsttime = 1;
+-
+-    if (ct->size > (slapdFrontendConfig->maxdescriptors - slapdFrontendConfig->reservedescriptors)) {
++    /* Take into account that ct->size includes a list head for each listener. */
++    if ((ct->size - ct->list_num) > (slapdFrontendConfig->maxdescriptors - slapdFrontendConfig->reservedescriptors)) {
+         slapi_log_err(SLAPI_LOG_ERR, "slapd_daemon",
+                       "Not enough descriptors to accept any connections. "
+                       "This may be because the maxdescriptors configuration "
+-- 
+2.47.1
+

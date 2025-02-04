@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.5.2
-Release:          2%{?dist}
+Release:          5%{?dist}
 License:          GPL-3.0-or-later AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (CC-BY-4.0 AND MIT) AND (MIT OR Apache-2.0) AND Unicode-DFS-2016 AND (MIT OR CC0-1.0) AND (MIT OR Unlicense) AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT AND MIT AND ISC AND MPL-2.0 AND PSF-2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -471,7 +471,13 @@ Source4:          389-ds-base.sysusers
 
 Patch:            0001-Issue-6312-In-branch-2.5-healthcheck-report-an-inval.patch
 Patch:            0002-Issue-6316-lmdb-reindex-is-broken-if-index-type-is-s.patch
-
+Patch:            0003-Issue-6192-Test-failure-test_match_large_valueset.patch
+Patch:            0004-Issue-6307-Wrong-set-of-entries-returned-for-some-se.patch
+Patch:            0005-Issue-6381-CleanAllRUV-move-changelog-purging-to-the.patch
+Patch:            0006-Issue-6390-Adjust-cleanAllRUV-max-per-txn-and-interv.patch
+Patch:            0007-Issue-6284-BUG-freelist-ordering-causes-high-wtime-6.patch
+Patch:            0008-Issue-6296-basic_test.py-test_conn_limits-fails-in-m.patch
+Patch:            0009-Issue-5798-Fix-dsconf-config-multi-valued-attr-opera.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -573,7 +579,7 @@ A cockpit UI Plugin for configuring and administering the 389 Directory Server
 
 %prep
 
-%autosetup -p1 -v -n %{name}-%{version}
+%autosetup -p1 -n %{name}-%{version}
 %if %{bundle_jemalloc}
 %setup -q -n %{name}-%{version} -T -D -b 3
 %endif
@@ -914,6 +920,19 @@ exit 0
 %endif
 
 %changelog
+* Fri Jan 24 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-5
+- Resolves: RHEL-74350 - Some nsslapd-haproxy-trusted-ip values are discarded upon a restart. [rhel-9.5.z]
+
+* Mon Dec 09 2024 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-4
+- Resolves: RHEL-70257 - Freelist ordering causes high wtime [rhel-9.5.z]
+
+* Thu Dec 05 2024 James Chapman <jachapma@redhat.com> - 2.5.2-3
+- Bump version to 2.5.2-3
+- Resolves: RHEL-65775 - Wrong set of entries returned for some search filters [rhel-9.5.z]
+- Resolves: RHEL-66138 - deadlock during cleanAllRuv [rhel-9.5.z]
+- Resolves: RHEL-67163 - cleanallruv consums CPU and is slow [rhel-9.5.z]
+- Resolves: RHEL-70257 - Freelist ordering causes high wtime [rhel-9.5.z]
+
 * Mon Sep 16 2024 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-2
 - Bump version to 2.5.2-2
 - Resolves: RHEL-55744 - ipahealthcheck.ds.backends.BackendsCheck.DSBLE0006: BDB is deprecated and should not be used as a backend
