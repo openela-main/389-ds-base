@@ -48,7 +48,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}10%{?prerel}%{?dist}
+Release:          %{?relprefix}11%{?prerel}%{?dist}
 License:          GPLv3+ and (ASL 2.0 or MIT)
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -313,6 +313,9 @@ Patch17:          0017-Issue-6224-Remove-test_referral_subsuffix-from-ds_lo.patc
 Patch18:          0018-Issue-6417-2nd-If-an-entry-RDN-is-identical-to-the-s.patch
 Patch19:          0019-Issue-6417-2nd-fix-typo.patch
 Patch20:          0020-Issue-6417-3rd-If-an-entry-RDN-is-identical-to-the-s.patch
+Patch21:          0021-Issue-6509-Race-condition-with-Paged-Result-searches.patch
+Patch22:          0022-Issue-6509-Fix-cherry-pick-issue-race-condition-in-P.patch
+
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
 the LDAP server and command line utilities for server administration.
@@ -933,6 +936,9 @@ exit 0
 %doc README.md
 
 %changelog
+* Thu Jan 23 2025 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-11
+- Resolves: RHEL-72487 - IPA LDAP error code T3 when no exceeded time limit from a paged search result [rhel-8.10.z]
+
 * Fri Jan 17 2025 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-10
 - Resolves: RHEL-69822 - "Duplicated DN detected" errors when creating indexes or importing entries. [rhel-8.10.z]
 - Resolves: RHEL-71215 - Sub suffix causes "id2entry - Could not open id2entry err 0" error when the Directory Server starts [rhel-8.10.z]

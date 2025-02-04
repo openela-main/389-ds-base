@@ -1,0 +1,29 @@
+From 27cd055197bc3cae458a1f86621aa5410c66dd2c Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 20 Jan 2025 15:51:24 -0500
+Subject: [PATCH] Issue 6509 - Fix cherry pick issue (race condition in Paged
+ results)
+
+Relates: https://github.com/389ds/389-ds-base/issues/6509
+---
+ ldap/servers/slapd/daemon.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 13dfe250d..57e07e5f5 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -1620,8 +1620,8 @@ setup_pr_read_pds(Connection_Table *ct)
+                 connection_table_move_connection_out_of_active_list(ct, c);
+             } else if (c->c_prfd != NULL) {
+                 if ((!c->c_gettingber) && (c->c_threadnumber < c->c_max_threads_per_conn)) {
+-                    ct->fd[listnum][count].fd = c->c_prfd;
+-                    ct->fd[listnum][count].in_flags = SLAPD_POLL_FLAGS;
++                    ct->fd[count].fd = c->c_prfd;
++                    ct->fd[count].in_flags = SLAPD_POLL_FLAGS;
+                     /* slot i of the connection table is mapped to slot
+                      * count of the fds array */
+                     c->c_fdi = count;
+-- 
+2.48.0
+
