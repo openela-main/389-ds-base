@@ -1,0 +1,41 @@
+From d43600284728d677ea6a98d9bd3d2e92bfbaecdb Mon Sep 17 00:00:00 2001
+From: Masahiro Matsuya <mmatsuya@redhat.com>
+Date: Fri, 24 Jan 2025 15:08:22 +0900
+Subject: [PATCH] Issue 6446 - Fix test_acct_policy_consumer test to wait
+ enough for lastLoginHistory update (#6530)
+
+Adding a small sleep to wait for lastLoginHistory update after the bind
+operation.
+
+Relates: #6446
+
+Author: Masahiro Matsuya
+
+Reviewed by: tbordaz
+---
+ dirsrvtests/tests/suites/plugins/accpol_test.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/dirsrvtests/tests/suites/plugins/accpol_test.py b/dirsrvtests/tests/suites/plugins/accpol_test.py
+index f5db8e461..1354f0559 100644
+--- a/dirsrvtests/tests/suites/plugins/accpol_test.py
++++ b/dirsrvtests/tests/suites/plugins/accpol_test.py
+@@ -1372,6 +1372,7 @@ def test_acct_policy_consumer(topology_m1c1, request):
+     time.sleep(2)
+     user_supplier = users_supplier.get("test_user_1000")
+     user_supplier.bind(USER_PW)
++    time.sleep(2)
+ 
+     # Verify there is no referral error
+     results = supplier.ds_error_log.match('.*.acct_update_login_history - Modify error 10 on entry*')
+@@ -1391,6 +1392,7 @@ def test_acct_policy_consumer(topology_m1c1, request):
+     time.sleep(2)
+     user_consumer = users_supplier.get("test_user_1000")
+     user_consumer.bind(USER_PW)
++    time.sleep(2)
+ 
+     # Verify there is no referral error
+     results = consumer.ds_error_log.match('.*.acct_update_login_history - Modify error 10 on entry*')
+-- 
+2.48.1
+

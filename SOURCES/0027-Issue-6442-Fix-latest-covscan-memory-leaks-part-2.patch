@@ -1,0 +1,37 @@
+From 984c653218cf386e449dc4db89b085a49b535f8d Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Wed, 18 Dec 2024 16:55:06 -0500
+Subject: [PATCH] Issue 6442 - Fix latest covscan memory leaks (part 2)
+
+Description:
+
+Missed part of the fix becuase of a rebase issue
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6442
+
+Reviewed by: progier & spichugi(Thanks!!)
+---
+ ldap/servers/slapd/plugin_internal_op.c | 7 -------
+ 1 file changed, 7 deletions(-)
+
+diff --git a/ldap/servers/slapd/plugin_internal_op.c b/ldap/servers/slapd/plugin_internal_op.c
+index 4f87ad3cf..96e705471 100644
+--- a/ldap/servers/slapd/plugin_internal_op.c
++++ b/ldap/servers/slapd/plugin_internal_op.c
+@@ -249,13 +249,6 @@ slapi_search_internal_set_pb(Slapi_PBlock *pb, const char *base, int scope, cons
+         return;
+     }
+ 
+-    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
+-    operation_free(&op, NULL);
+-    slapi_pblock_set(pb, SLAPI_OPERATION, NULL);
+-    slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
+-    slapi_ch_array_free(tmp_attrs);
+-    slapi_pblock_set(pb, SLAPI_SEARCH_ATTRS, NULL);
+-
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+     slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET_DN, (void *)base);
+-- 
+2.48.1
+

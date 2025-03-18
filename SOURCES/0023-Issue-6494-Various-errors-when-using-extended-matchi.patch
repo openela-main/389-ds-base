@@ -1,0 +1,791 @@
+From 09daeb90f13bd76004e377e27295606b0bc5f579 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Mon, 13 Jan 2025 18:03:07 +0100
+Subject: [PATCH] Issue 6494 - Various errors when using extended matching rule
+ on vlv sort filter (#6495)
+
+* Issue 6494 - Various errors when using extended matching rule on vlv sort filter
+
+Various issues when configuring and using extended matching rule within a vlv sort filter:
+
+Race condition about the keys storage while indexing leading to various heap and data corruption. (lmdb only)
+Crash while indexing if vlv are misconfigured because NULL key is not checked.
+Read after block because of data type mismatch between SlapiValue and berval
+Memory leaks
+Solution:
+
+Serialize the vlv index key generation if vlv filter has an extended matching rule.
+Check null keys
+Always provides SlapiValue even ifg we want to get keys as bervals
+Free properly the resources
+Issue: #6494
+
+Reviewed by: @mreynolds389 (Thanks!)
+
+(cherry picked from commit 4bd27ecc4e1d21c8af5ab8cad795d70477179a98)
+---
+ .../tests/suites/indexes/regression_test.py   |  29 +++
+ .../tests/suites/vlv/regression_test.py       | 184 +++++++++++++++++-
+ ldap/servers/slapd/back-ldbm/cleanup.c        |   8 +
+ .../back-ldbm/db-mdb/mdb_import_threads.c     |  34 +++-
+ .../slapd/back-ldbm/db-mdb/mdb_layer.c        |   1 +
+ .../slapd/back-ldbm/db-mdb/mdb_layer.h        |   1 +
+ ldap/servers/slapd/back-ldbm/db-mdb/mdb_txn.c |  12 +-
+ ldap/servers/slapd/back-ldbm/dblayer.c        |  22 ++-
+ ldap/servers/slapd/back-ldbm/ldbm_attr.c      |   2 +-
+ ldap/servers/slapd/back-ldbm/matchrule.c      |   8 +-
+ .../servers/slapd/back-ldbm/proto-back-ldbm.h |   3 +-
+ ldap/servers/slapd/back-ldbm/sort.c           |  33 ++--
+ ldap/servers/slapd/back-ldbm/vlv.c            |  26 +--
+ ldap/servers/slapd/back-ldbm/vlv_srch.c       |   4 +-
+ ldap/servers/slapd/generation.c               |   5 +
+ ldap/servers/slapd/plugin_mr.c                |  13 +-
+ src/lib389/lib389/backend.py                  |  10 +
+ 17 files changed, 335 insertions(+), 60 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/indexes/regression_test.py b/dirsrvtests/tests/suites/indexes/regression_test.py
+index b077b529a..08d78a899 100644
+--- a/dirsrvtests/tests/suites/indexes/regression_test.py
++++ b/dirsrvtests/tests/suites/indexes/regression_test.py
+@@ -547,6 +547,35 @@ def test_task_and_be(topo, add_backend_and_ldif_50K_users):
+     assert user.get_attr_val_utf8_l('description') == descval
+ 
+ 
++def test_reindex_extended_matching_rule(topo, add_backend_and_ldif_50K_users):
++    """Check that index with extended matching rule are reindexed properly.
++
++    :id: 8a3198e8-cc5a-11ef-a3e7-482ae39447e5
++    :setup: Standalone instance + a second backend with 50K users
++    :steps:
++        1. Configure uid with 2.5.13.2 matching rule
++        1. Configure cn with 2.5.13.2 matching rule
++        2. Reindex
++    :expectedresults:
++        1. Success
++        2. Success
++    """
++
++    inst = topo.standalone
++    tasks = Tasks(inst)
++    be2 = Backends(topo.standalone).get_backend(SUFFIX2)
++    index = be2.get_index('uid')
++    index.replace('nsMatchingRule', '2.5.13.2')
++    index = be2.get_index('cn')
++    index.replace('nsMatchingRule', '2.5.13.2')
++
++    assert tasks.reindex(
++        suffix=SUFFIX2,
++        args={TASK_WAIT: True}
++    ) == 0
++
++
++
+ if __name__ == "__main__":
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/dirsrvtests/tests/suites/vlv/regression_test.py b/dirsrvtests/tests/suites/vlv/regression_test.py
+index 873eada20..aca638f28 100644
+--- a/dirsrvtests/tests/suites/vlv/regression_test.py
++++ b/dirsrvtests/tests/suites/vlv/regression_test.py
+@@ -138,7 +138,7 @@ def add_users(inst, users_num, suffix=DEFAULT_SUFFIX):
+ 
+ 
+ def create_vlv_search_and_index(inst, basedn=DEFAULT_SUFFIX, bename='userRoot',
+-                                scope=ldap.SCOPE_SUBTREE, prefix="vlv"):
++                                scope=ldap.SCOPE_SUBTREE, prefix="vlv", vlvsort="cn"):
+     vlv_searches = VLVSearch(inst)
+     vlv_search_properties = {
+         "objectclass": ["top", "vlvSearch"],
+@@ -156,7 +156,7 @@ def create_vlv_search_and_index(inst, basedn=DEFAULT_SUFFIX, bename='userRoot',
+     vlv_index_properties = {
+         "objectclass": ["top", "vlvIndex"],
+         "cn": f"{prefix}Idx",
+-        "vlvsort": "cn",
++        "vlvsort": vlvsort,
+     }
+     vlv_index.create(
+         basedn=f"cn={prefix}Srch,cn={bename},cn=ldbm database,cn=plugins,cn=config",
+@@ -266,6 +266,40 @@ def vlv_setup_with_two_backend(topology_st, request):
+     return topology_st
+ 
+ 
++@pytest.fixture
++def vlv_setup_with_uid_mr(topology_st, request):
++    inst = topology_st.standalone
++    bename = 'be1'
++    besuffix = f'o={bename}'
++    beh = BackendHandler(inst, { bename: besuffix })
++
++    def fin():
++        # Cleanup function
++        if not DEBUGGING and inst.exists() and inst.status():
++            beh.cleanup()
++
++    request.addfinalizer(fin)
++
++    # Make sure that our backend are not already present.
++    beh.cleanup()
++
++    # Then add the new backend
++    beh.setup()
++
++    index = Index(inst, f'cn=uid,cn=index,cn={bename},cn=ldbm database,cn=plugins,cn=config')
++    index.add('nsMatchingRule', '2.5.13.2')
++    reindex_task = Tasks(inst)
++    assert reindex_task.reindex(
++        suffix=besuffix,
++        attrname='uid',
++        args={TASK_WAIT: True}
++    ) == 0
++
++    topology_st.beh = beh
++    return topology_st
++
++
++
+ @pytest.fixture
+ def freeipa(topology_st):
+     # generate a standalone instance with same vlv config than freeipa
+@@ -939,6 +973,152 @@ def test_vlv_by_keyword(freeipa):
+         assert f'cn={idx},ou=certificateRepository,ou=ca,o=ipaca' in dns
+ 
+ 
++def get_timestamp_attr():
++    current_datetime = datetime.now()
++    return f'tsattr-{current_datetime.timestamp()}'.replace(".", "-")
++
++
++def perform_vlv_search(conn, alog, basedn, vlvcrit=True, ssscrit=True, scope=ldap.SCOPE_SUBTREE, sss='cn', filter='(uid=*)'):
++    timestamp = get_timestamp_attr()
++    vlv_control = VLVRequestControl(criticality=vlvcrit,
++        before_count=1,
++        after_count=1,
++        offset=4,
++        content_count=0,
++        greater_than_or_equal=None,
++        context_id=None)
++
++    sss_control = SSSRequestControl(criticality=ssscrit, ordering_rules=[sss])
++    log.info(f'perform_vlv_search: basedn={basedn} ={vlvcrit} ssscrit={ssscrit} sss={sss} filter={filter} timestamp={timestamp}')
++
++    with suppress(ldap.LDAPError):
++        result = conn.search_ext_s(
++            base=basedn,
++            scope=scope,
++            filterstr=filter,
++            attrlist=[timestamp],
++            serverctrls=[vlv_control, sss_control]
++        )
++    line =  alog.match(f'.*SRCH.*{timestamp}.*')
++    log.info(f'perform_vlv_search: line={line}')
++    match = re.match(r'.*conn=(\d+) op=(\d+).*', line[0])
++    conn,op = match.group(1,2)
++    log.info(f'perform_vlv_search: conn={conn} op={op} ')
++    lines = ''.join(alog.match(f'.*conn={conn} op={op} .*', after_pattern=f'.*{timestamp}.*'))
++    log.info(f'perform_vlv_search: lines={lines}')
++    return lines
++
++
++def test_vlv_logs(vlv_setup_nested_backends):
++    """Test than VLV abd SORT lines are properply written
++
++    :id: a1d9ad9e-7cbb-11ef-82e3-083a88554478
++    :setup: Standalone instance with two backens and one level scoped vlv
++    :steps:
++        1. Check that standard search returns 16 valid certificate
++        2. Check that vlv search returns 16 valid certificate
++
++    :expectedresults:
++        1. Should Success.
++        2. Should Success.
++    """
++    inst = vlv_setup_nested_backends.standalone
++    beh = vlv_setup_nested_backends.beh
++    tasks = Tasks(inst)
++    conn = open_new_ldapi_conn(inst.serverid)
++    conn_demo = open_new_ldapi_conn(inst.serverid)
++    alog = DirsrvAccessLog(inst)
++    dn1 = beh.data['be1']['dn']
++    dn2 = beh.data['be2']['dn']
++    suffix1 = beh.data['be1']['suffix']
++    suffix2 = beh.data['be2']['suffix']
++    conn_demo.bind_s(dn2, DEMO_PW)
++
++    VLV_FEATURE_DN = 'oid=2.16.840.1.113730.3.4.9,cn=features,cn=config'
++    VLV_DEFAULT_ACI = b'(targetattr != "aci")(version 3.0; acl "VLV Request Control"; ' + \
++                      b'allow( read , search, compare, proxy ) userdn = "ldap:///all";)'
++    VLV_DENY_ACI = b'(targetattr != "aci")(version 3.0; acl "VLV Request Control"; ' + \
++                      f'deny( read , search, compare, proxy ) userdn = "ldap:///{dn2}";)'.encode('utf8')
++
++    # Set VLV feature ACI
++    mod = (ldap.MOD_REPLACE, 'aci', [ VLV_DEFAULT_ACI, VLV_DENY_ACI ])
++    conn.modify_s(VLV_FEATURE_DN, [mod,])
++
++    # Invalid ACL
++    res = perform_vlv_search(conn_demo, alog, suffix2)
++    assert 'SORT' in res
++    assert 'VLV' in res
++    assert 'err=50 ' in res
++
++    # Sucessful VLV
++    res = perform_vlv_search(conn, alog, suffix2)
++    assert 'SORT' in res
++    assert 'VLV' in res
++    assert 'err=0 ' in res
++
++    # Multiple backends SSS and VLV are critical
++    res = perform_vlv_search(conn, alog, suffix1)
++    assert 'SORT' in res
++    assert 'VLV' in res
++    assert 'err=76 ' in res
++
++    # Multiple backends SSS is critical VLV is not critical
++    res = perform_vlv_search(conn, alog, suffix1, vlvcrit=False)
++    assert 'SORT' in res
++    assert 'VLV' in res
++    assert 'err=12 ' in res
++
++    # Multiple backends SSS and VLV are not critical
++    res = perform_vlv_search(conn, alog, suffix1, vlvcrit=False, ssscrit=False)
++    assert 'SORT' in res
++    assert 'VLV' in res
++    assert 'err=0 ' in res
++
++
++def test_vlv_with_mr(vlv_setup_with_uid_mr):
++    """
++    Testing vlv having specific matching rule
++
++    :id: 5e04afe2-beec-11ef-aa84-482ae39447e5
++    :setup: Standalone with uid have a matching rule index
++    :steps:
++        1. Append vlvIndex entries then vlvSearch entry in the dse.ldif
++        2. Restart the server
++    :expectedresults:
++        1. Should Success.
++        2. Should Success.
++    """
++    inst = vlv_setup_with_uid_mr.standalone
++    beh = vlv_setup_with_uid_mr.beh
++    bename, besuffix = next(iter(beh.bedict.items()))
++    vlv_searches, vlv_index = create_vlv_search_and_index(
++                                inst, basedn=besuffix, bename=bename,
++                                vlvsort="uid:2.5.13.2")
++    # Reindex the vlv
++    reindex_task = Tasks(inst)
++    assert reindex_task.reindex(
++        suffix=besuffix,
++        attrname=vlv_index.rdn,
++        args={TASK_WAIT: True},
++        vlv=True
++    ) == 0
++
++    inst.restart()
++    users = UserAccounts(inst, besuffix)
++    user_properties = {
++        'uid': f'a new testuser',
++        'cn': f'a new testuser',
++        'sn': 'user',
++        'uidNumber': '0',
++        'gidNumber': '0',
++        'homeDirectory': 'foo'
++    }
++    user = users.create(properties=user_properties)
++    user.delete()
++    assert inst.status()
++
++
++
+ if __name__ == "__main__":
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/ldap/servers/slapd/back-ldbm/cleanup.c b/ldap/servers/slapd/back-ldbm/cleanup.c
+index 6b2e9faef..939d8bc4f 100644
+--- a/ldap/servers/slapd/back-ldbm/cleanup.c
++++ b/ldap/servers/slapd/back-ldbm/cleanup.c
+@@ -15,12 +15,14 @@
+ 
+ #include "back-ldbm.h"
+ #include "dblayer.h"
++#include "vlv_srch.h"
+ 
+ int
+ ldbm_back_cleanup(Slapi_PBlock *pb)
+ {
+     struct ldbminfo *li;
+     Slapi_Backend *be;
++    struct vlvSearch *nextp;
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, "ldbm_back_cleanup", "ldbm backend cleaning up\n");
+     slapi_pblock_get(pb, SLAPI_PLUGIN_PRIVATE, &li);
+@@ -45,6 +47,12 @@ ldbm_back_cleanup(Slapi_PBlock *pb)
+         return 0;
+     }
+ 
++    /* Release the vlv list */
++    for (struct vlvSearch *p=be->vlvSearchList; p; p=nextp) {
++        nextp = p->vlv_next;
++        vlvSearch_delete(&p);
++    }
++
+     /*
+      * We check if li is NULL. Because of an issue in how we create backends
+      * we share the li and plugin info between many unique backends. This causes
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
+index 716e3c0f3..1463069ad 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include <stddef.h>
++#include <stdbool.h>
+ #include <assert.h>
+ #include "mdb_import.h"
+ #include "../vlv_srch.h"
+@@ -152,6 +153,9 @@ static void dbmdb_import_writeq_push(ImportCtx_t *ctx, WriterQueueData_t *wqd);
+ static int have_workers_finished(ImportJob *job);
+ struct backentry *dbmdb_import_prepare_worker_entry(WorkerQueueData_t *wqelmnt);
+ 
++/* Mutex needed for extended matching rules */
++static pthread_mutex_t extended_mr_mutex = PTHREAD_MUTEX_INITIALIZER;
++
+ /***************************************************************************/
+ /**************************** utility functions ****************************/
+ /***************************************************************************/
+@@ -3192,6 +3196,23 @@ is_reindexed_attr(const char *attrname, const ImportCtx_t *ctx, char **list)
+     return (list && attr_in_list(attrname, list));
+ }
+ 
++/*
++ * Determine if vlv require extended matching rule evaluation
++ */
++static bool
++vlv_has_emr(struct vlvIndex *p)
++{
++    if (p->vlv_sortkey != NULL) {
++        /* Foreach sorted attribute... */
++        for (int sortattr = 0; p->vlv_sortkey[sortattr] != NULL; sortattr++) {
++            if (p->vlv_sortkey[sortattr]->sk_matchruleoid != NULL) {
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
+ static void
+ process_vlv_index(backentry *ep, ImportWorkerInfo *info)
+ {
+@@ -3214,7 +3235,18 @@ process_vlv_index(backentry *ep, ImportWorkerInfo *info)
+         slapi_pblock_set(pb, SLAPI_BACKEND, be);
+         if (vlv_index && vlv_index->vlv_attrinfo &&
+             is_reindexed_attr(vlv_index->vlv_attrinfo->ai_type , ctx, ctx->indexVlvs)) {
+-            ret = vlv_update_index(vlv_index, (dbi_txn_t*)&txn, inst->inst_li, pb, NULL, ep);
++            if (vlv_has_emr(vlv_index)) {
++                /*
++                 * Serialize if there is an extended matching rule
++                 * Because matchrule_values_to_keys is not thread safe when indexing
++                 *  because new mr_indexer are created) but that need to be double checked)
++                 */
++                pthread_mutex_lock(&extended_mr_mutex);
++                ret = vlv_update_index(vlv_index, (dbi_txn_t*)&txn, inst->inst_li, pb, NULL, ep);
++                pthread_mutex_unlock(&extended_mr_mutex);
++            } else {
++                ret = vlv_update_index(vlv_index, (dbi_txn_t*)&txn, inst->inst_li, pb, NULL, ep);
++            }
+         }
+         if (0 != ret) {
+             /* Something went wrong, eg disk filled up */
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
+index 35f8173a7..40cc29c89 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
+@@ -346,6 +346,7 @@ dbmdb_close(struct ldbminfo *li, int dbmode)
+     }
+ 
+     return_value |= dbmdb_post_close(li, dbmode);
++    shutdown_mdbtxn();
+ 
+     return return_value;
+ }
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.h b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.h
+index 96e02bf74..fe230d60e 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.h
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.h
+@@ -506,6 +506,7 @@ void dbmdb_free_stats(dbmdb_stats_t **stats);
+ int dbmdb_reset_vlv_file(backend *be, const char *filename);
+ 
+ /* mdb_txn.c */
++void shutdown_mdbtxn(void);
+ int dbmdb_start_txn(const char *funcname, dbi_txn_t *parent_txn, int flags, dbi_txn_t **txn);
+ int dbmdb_end_txn(const char *funcname, int rc, dbi_txn_t **txn);
+ void init_mdbtxn(dbmdb_ctx_t *ctx);
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_txn.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_txn.c
+index 21c53dd8c..74088db89 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_txn.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_txn.c
+@@ -41,8 +41,10 @@ cleanup_mdbtxn_stack(void *arg)
+     dbmdb_txn_t *txn2;
+ 
+     *anchor = NULL;
++    if (anchor == (dbmdb_txn_t **) PR_GetThreadPrivate(thread_private_mdb_txn_stack)) {
++        PR_SetThreadPrivate(thread_private_mdb_txn_stack, NULL);
++    }
+     slapi_ch_free((void**)&anchor);
+-    PR_SetThreadPrivate(thread_private_mdb_txn_stack, NULL);
+     while (txn) {
+         txn2 = txn->parent;
+         TXN_ABORT(TXN(txn));
+@@ -68,6 +70,14 @@ static dbmdb_txn_t **get_mdbtxnanchor(void)
+     return anchor;
+ }
+ 
++void shutdown_mdbtxn(void)
++{
++    dbmdb_txn_t **anchor = (dbmdb_txn_t **) PR_GetThreadPrivate(thread_private_mdb_txn_stack);
++    if (anchor) {
++        PR_SetThreadPrivate(thread_private_mdb_txn_stack, NULL);
++    }
++}
++
+ static void push_mdbtxn(dbmdb_txn_t *txn)
+ {
+     dbmdb_txn_t **anchor = get_mdbtxnanchor();
+diff --git a/ldap/servers/slapd/back-ldbm/dblayer.c b/ldap/servers/slapd/back-ldbm/dblayer.c
+index 30cd0c76a..46421ef3b 100644
+--- a/ldap/servers/slapd/back-ldbm/dblayer.c
++++ b/ldap/servers/slapd/back-ldbm/dblayer.c
+@@ -454,8 +454,12 @@ int
+ dblayer_close(struct ldbminfo *li, int dbmode)
+ {
+     dblayer_private *priv = (dblayer_private *)li->li_dblayer_private;
+-
+-    return priv->dblayer_close_fn(li, dbmode);
++    int rc = priv->dblayer_close_fn(li, dbmode);
++    if (rc == 0) {
++        /* Clean thread specific data */
++        dblayer_destroy_txn_stack();
++    }
++    return rc;
+ }
+ 
+ /* Routines for opening and closing random files in the dbi_env_t.
+@@ -627,6 +631,9 @@ dblayer_erase_index_file(backend *be, struct attrinfo *a, PRBool use_lock, int n
+         return 0;
+     }
+     struct ldbminfo *li = (struct ldbminfo *)be->be_database->plg_private;
++    if (NULL == li) {
++        return 0;
++    }
+     dblayer_private *priv = (dblayer_private *)li->li_dblayer_private;
+ 
+     return priv->dblayer_rm_db_file_fn(be, a, use_lock, no_force_chkpt);
+@@ -1374,6 +1381,17 @@ dblayer_pop_pvt_txn(void)
+     return;
+ }
+ 
++void
++dblayer_destroy_txn_stack(void)
++{
++    /*
++     * Cleanup for the main thread to avoid false/positive leaks from libasan
++     * Note: data is freed because PR_SetThreadPrivate calls the
++     * dblayer_cleanup_txn_stack callback
++     */
++    PR_SetThreadPrivate(thread_private_txn_stack, NULL);
++}
++
+ const char *
+ dblayer_get_db_suffix(Slapi_Backend *be)
+ {
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_attr.c b/ldap/servers/slapd/back-ldbm/ldbm_attr.c
+index 07f3058a3..30bfd1349 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_attr.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_attr.c
+@@ -54,7 +54,7 @@ attrinfo_delete(struct attrinfo **pp)
+         idl_release_private(*pp);
+         (*pp)->ai_key_cmp_fn = NULL;
+         slapi_ch_free((void **)&((*pp)->ai_type));
+-        slapi_ch_free((void **)(*pp)->ai_index_rules);
++        charray_free((*pp)->ai_index_rules);
+         slapi_ch_free((void **)&((*pp)->ai_attrcrypt));
+         attr_done(&((*pp)->ai_sattr));
+         attrinfo_delete_idlistinfo(&(*pp)->ai_idlistinfo);
+diff --git a/ldap/servers/slapd/back-ldbm/matchrule.c b/ldap/servers/slapd/back-ldbm/matchrule.c
+index 5d516b9f8..5365e8acf 100644
+--- a/ldap/servers/slapd/back-ldbm/matchrule.c
++++ b/ldap/servers/slapd/back-ldbm/matchrule.c
+@@ -107,7 +107,7 @@ destroy_matchrule_indexer(Slapi_PBlock *pb)
+  * is destroyed
+  */
+ int
+-matchrule_values_to_keys(Slapi_PBlock *pb, struct berval **input_values, struct berval ***output_values)
++matchrule_values_to_keys(Slapi_PBlock *pb, Slapi_Value **input_values, struct berval ***output_values)
+ {
+     IFP mrINDEX = NULL;
+ 
+@@ -135,10 +135,8 @@ matchrule_values_to_keys_sv(Slapi_PBlock *pb, Slapi_Value **input_values, Slapi_
+     slapi_pblock_get(pb, SLAPI_PLUGIN_MR_INDEX_SV_FN, &mrINDEX);
+     if (NULL == mrINDEX) { /* old school - does not have SV function */
+         int rc;
+-        struct berval **bvi = NULL, **bvo = NULL;
+-        valuearray_get_bervalarray(input_values, &bvi);
+-        rc = matchrule_values_to_keys(pb, bvi, &bvo);
+-        ber_bvecfree(bvi);
++        struct berval **bvo = NULL;
++        rc = matchrule_values_to_keys(pb, input_values, &bvo);
+         /* note - the indexer owns bvo and will free it when destroyed */
+         valuearray_init_bervalarray(bvo, output_values);
+         /* store output values in SV form - caller expects SLAPI_PLUGIN_MR_KEYS is Slapi_Value** */
+diff --git a/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h b/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
+index a1e57c172..5c26d44a2 100644
+--- a/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
++++ b/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
+@@ -88,6 +88,7 @@ int dblayer_erase_index_file(backend *be, struct attrinfo *a, PRBool use_lock, i
+ int dblayer_get_id2entry(backend *be, dbi_db_t **ppDB);
+ int dblayer_get_changelog(backend *be, dbi_db_t ** ppDB, int create);
+ int dblayer_release_id2entry(backend *be, dbi_db_t *pDB);
++void dblayer_destroy_txn_stack(void);
+ int dblayer_txn_init(struct ldbminfo *li, back_txn *txn);
+ int dblayer_txn_begin(backend *be, back_txnid parent_txn, back_txn *txn);
+ int dblayer_txn_begin_ext(struct ldbminfo *li, back_txnid parent_txn, back_txn *txn, PRBool use_lock);
+@@ -541,7 +542,7 @@ int compute_allids_limit(Slapi_PBlock *pb, struct ldbminfo *li);
+  */
+ int create_matchrule_indexer(Slapi_PBlock **pb, char *matchrule, char *type);
+ int destroy_matchrule_indexer(Slapi_PBlock *pb);
+-int matchrule_values_to_keys(Slapi_PBlock *pb, struct berval **input_values, struct berval ***output_values);
++int matchrule_values_to_keys(Slapi_PBlock *pb, Slapi_Value **input_values, struct berval ***output_values);
+ int matchrule_values_to_keys_sv(Slapi_PBlock *pb, Slapi_Value **input_values, Slapi_Value ***output_values);
+ 
+ /*
+diff --git a/ldap/servers/slapd/back-ldbm/sort.c b/ldap/servers/slapd/back-ldbm/sort.c
+index 65af5dcf9..f6a77b39a 100644
+--- a/ldap/servers/slapd/back-ldbm/sort.c
++++ b/ldap/servers/slapd/back-ldbm/sort.c
+@@ -528,30 +528,18 @@ compare_entries_sv(ID *id_a, ID *id_b, sort_spec *s, baggage_carrier *bc, int *e
+             valuearray_get_bervalarray(valueset_get_valuearray(&attr_b->a_present_values), &value_b);
+         } else {
+             /* Match rule case */
+-            struct berval **actual_value_a = NULL;
+-            struct berval **actual_value_b = NULL;
+-            struct berval **temp_value = NULL;
++            Slapi_Value **va_a = valueset_get_valuearray(&attr_a->a_present_values);
++            Slapi_Value **va_b = valueset_get_valuearray(&attr_b->a_present_values);
+ 
+-            valuearray_get_bervalarray(valueset_get_valuearray(&attr_a->a_present_values), &actual_value_a);
+-            valuearray_get_bervalarray(valueset_get_valuearray(&attr_b->a_present_values), &actual_value_b);
+-            matchrule_values_to_keys(this_one->mr_pb, actual_value_a, &temp_value);
+-            /* Now copy it, so the second call doesn't crap on it */
+-            value_a = slapi_ch_bvecdup(temp_value); /* Really, we'd prefer to not call the chXXX variant...*/
+-            matchrule_values_to_keys(this_one->mr_pb, actual_value_b, &value_b);
++            matchrule_values_to_keys(this_one->mr_pb, va_a, &value_a);
++            /* Plugin owns the memory ==> duplicate the key before next call garble it */
++            value_a = slapi_ch_bvecdup(value_a);
++            matchrule_values_to_keys(this_one->mr_pb, va_b, &value_b);
+ 
+-            if ((actual_value_a && !value_a) ||
+-                (actual_value_b && !value_b)) {
+-                ber_bvecfree(actual_value_a);
+-                ber_bvecfree(actual_value_b);
+-                CACHE_RETURN(&inst->inst_cache, &a);
+-                CACHE_RETURN(&inst->inst_cache, &b);
+-                *error = 1;
+-                return 0;
++            if ((va_a && !value_a) || (va_b && !value_b)) {
++                result = 0;
++                goto bail;
+             }
+-            if (actual_value_a)
+-                ber_bvecfree(actual_value_a);
+-            if (actual_value_b)
+-                ber_bvecfree(actual_value_b);
+         }
+         /* Compare them */
+         if (!order) {
+@@ -574,9 +562,10 @@ compare_entries_sv(ID *id_a, ID *id_b, sort_spec *s, baggage_carrier *bc, int *e
+         }
+         /* If so, proceed to the next attribute for comparison */
+     }
++    *error = 0;
++bail:
+     CACHE_RETURN(&inst->inst_cache, &a);
+     CACHE_RETURN(&inst->inst_cache, &b);
+-    *error = 0;
+     return result;
+ }
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/vlv.c b/ldap/servers/slapd/back-ldbm/vlv.c
+index 2a7747dfa..4e40d1a41 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv.c
++++ b/ldap/servers/slapd/back-ldbm/vlv.c
+@@ -705,7 +705,7 @@ vlv_getindices(IFP callback_fn, void *param, backend *be)
+  * generate the same composite key, so we append the EntryID
+  * to ensure the uniqueness of the key.
+  *
+- * Always creates a key. Never returns NULL.
++ * May return NULL in case of errors (typically in some configuration error cases)
+  */
+ static struct vlv_key *
+ vlv_create_key(struct vlvIndex *p, struct backentry *e)
+@@ -759,10 +759,8 @@ vlv_create_key(struct vlvIndex *p, struct backentry *e)
+                         /* Matching rule. Do the magic mangling. Plugin owns the memory. */
+                         if (p->vlv_mrpb[sortattr] != NULL) {
+                             /* xxxPINAKI */
+-                            struct berval **bval = NULL;
+                             Slapi_Value **va = valueset_get_valuearray(&attr->a_present_values);
+-                            valuearray_get_bervalarray(va, &bval);
+-                            matchrule_values_to_keys(p->vlv_mrpb[sortattr], bval, &value);
++                            matchrule_values_to_keys(p->vlv_mrpb[sortattr], va, &value);
+                         }
+                     }
+ 
+@@ -882,6 +880,13 @@ do_vlv_update_index(back_txn *txn, struct ldbminfo *li, Slapi_PBlock *pb, struct
+     }
+ 
+     key = vlv_create_key(pIndex, entry);
++    if (key == NULL) {
++        slapi_log_err(SLAPI_LOG_ERR, "vlv_create_key", "Unable to generate vlv %s index key."
++                      " There may be a configuration issue.\n", pIndex->vlv_name);
++        dblayer_release_index_file(be, pIndex->vlv_attrinfo, db);
++        return rc;
++    }
++
+     if (NULL != txn) {
+         db_txn = txn->back_txn_txn;
+     } else {
+@@ -1073,11 +1078,11 @@ vlv_create_matching_rule_value(Slapi_PBlock *pb, struct berval *original_value)
+     struct berval **value = NULL;
+     if (pb != NULL) {
+         struct berval **outvalue = NULL;
+-        struct berval *invalue[2];
+-        invalue[0] = original_value; /* jcm: cast away const */
+-        invalue[1] = NULL;
++        Slapi_Value v_in = {0};
++        Slapi_Value *va_in[2] = { &v_in, NULL };
++        slapi_value_init_berval(&v_in, original_value);
+         /* The plugin owns the memory it returns in outvalue */
+-        matchrule_values_to_keys(pb, invalue, &outvalue);
++        matchrule_values_to_keys(pb, va_in, &outvalue);
+         if (outvalue != NULL) {
+             value = slapi_ch_bvecdup(outvalue);
+         }
+@@ -1726,11 +1731,8 @@ retry:
+                 PRBool needFree = PR_FALSE;
+ 
+                 if (sort_control->mr_pb != NULL) {
+-                    struct berval **tmp_entry_value = NULL;
+-
+-                    valuearray_get_bervalarray(csn_value, &tmp_entry_value);
+                     /* Matching rule. Do the magic mangling. Plugin owns the memory. */
+-                    matchrule_values_to_keys(sort_control->mr_pb, /* xxxPINAKI needs modification attr->a_vals */ tmp_entry_value, &entry_value);
++                    matchrule_values_to_keys(sort_control->mr_pb, csn_value, &entry_value);
+                 } else {
+                     valuearray_get_bervalarray(csn_value, &entry_value);
+                     needFree = PR_TRUE; /* entry_value is a copy */
+diff --git a/ldap/servers/slapd/back-ldbm/vlv_srch.c b/ldap/servers/slapd/back-ldbm/vlv_srch.c
+index 6b55fa7fd..5978af48f 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv_srch.c
++++ b/ldap/servers/slapd/back-ldbm/vlv_srch.c
+@@ -190,6 +190,9 @@ vlvSearch_delete(struct vlvSearch **ppvs)
+ {
+     if (ppvs != NULL && *ppvs != NULL) {
+         struct vlvIndex *pi, *ni;
++        if ((*ppvs)->vlv_e) {
++            slapi_entry_free((struct slapi_entry *)((*ppvs)->vlv_e));
++        }
+         slapi_sdn_free(&((*ppvs)->vlv_dn));
+         slapi_ch_free((void **)&((*ppvs)->vlv_name));
+         slapi_sdn_free(&((*ppvs)->vlv_base));
+@@ -204,7 +207,6 @@ vlvSearch_delete(struct vlvSearch **ppvs)
+             pi = ni;
+         }
+         slapi_ch_free((void **)ppvs);
+-        *ppvs = NULL;
+     }
+ }
+ 
+diff --git a/ldap/servers/slapd/generation.c b/ldap/servers/slapd/generation.c
+index c4f20f793..89f097322 100644
+--- a/ldap/servers/slapd/generation.c
++++ b/ldap/servers/slapd/generation.c
+@@ -93,9 +93,13 @@ get_server_dataversion()
+     lenstr *l = NULL;
+     Slapi_Backend *be;
+     char *cookie;
++    static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
++    /* Serialize to avoid race condition */
++    pthread_mutex_lock(&mutex);
+     /* we already cached the copy - just return it */
+     if (server_dataversion_id != NULL) {
++        pthread_mutex_unlock(&mutex);
+         return server_dataversion_id;
+     }
+ 
+@@ -130,5 +134,6 @@ get_server_dataversion()
+         server_dataversion_id = slapi_ch_strdup(l->ls_buf);
+     }
+     lenstr_free(&l);
++    pthread_mutex_unlock(&mutex);
+     return server_dataversion_id;
+ }
+diff --git a/ldap/servers/slapd/plugin_mr.c b/ldap/servers/slapd/plugin_mr.c
+index aeba95dc7..b262820c5 100644
+--- a/ldap/servers/slapd/plugin_mr.c
++++ b/ldap/servers/slapd/plugin_mr.c
+@@ -392,29 +392,18 @@ mr_wrap_mr_index_sv_fn(Slapi_PBlock *pb)
+     return rc;
+ }
+ 
+-/* this function takes SLAPI_PLUGIN_MR_VALUES as struct berval ** and
++/* this function takes SLAPI_PLUGIN_MR_VALUES as Slapi_Value ** and
+    returns SLAPI_PLUGIN_MR_KEYS as struct berval **
+ */
+ static int
+ mr_wrap_mr_index_fn(Slapi_PBlock *pb)
+ {
+     int rc = -1;
+-    struct berval **in_vals = NULL;
+     struct berval **out_vals = NULL;
+     struct mr_private *mrpriv = NULL;
+-    Slapi_Value **in_vals_sv = NULL;
+     Slapi_Value **out_vals_sv = NULL;
+ 
+-    slapi_pblock_get(pb, SLAPI_PLUGIN_MR_VALUES, &in_vals); /* get bervals */
+-    /* convert bervals to sv ary */
+-    valuearray_init_bervalarray(in_vals, &in_vals_sv);
+-    slapi_pblock_set(pb, SLAPI_PLUGIN_MR_VALUES, in_vals_sv); /* use sv */
+     rc = mr_wrap_mr_index_sv_fn(pb);
+-    /* clean up in_vals_sv */
+-    valuearray_free(&in_vals_sv);
+-    /* restore old in_vals */
+-    /* coverity[var_deref_model] */
+-    slapi_pblock_set(pb, SLAPI_PLUGIN_MR_VALUES, in_vals);
+     /* get result sv keys */
+     slapi_pblock_get(pb, SLAPI_PLUGIN_MR_KEYS, &out_vals_sv);
+     /* convert to bvec */
+diff --git a/src/lib389/lib389/backend.py b/src/lib389/lib389/backend.py
+index 0ed00a4a7..1319fa0cd 100644
+--- a/src/lib389/lib389/backend.py
++++ b/src/lib389/lib389/backend.py
+@@ -1105,6 +1105,16 @@ class Backends(DSLdapObjects):
+         for be in sorted(self.list(), key=lambda be: len(be.get_suffix()), reverse=True):
+             be.delete()
+ 
++    def get_backend(self, suffix):
++        """
++        Return the backend associated with the provided suffix.
++        """
++        suffix_l = suffix.lower()
++        for be in self.list():
++            if be.get_attr_val_utf8_l('nsslapd-suffix') == suffix_l:
++                return be
++        return None
++
+ 
+ class DatabaseConfig(DSLdapObject):
+     """Backend Database configuration
+-- 
+2.48.1
+

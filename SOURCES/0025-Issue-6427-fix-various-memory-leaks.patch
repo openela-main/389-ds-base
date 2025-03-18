@@ -1,0 +1,219 @@
+From 1b48c4174857db5c7c1dc1aa6ad3d0a5155c72c5 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 21 Nov 2024 16:56:45 -0500
+Subject: [PATCH] Issue 6427 - fix various memory leaks
+
+Description:
+
+This was all on main branch
+
+- Display attributes were leaked on searches
+- Work thread indexes were leaked at shutdown
+- Accept thread was leaked at shutdown
+- When we reused a search pblock, we did not free the "operation" and "search
+attributes" before overwriting them with freshly allocated structures.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6427
+
+Reviewed by: progier (Thanks!)
+---
+ ldap/servers/slapd/connection.c         | 30 ++++++++++++++-----------
+ ldap/servers/slapd/daemon.c             |  7 ++++--
+ ldap/servers/slapd/plugin_internal_op.c | 18 +++++++++++++++
+ ldap/servers/slapd/proto-slap.h         |  1 +
+ ldap/servers/slapd/result.c             |  5 ++---
+ 5 files changed, 43 insertions(+), 18 deletions(-)
+
+diff --git a/ldap/servers/slapd/connection.c b/ldap/servers/slapd/connection.c
+index 07d629475..bb4fcd77f 100644
+--- a/ldap/servers/slapd/connection.c
++++ b/ldap/servers/slapd/connection.c
+@@ -40,20 +40,22 @@ static void log_ber_too_big_error(const Connection *conn,
+ 
+ static PRStack *op_stack;     /* stack of Slapi_Operation * objects so we don't have to malloc/free every time */
+ static PRInt32 op_stack_size; /* size of op_stack */
+-
+ struct Slapi_op_stack
+ {
+     PRStackElem stackelem; /* must be first in struct for PRStack to work */
+     Slapi_Operation *op;
+ };
+ 
+-static void add_work_q(work_q_item *, struct Slapi_op_stack *);
+-static work_q_item *get_work_q(struct Slapi_op_stack **);
++/* worker threads */
++static int32_t max_threads = 0;
++static int32_t *threads_indexes = NULL;
+ 
+ /*
+  * We maintain a global work queue of items that have not yet
+  * been handed off to an operation thread.
+  */
++static void add_work_q(work_q_item *, struct Slapi_op_stack *);
++static work_q_item *get_work_q(struct Slapi_op_stack **);
+ struct Slapi_work_q
+ {
+     PRStackElem stackelem; /* must be first in struct for PRStack to work */
+@@ -430,9 +432,7 @@ void
+ init_op_threads()
+ {
+     pthread_condattr_t condAttr;
+-    int32_t max_threads = config_get_threadnumber();
+     int32_t rc;
+-    int32_t *threads_indexes;
+ 
+     /* Initialize the locks and cv */
+     if ((rc = pthread_mutex_init(&work_q_lock, NULL)) != 0) {
+@@ -463,13 +463,13 @@ init_op_threads()
+     op_stack = PR_CreateStack("connection_operation");
+     alloc_per_thread_snmp_vars(max_threads);
+     init_thread_private_snmp_vars();
+-    
+ 
++    max_threads = config_get_threadnumber();
+     threads_indexes = (int32_t *) slapi_ch_calloc(max_threads, sizeof(int32_t));
+     for (size_t i = 0; i < max_threads; i++) {
+         threads_indexes[i] = i + 1; /* idx 0 is reserved for global snmp_vars */
+     }
+-    
++
+     /* start the operation threads */
+     for (size_t i = 0; i < max_threads; i++) {
+         PR_SetConcurrency(4);
+@@ -486,10 +486,14 @@ init_op_threads()
+             g_incr_active_threadcnt();
+         }
+     }
+-    /* Here we should free thread_indexes, but because of the dynamic of the new
+-     * threads (connection_threadmain) we are not sure when it can be freed.
+-     * Let's accept that unique initialization leak (typically 32 to 64 bytes)
+-     */
++    /* We will free threads_indexes at the very end of slapd_daemon() */
++}
++
++/* Called at shutdown to silence ASAN and friends */
++void
++free_worker_thread_indexes()
++{
++    slapi_ch_free((void **)&threads_indexes);
+ }
+ 
+ static void
+@@ -1227,7 +1231,7 @@ connection_read_operation(Connection *conn, Operation *op, ber_tag_t *tag, int *
+             /* Process HAProxy header */
+             if (conn->c_haproxyheader_read == 0) {
+                 conn->c_haproxyheader_read = 1;
+-                /* 
++                /*
+                 * We only check for HAProxy header if nsslapd-haproxy-trusted-ip is configured.
+                 * If it is we proceed with the connection only if it's comming from trusted
+                 * proxy server with correct and complete header.
+@@ -1253,7 +1257,7 @@ connection_read_operation(Connection *conn, Operation *op, ber_tag_t *tag, int *
+                         /* Now, reset RC and set it to 0 only if a match is found */
+                         haproxy_rc = -1;
+ 
+-                        /* 
++                        /*
+                          * We need to allow a configuration where DS instance and HAProxy are on the same machine.
+                          * In this case, we need to check if
+                          * the HAProxy client IP (which will be a loopback address) matches one of the the trusted IP addresses,
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 1a20796b9..c09e54c7f 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -1323,8 +1323,11 @@ slapd_daemon(daemon_ports_t *ports)
+             slapi_log_err(SLAPI_LOG_ERR, "slapd_daemon", "Failed to remove pid file %s\n", get_pid_file());
+         }
+     }
+-}
+ 
++    /* final cleanup for ASAN and other analyzers */
++    PR_JoinThread(accept_thread_p);
++    free_worker_thread_indexes();
++}
+ 
+ void
+ ct_thread_cleanup(void)
+@@ -1654,7 +1657,7 @@ handle_pr_read_ready(Connection_Table *ct, int list_num, PRIntn num_poll __attri
+                 continue;
+             }
+ 
+-            /* Try to get connection mutex, if not available just skip the connection and 
++            /* Try to get connection mutex, if not available just skip the connection and
+              * process other connections events. May generates cpu load for listening thread
+              * if connection mutex is held for a long time
+              */
+diff --git a/ldap/servers/slapd/plugin_internal_op.c b/ldap/servers/slapd/plugin_internal_op.c
+index 0d553d1ba..0164a70be 100644
+--- a/ldap/servers/slapd/plugin_internal_op.c
++++ b/ldap/servers/slapd/plugin_internal_op.c
+@@ -249,6 +249,12 @@ slapi_search_internal_set_pb(Slapi_PBlock *pb, const char *base, int scope, cons
+         return;
+     }
+ 
++    /* Free op just in case this pb is being reused */
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
++    operation_free(&op, NULL);
++    slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
++    slapi_ch_array_free(tmp_attrs);
++
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+     slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET_DN, (void *)base);
+@@ -276,6 +282,12 @@ slapi_search_internal_set_pb_ext(Slapi_PBlock *pb, Slapi_DN *sdn, int scope, con
+         return;
+     }
+ 
++    /* Free op/attrs just in case this pb is being reused */
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
++    operation_free(&op, NULL);
++    slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
++    slapi_ch_array_free(tmp_attrs);
++
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+     slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET_DN,
+@@ -305,6 +317,12 @@ slapi_seq_internal_set_pb(Slapi_PBlock *pb, char *base, int type, char *attrname
+         return;
+     }
+ 
++    /* Free op/attrs just in case this pb is being reused */
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
++    operation_free(&op, NULL);
++    slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
++    slapi_ch_array_free(tmp_attrs);
++
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+     slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET_DN, (void *)base);
+diff --git a/ldap/servers/slapd/proto-slap.h b/ldap/servers/slapd/proto-slap.h
+index 214f2e609..2031cfb7d 100644
+--- a/ldap/servers/slapd/proto-slap.h
++++ b/ldap/servers/slapd/proto-slap.h
+@@ -1543,6 +1543,7 @@ int connection_is_free(Connection *conn, int user_lock);
+ int connection_is_active_nolock(Connection *conn);
+ ber_slen_t openldap_read_function(Sockbuf_IO_Desc *sbiod, void *buf, ber_len_t len);
+ int32_t connection_has_psearch(Connection *c);
++void free_worker_thread_indexes(void);
+ 
+ /*
+  * saslbind.c
+diff --git a/ldap/servers/slapd/result.c b/ldap/servers/slapd/result.c
+index 97af5a2b8..9772e8213 100644
+--- a/ldap/servers/slapd/result.c
++++ b/ldap/servers/slapd/result.c
+@@ -1392,9 +1392,8 @@ exit:
+     if (NULL != typelist) {
+         slapi_vattr_attrs_free(&typelist, typelist_flags);
+     }
+-    if (NULL != default_attrs) {
+-        slapi_ch_free((void **)&default_attrs);
+-    }
++    slapi_ch_array_free(default_attrs);
++
+     return rc;
+ }
+ 
+-- 
+2.48.1
+

@@ -1,0 +1,1002 @@
+From 0e958c2482c37e7de90c4b7bbc821c0c0acc05a0 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Tue, 10 Dec 2024 11:49:27 -0500
+Subject: [PATCH] Issue 6442 - Fix latest covscan memory leaks
+
+Description:
+
+Fixed a majority of the memory leaks (except ACL leaks).
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6442
+
+Reviewed by: progier(Thanks!)
+---
+ dirsrvtests/tests/suites/basic/basic_test.py  |  3 +-
+ ldap/servers/plugins/acctpolicy/acct_plugin.c |  1 -
+ ldap/servers/plugins/acl/aclgroup.c           | 13 +++++---
+ ldap/servers/plugins/acl/acllas.c             |  7 +++--
+ .../plugins/chainingdb/cb_conn_stateless.c    |  9 +++---
+ ldap/servers/plugins/replication/cl5_api.c    | 16 +++++++++-
+ ldap/servers/plugins/replication/cl5_init.c   |  5 +--
+ .../plugins/replication/repl5_connection.c    |  4 +--
+ .../plugins/replication/repl5_replica.c       |  7 +++--
+ .../plugins/replication/repl5_tot_protocol.c  | 10 +++---
+ .../plugins/replication/repl_cleanallruv.c    | 31 ++++++++++++-------
+ .../plugins/replication/repl_controls.c       | 10 ++++--
+ ldap/servers/plugins/retrocl/retrocl_trim.c   |  4 +--
+ ldap/servers/plugins/syntaxes/inchain.c       |  3 +-
+ .../slapd/back-ldbm/db-bdb/bdb_import.c       |  2 +-
+ .../back-ldbm/db-bdb/bdb_import_threads.c     |  3 +-
+ .../slapd/back-ldbm/db-bdb/bdb_layer.c        | 18 ++++++-----
+ ldap/servers/slapd/back-ldbm/index.c          |  3 +-
+ ldap/servers/slapd/back-ldbm/init.c           |  2 ++
+ ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c  |  2 +-
+ ldap/servers/slapd/back-ldbm/vlv.c            |  7 ++---
+ ldap/servers/slapd/daemon.c                   |  1 +
+ ldap/servers/slapd/entry.c                    |  3 ++
+ ldap/servers/slapd/generation.c               |  5 +++
+ ldap/servers/slapd/libglobs.c                 | 12 +++++--
+ ldap/servers/slapd/main.c                     |  3 +-
+ ldap/servers/slapd/passwd_extop.c             |  5 ++-
+ ldap/servers/slapd/plugin_internal_op.c       | 17 ++--------
+ ldap/servers/slapd/proto-slap.h               |  2 +-
+ ldap/servers/slapd/result.c                   |  9 +++++-
+ ldap/servers/slapd/task.c                     |  5 +--
+ ldap/servers/slapd/tools/ldclt/ldclt.c        |  1 +
+ ldap/servers/slapd/vattr.c                    |  1 +
+ lib/libsi18n/reshash.c                        | 23 ++++++--------
+ src/rewriters/adfilter.c                      |  1 +
+ 35 files changed, 152 insertions(+), 96 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/basic/basic_test.py b/dirsrvtests/tests/suites/basic/basic_test.py
+index a7efcc825..02cb13b10 100644
+--- a/dirsrvtests/tests/suites/basic/basic_test.py
++++ b/dirsrvtests/tests/suites/basic/basic_test.py
+@@ -545,8 +545,7 @@ def test_basic_import_export(topology_st, import_example_ldif):
+     time.sleep(0.5)
+ 
+     # Good as place as any to quick test the task has some expected attributes
+-    if ds_is_newer('1.4.1.2'):
+-        assert import_task.present('nstaskcreated')
++    assert import_task.present('nstaskcreated')
+     assert import_task.present('nstasklog')
+     assert import_task.present('nstaskcurrentitem')
+     assert import_task.present('nstasktotalitems')
+diff --git a/ldap/servers/plugins/acctpolicy/acct_plugin.c b/ldap/servers/plugins/acctpolicy/acct_plugin.c
+index af566b934..36d7ba19b 100644
+--- a/ldap/servers/plugins/acctpolicy/acct_plugin.c
++++ b/ldap/servers/plugins/acctpolicy/acct_plugin.c
+@@ -272,7 +272,6 @@ acct_update_login_history(const char *dn, char *timestr)
+         }
+         /* first time round */
+     } else if (cfg->login_history_size > 0) {
+-        login_hist = (char **)slapi_ch_calloc(2, sizeof(char *));
+         /* alloc new array and append latest value */
+         login_hist = (char **)slapi_ch_realloc((char *)login_hist, sizeof(char *) * (num_entries + 2));
+         login_hist[num_entries] = slapi_ch_smprintf("%s", timestr);
+diff --git a/ldap/servers/plugins/acl/aclgroup.c b/ldap/servers/plugins/acl/aclgroup.c
+index 54bb23bc9..a5b0426f9 100644
+--- a/ldap/servers/plugins/acl/aclgroup.c
++++ b/ldap/servers/plugins/acl/aclgroup.c
+@@ -263,11 +263,13 @@ aclg_get_usersGroup(struct acl_pblock *aclpb, char *n_dn)
+         return NULL;
+     }
+ 
+-    if (aclpb->aclpb_groupinfo)
+-        return aclpb->aclpb_groupinfo;
+-
+     ACLG_LOCK_GROUPCACHE_WRITE();
+ 
++    if (aclpb->aclpb_groupinfo) {
++        ACLG_ULOCK_GROUPCACHE_WRITE();
++        return aclpb->aclpb_groupinfo;
++    }
++
+     /* try it one more time. We might have one in the meantime */
+     aclg_init_userGroup(aclpb, n_dn, 1 /* got the lock */);
+     if (aclpb->aclpb_groupinfo) {
+@@ -337,11 +339,12 @@ aclg_get_usersGroup(struct acl_pblock *aclpb, char *n_dn)
+ 
+     aclUserGroups->aclg_num_userGroups++;
+ 
++    /* Now hang on to it */
++    aclpb->aclpb_groupinfo = u_group;
++
+     /* Put it in the queue */
+     ACLG_ULOCK_GROUPCACHE_WRITE();
+ 
+-    /* Now hang on to it */
+-    aclpb->aclpb_groupinfo = u_group;
+     return u_group;
+ }
+ 
+diff --git a/ldap/servers/plugins/acl/acllas.c b/ldap/servers/plugins/acl/acllas.c
+index 9f643ea87..792216cca 100644
+--- a/ldap/servers/plugins/acl/acllas.c
++++ b/ldap/servers/plugins/acl/acllas.c
+@@ -4305,6 +4305,8 @@ acllas_replace_attr_macro(char *rule, lasInfo *lasinfo)
+              * list which replaces the old one.
+              */
+             l = acl_strstr(&str[0], ")");
++            /* coverity false positive: l + 2 will always be positive */
++            /* coverity[integer_overflow] */
+             macro_str = slapi_ch_malloc(l + 2);
+             strncpy(macro_str, &str[0], l + 1);
+             macro_str[l + 1] = '\0';
+@@ -4320,18 +4322,19 @@ acllas_replace_attr_macro(char *rule, lasInfo *lasinfo)
+ 
+             str++; /* skip the . */
+             l = acl_strstr(&str[0], ")");
+-            if (l == -1){
++            if (l == -1) {
+                 slapi_log_err(SLAPI_LOG_ERR, plugin_name,
+                               "acllas_replace_attr_macro - Invalid macro str \"%s\".", str);
+                 slapi_ch_free_string(&macro_str);
+                 charray_free(working_list);
+                 return NULL;
+             }
++            /* coverity false positive: l + 1 will always be positive */
++            /* coverity[integer_overflow] */
+             macro_attr_name = slapi_ch_malloc(l + 1);
+             strncpy(macro_attr_name, &str[0], l);
+             macro_attr_name[l] = '\0';
+ 
+-
+             slapi_entry_attr_find(e, macro_attr_name, &attr);
+             if (NULL == attr) {
+ 
+diff --git a/ldap/servers/plugins/chainingdb/cb_conn_stateless.c b/ldap/servers/plugins/chainingdb/cb_conn_stateless.c
+index c5866f51a..7deead3aa 100644
+--- a/ldap/servers/plugins/chainingdb/cb_conn_stateless.c
++++ b/ldap/servers/plugins/chainingdb/cb_conn_stateless.c
+@@ -943,10 +943,10 @@ cb_update_failed_conn_cpt(cb_backend_instance *cb)
+ {
+     /* if the chaining BE is already unavailable, we do nothing*/
+     time_t now;
++
++    slapi_lock_mutex(cb->monitor_availability.cpt_lock);
+     if (cb->monitor_availability.farmserver_state == FARMSERVER_AVAILABLE) {
+-        slapi_lock_mutex(cb->monitor_availability.cpt_lock);
+         cb->monitor_availability.cpt++;
+-        slapi_unlock_mutex(cb->monitor_availability.cpt_lock);
+         if (cb->monitor_availability.cpt >= CB_NUM_CONN_BEFORE_UNAVAILABILITY) {
+             /* we reach the limit of authorized failed connections => we setup the chaining BE state to unavailable */
+             now = slapi_current_rel_time_t();
+@@ -958,21 +958,22 @@ cb_update_failed_conn_cpt(cb_backend_instance *cb)
+                           "cb_update_failed_conn_cpt - Farm server unavailable");
+         }
+     }
++    slapi_unlock_mutex(cb->monitor_availability.cpt_lock);
+ }
+ 
+ void
+ cb_reset_conn_cpt(cb_backend_instance *cb)
+ {
++    slapi_lock_mutex(cb->monitor_availability.cpt_lock);
+     if (cb->monitor_availability.cpt > 0) {
+-        slapi_lock_mutex(cb->monitor_availability.cpt_lock);
+         cb->monitor_availability.cpt = 0;
+         if (cb->monitor_availability.farmserver_state == FARMSERVER_UNAVAILABLE) {
+             cb->monitor_availability.farmserver_state = FARMSERVER_AVAILABLE;
+             slapi_log_err(SLAPI_LOG_PLUGIN, CB_PLUGIN_SUBSYSTEM,
+                           "cb_reset_conn_cpt - Farm server is back");
+         }
+-        slapi_unlock_mutex(cb->monitor_availability.cpt_lock);
+     }
++    slapi_unlock_mutex(cb->monitor_availability.cpt_lock);
+ }
+ 
+ int
+diff --git a/ldap/servers/plugins/replication/cl5_api.c b/ldap/servers/plugins/replication/cl5_api.c
+index 92fb776dc..0b3dee86b 100644
+--- a/ldap/servers/plugins/replication/cl5_api.c
++++ b/ldap/servers/plugins/replication/cl5_api.c
+@@ -558,7 +558,15 @@ cl5ImportLDIF(const char *clDir, const char *ldifFile, Replica *replica)
+ 
+     /* Set changelog state to import */
+     pthread_mutex_lock(&(cldb->stLock));
++
++    if (cldb->dbState == CL5_STATE_IMPORT) {
++        pthread_mutex_unlock(&(cldb->stLock));
++        slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name_cl,
++                      "cl5ImportLDIF - changelog import already in progress\n");
++        return CL5_IGNORE_OP;
++    }
+     cldb->dbState = CL5_STATE_IMPORT;
++
+     pthread_mutex_unlock(&(cldb->stLock));
+ 
+     /* Wait for all the threads to stop */
+@@ -1363,6 +1371,7 @@ cldb_SetReplicaDB(Replica *replica, void *arg)
+     if (rc != CL5_SUCCESS) {
+         slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name_cl,
+                       "cldb_SetReplicaDB - failed to configure changelog trimming\n");
++        changelog5_config_done(&config);
+         return CL5_BAD_DATA;
+     }
+ 
+@@ -1578,7 +1587,12 @@ _cl5Entry2DBData(const CL5Entry *entry, char **data, PRUint32 *len, void *clcryp
+     /* write change type */
+     (*pos) = (unsigned char)op->operation_type;
+     pos++;
+-    /* write time */
++    /*
++     * write time
++     * --> Y2K38 - will hopefully be fixed by a future C standard htonll()
++     * function. Then we can move "t" and "entry->time" to be uint64_t
++     * to fix the issue.
++     */
+     t = PR_htonl((PRUint32)entry->time);
+     memcpy(pos, &t, sizeof(t));
+     pos += sizeof(t);
+diff --git a/ldap/servers/plugins/replication/cl5_init.c b/ldap/servers/plugins/replication/cl5_init.c
+index b48e8e8a1..ef7f23ef0 100644
+--- a/ldap/servers/plugins/replication/cl5_init.c
++++ b/ldap/servers/plugins/replication/cl5_init.c
+@@ -42,7 +42,7 @@ changelog5_upgrade(void)
+ 
+     if (config.dir == NULL) {
+         /* we do not have a valid legacy config, nothing to upgrade */
+-        return rc;
++        goto done;
+     }
+ 
+     replica_enumerate_replicas(_cl5_upgrade_replica, (void *)&config);
+@@ -51,6 +51,7 @@ changelog5_upgrade(void)
+ 
+     rc |= _cl5_upgrade_removeconfig();
+ 
++done:
+     changelog5_config_done(&config);
+ 
+     return rc;
+@@ -122,7 +123,7 @@ _cl5_upgrade_replica_config(Replica *replica, changelog5Config *config)
+         slapi_entry_add_string(config_entry, CONFIG_CHANGELOG_TRIM_ATTRIBUTE, gen_duration(config->trimInterval));
+     }
+ 
+-    /* if changelog encryption is enabled then in the upgrade mode all backends will have 
++    /* if changelog encryption is enabled then in the upgrade mode all backends will have
+      * an encrypted changelog, store the encryption attrs */
+     if (config->encryptionAlgorithm) {
+         slapi_entry_add_string(config_entry, CONFIG_CHANGELOG_ENCRYPTION_ALGORITHM, config->encryptionAlgorithm);
+diff --git a/ldap/servers/plugins/replication/repl5_connection.c b/ldap/servers/plugins/replication/repl5_connection.c
+index bcc71834a..690241ebd 100644
+--- a/ldap/servers/plugins/replication/repl5_connection.c
++++ b/ldap/servers/plugins/replication/repl5_connection.c
+@@ -679,8 +679,8 @@ check_flow_control_tot_init(Repl_Connection *conn, int optype, const char *extop
+ static ConnResult
+ conn_is_available(Repl_Connection *conn)
+ {
+-    time_t poll_timeout_sec = 1;   /* Polling for 1sec */
+-    time_t yield_delay_msec = 100; /* Delay to wait */
++    int32_t poll_timeout_sec = 1;   /* Polling for 1sec */
++    int32_t yield_delay_msec = 100; /* Delay to wait */
+     time_t start_time = slapi_current_rel_time_t();
+     time_t time_now;
+     ConnResult return_value = CONN_OPERATION_SUCCESS;
+diff --git a/ldap/servers/plugins/replication/repl5_replica.c b/ldap/servers/plugins/replication/repl5_replica.c
+index f2f7086eb..1d5caf7d0 100644
+--- a/ldap/servers/plugins/replication/repl5_replica.c
++++ b/ldap/servers/plugins/replication/repl5_replica.c
+@@ -35,7 +35,7 @@ struct replica
+     ReplicaUpdateDNList updatedn_list; /* list of dns with which a supplier should bind to update this replica */
+     Slapi_ValueSet *updatedn_groups;   /* set of groups whose memebers are allowed to update replica */
+     ReplicaUpdateDNList groupdn_list;  /* exploded listof dns from update group */
+-    uint32_t updatedn_group_last_check;    /* the time of the last group check */
++    time_t updatedn_group_last_check;  /* the time of the last group check */
+     int64_t updatedn_group_check_interval; /* the group check interval */
+     ReplicaType repl_type;             /* is this replica read-only ? */
+     ReplicaId repl_rid;                /* replicaID */
+@@ -219,7 +219,7 @@ replica_new_from_entry(Slapi_Entry *e, char *errortext, PRBool is_add_operation,
+          * during replica initialization
+          */
+         rc = _replica_update_entry(r, e, errortext);
+-        /* add changelog config entry to config 
++        /* add changelog config entry to config
+          * this is only needed for replicas logging changes,
+          * but for now let it exist for all replicas. Makes handling
+          * of changing replica flags easier
+@@ -2544,7 +2544,7 @@ _replica_get_config_dn(const Slapi_DN *root)
+     return dn;
+ }
+ /* when a replica is added the changelog config entry is created
+- * it will only the container entry, specifications for trimming 
++ * it will only the container entry, specifications for trimming
+  * or encyrption need to be added separately
+  */
+ static int
+@@ -2876,6 +2876,7 @@ replica_update_state(time_t when __attribute__((unused)), void *arg)
+                       "replica_update_state - Failed to get the config dn for %s\n",
+                       slapi_sdn_get_dn(r->repl_root));
+         replica_unlock(r->repl_lock);
++        slapi_mod_done(&smod);
+         return;
+     }
+     pb = slapi_pblock_new();
+diff --git a/ldap/servers/plugins/replication/repl5_tot_protocol.c b/ldap/servers/plugins/replication/repl5_tot_protocol.c
+index 83b37ef84..881b252ff 100644
+--- a/ldap/servers/plugins/replication/repl5_tot_protocol.c
++++ b/ldap/servers/plugins/replication/repl5_tot_protocol.c
+@@ -43,7 +43,7 @@ typedef struct callback_data
+     Private_Repl_Protocol *prp;
+     int rc;
+     unsigned long num_entries;
+-    time_t sleep_on_busy;
++    uint32_t sleep_on_busy;
+     time_t last_busy;
+     pthread_mutex_t lock;                    /* Lock to protect access to this structure, the message id list and to force memory barriers */
+     PRThread *result_tid;                    /* The async result thread */
+@@ -481,7 +481,7 @@ retry:
+         cb_data.prp = prp;
+         cb_data.rc = 0;
+         cb_data.num_entries = 1UL;
+-        cb_data.sleep_on_busy = 0UL;
++        cb_data.sleep_on_busy = 0;
+         cb_data.last_busy = slapi_current_rel_time_t();
+         cb_data.flowcontrol_detection = 0;
+         pthread_mutex_init(&(cb_data.lock), NULL);
+@@ -540,7 +540,7 @@ retry:
+         cb_data.prp = prp;
+         cb_data.rc = 0;
+         cb_data.num_entries = 0UL;
+-        cb_data.sleep_on_busy = 0UL;
++        cb_data.sleep_on_busy = 0;
+         cb_data.last_busy = slapi_current_rel_time_t();
+         cb_data.flowcontrol_detection = 0;
+         pthread_mutex_init(&(cb_data.lock), NULL);
+@@ -803,7 +803,7 @@ send_entry(Slapi_Entry *e, void *cb_data)
+     BerElement *bere;
+     struct berval *bv;
+     unsigned long *num_entriesp;
+-    time_t *sleep_on_busyp;
++    uint32_t *sleep_on_busyp;
+     time_t *last_busyp;
+     int message_id = 0;
+     int retval = 0;
+@@ -899,7 +899,7 @@ send_entry(Slapi_Entry *e, void *cb_data)
+             *last_busyp = now;
+ 
+             slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name,
+-                          "send_entry - Replica \"%s\" is busy. Waiting %lds while"
++                          "send_entry - Replica \"%s\" is busy. Waiting %ds while"
+                           " it finishes processing its current import queue\n",
+                           agmt_get_long_name(prp->agmt), *sleep_on_busyp);
+             DS_Sleep(PR_SecondsToInterval(*sleep_on_busyp));
+diff --git a/ldap/servers/plugins/replication/repl_cleanallruv.c b/ldap/servers/plugins/replication/repl_cleanallruv.c
+index b62c2fae0..4052d98fd 100644
+--- a/ldap/servers/plugins/replication/repl_cleanallruv.c
++++ b/ldap/servers/plugins/replication/repl_cleanallruv.c
+@@ -2174,19 +2174,26 @@ replica_cleanallruv_thread(void *arg)
+                  "Waiting to process all the updates from the deleted replica...");
+     ruv_obj = replica_get_ruv(data->replica);
+     ruv = object_get_data(ruv_obj);
+-    while (data->maxcsn && !is_task_aborted(data->rid) && !is_cleaned_rid(data->rid) && !slapi_is_shutting_down()) {
+-        struct timespec current_time = {0};
+-        if (csn_get_replicaid(data->maxcsn) == 0 ||
+-            ruv_covers_csn_cleanallruv(ruv, data->maxcsn) ||
+-            strcasecmp(data->force, "yes") == 0) {
+-            /* We are caught up, now we can clean the ruv's */
+-            break;
++    if (data->maxcsn) {
++        while (!is_task_aborted(data->rid) &&
++               !is_cleaned_rid(data->rid) &&
++               !slapi_is_shutting_down())
++        {
++            struct timespec current_time = {0};
++
++            if (csn_get_replicaid(data->maxcsn) == 0 ||
++                ruv_covers_csn_cleanallruv(ruv, data->maxcsn) ||
++                strcasecmp(data->force, "yes") == 0)
++            {
++                /* We are caught up, now we can clean the ruv's */
++                break;
++            }
++            clock_gettime(CLOCK_MONOTONIC, &current_time);
++            current_time.tv_sec += CLEANALLRUV_SLEEP;
++            pthread_mutex_lock(&notify_lock);
++            pthread_cond_timedwait(&notify_cvar, &notify_lock, &current_time);
++            pthread_mutex_unlock(&notify_lock);
+         }
+-        clock_gettime(CLOCK_MONOTONIC, &current_time);
+-        current_time.tv_sec += CLEANALLRUV_SLEEP;
+-        pthread_mutex_lock(&notify_lock);
+-        pthread_cond_timedwait(&notify_cvar, &notify_lock, &current_time);
+-        pthread_mutex_unlock(&notify_lock);
+     }
+     object_release(ruv_obj);
+     /*
+diff --git a/ldap/servers/plugins/replication/repl_controls.c b/ldap/servers/plugins/replication/repl_controls.c
+index 8d50633d6..238f78eb0 100644
+--- a/ldap/servers/plugins/replication/repl_controls.c
++++ b/ldap/servers/plugins/replication/repl_controls.c
+@@ -161,7 +161,7 @@ decode_NSDS50ReplUpdateInfoControl(LDAPControl **controlsp,
+     struct berval superior_uuid_val = {0};
+     struct berval csn_val = {0};
+     BerElement *tmp_bere = NULL;
+-    Slapi_Mods modrdn_smods;
++    Slapi_Mods modrdn_smods = {0};
+     PRBool got_modrdn_mods = PR_FALSE;
+     ber_len_t len;
+ 
+@@ -232,11 +232,13 @@ decode_NSDS50ReplUpdateInfoControl(LDAPControl **controlsp,
+ 
+         if (NULL != modrdn_mods && got_modrdn_mods) {
+             *modrdn_mods = slapi_mods_get_ldapmods_passout(&modrdn_smods);
++        } else {
++            slapi_mods_done(&modrdn_smods);
+         }
+-        slapi_mods_done(&modrdn_smods);
+ 
+         rc = 1;
+     } else {
++        /* Control not present */
+         rc = 0;
+     }
+ loser:
+@@ -258,6 +260,10 @@ loser:
+         ldap_memfree(csn_val.bv_val);
+         csn_val.bv_val = NULL;
+     }
++    if (rc < 1) {
++        /* no control or error, free smods */
++        slapi_mods_done(&modrdn_smods);
++    }
+     return rc;
+ }
+ 
+diff --git a/ldap/servers/plugins/retrocl/retrocl_trim.c b/ldap/servers/plugins/retrocl/retrocl_trim.c
+index 158f801cc..8fcd3d32b 100644
+--- a/ldap/servers/plugins/retrocl/retrocl_trim.c
++++ b/ldap/servers/plugins/retrocl/retrocl_trim.c
+@@ -239,7 +239,7 @@ trim_changelog(void)
+     time_t now_maxage; /* used for checking if the changelog entry can be trimmed */
+     changeNumber first_in_log = 0, last_in_log = 0;
+     int num_deleted = 0;
+-    int max_age, last_trim, trim_interval;
++    time_t max_age, last_trim, trim_interval;
+ 
+     now_interval = slapi_current_rel_time_t(); /* monotonic time for interval */
+ 
+@@ -297,7 +297,7 @@ trim_changelog(void)
+             }
+         }
+     } else {
+-        slapi_log_err(SLAPI_LOG_PLUGIN, RETROCL_PLUGIN_NAME, "Not yet time to trim: %ld < (%d+%d)\n",
++        slapi_log_err(SLAPI_LOG_PLUGIN, RETROCL_PLUGIN_NAME, "Not yet time to trim: %ld < (%ld+%ld)\n",
+                       now_interval, last_trim, trim_interval);
+     }
+     PR_Lock(ts.ts_s_trim_mutex);
+diff --git a/ldap/servers/plugins/syntaxes/inchain.c b/ldap/servers/plugins/syntaxes/inchain.c
+index 0a6a04e9f..07e58ea84 100644
+--- a/ldap/servers/plugins/syntaxes/inchain.c
++++ b/ldap/servers/plugins/syntaxes/inchain.c
+@@ -341,7 +341,6 @@ inchain_values2keys(Slapi_PBlock *pb, Slapi_Value **vals, Slapi_Value ***ivals,
+         strncpy(value, v->bv.bv_val, v->bv.bv_len);
+         value[v->bv.bv_len] = '\0';
+         slapi_log_err(SLAPI_LOG_FILTER, "inchain", " groupvals = %s\n", value);
+-
+     }
+ 
+ #if 1
+@@ -365,6 +364,8 @@ inchain_values2keys(Slapi_PBlock *pb, Slapi_Value **vals, Slapi_Value ***ivals,
+         groupvals.nsuniqueid_vals = NULL;
+     }
+     *ivals = result;
++    slapi_sdn_free(&member_sdn);
++
+     return(0);
+ #else
+     return (string_values2keys(pb, vals, ivals, SYNTAX_CIS | SYNTAX_DN,
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+index c13ba18c7..bc4ae5e2b 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+@@ -1749,7 +1749,7 @@ bdb_import_push_progress_history(ImportJob *job, ID current_id, time_t current_t
+ }
+ 
+ static void
+-bdb_import_calc_rate(ImportWorkerInfo *info, int time_interval)
++bdb_import_calc_rate(ImportWorkerInfo *info, time_t time_interval)
+ {
+     size_t ids = info->last_ID_processed - info->previous_ID_counted;
+     double rate = (double)ids / time_interval;
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+index b5774a143..ae6cd37da 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+@@ -356,7 +356,7 @@ bdb_import_producer(void *param)
+     int fd, curr_file, curr_lineno = 0;
+     char *curr_filename = NULL;
+     int idx;
+-    ldif_context c;
++    ldif_context c = {0};
+     int my_version = 0;
+     size_t newesize = 0;
+     Slapi_Attr *attr = NULL;
+@@ -761,6 +761,7 @@ bdb_import_producer(void *param)
+ error:
+     slapi_value_free(&(job->usn_value));
+     info->state = ABORTED;
++    bdb_import_free_ldif(&c);
+ }
+ 
+ static int
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+index 44f25098f..20d4091f9 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+@@ -2034,13 +2034,15 @@ bdb_pre_close(struct ldbminfo *li)
+     conf = (bdb_config *)li->li_dblayer_config;
+     bdb_db_env *pEnv = (bdb_db_env *)priv->dblayer_env;
+ 
+-    if (conf->bdb_stop_threads || !pEnv) /* already stopped.  do nothing... */
+-        return;
++    pthread_mutex_lock(&pEnv->bdb_thread_count_lock);
++
++    if (conf->bdb_stop_threads || !pEnv) {
++        /* already stopped.  do nothing... */
++        goto timeout_escape;
++    }
+ 
+     /* first, see if there are any housekeeping threads running */
+-    pthread_mutex_lock(&pEnv->bdb_thread_count_lock);
+     threadcount = pEnv->bdb_thread_count;
+-    pthread_mutex_unlock(&pEnv->bdb_thread_count_lock);
+ 
+     if (threadcount) {
+         PRIntervalTime cvwaittime = PR_MillisecondsToInterval(DBLAYER_SLEEP_INTERVAL * 100);
+@@ -2048,7 +2050,7 @@ bdb_pre_close(struct ldbminfo *li)
+         /* Print handy-dandy log message */
+         slapi_log_err(SLAPI_LOG_INFO, "bdb_pre_close", "Waiting for %d database threads to stop\n",
+                       threadcount);
+-        pthread_mutex_lock(&pEnv->bdb_thread_count_lock);
++
+         /* Tell them to stop - we wait until the last possible moment to invoke
+            this.  If we do this much sooner than this, we could find ourselves
+            in a situation where the threads see the stop_threads and exit before
+@@ -2080,7 +2082,7 @@ bdb_pre_close(struct ldbminfo *li)
+                 /* else just a spurious interrupt */
+             }
+         }
+-        pthread_mutex_unlock(&pEnv->bdb_thread_count_lock);
++
+         if (timedout) {
+             slapi_log_err(SLAPI_LOG_ERR,
+                           "bdb_pre_close", "Timeout after [%d] milliseconds; leave %d database thread(s)...\n",
+@@ -2090,7 +2092,9 @@ bdb_pre_close(struct ldbminfo *li)
+         }
+     }
+     slapi_log_err(SLAPI_LOG_INFO, "bdb_pre_close", "All database threads now stopped\n");
++
+ timeout_escape:
++    pthread_mutex_unlock(&pEnv->bdb_thread_count_lock);
+     return;
+ }
+ 
+@@ -3870,7 +3874,7 @@ bdb_checkpoint_threadmain(void *param)
+     time_t checkpoint_interval_update = 0;
+     time_t compactdb_interval = 0;
+     time_t checkpoint_interval = 0;
+-    int32_t compactdb_time = 0;
++    uint64_t compactdb_time = 0;
+ 
+     PR_ASSERT(NULL != param);
+     li = (struct ldbminfo *)param;
+diff --git a/ldap/servers/slapd/back-ldbm/index.c b/ldap/servers/slapd/back-ldbm/index.c
+index fc3e4d30f..90129b682 100644
+--- a/ldap/servers/slapd/back-ldbm/index.c
++++ b/ldap/servers/slapd/back-ldbm/index.c
+@@ -1665,7 +1665,7 @@ index_range_read_ext(
+             /* exit the loop when we either run off the end of the table,
+              * fail to read a key, or read a key that's out of range.
+              */
+-            IDList *tmp;
++            IDList *tmp = NULL;
+             /*
+             char encbuf [BUFSIZ];
+             slapi_log_err(SLAPI_LOG_FILTER, "   cur_key=%s(%li bytes)\n",
+@@ -1716,6 +1716,7 @@ index_range_read_ext(
+                  retry_count < IDL_FETCH_RETRY_COUNT;
+                  retry_count++) {
+                 *err = NEW_IDL_DEFAULT;
++                idl_free(&tmp);
+                 tmp = idl_fetch_ext(be, db, &cur_key, NULL, ai, err, allidslimit);
+                 if (*err == DBI_RC_RETRY) {
+                     ldbm_nasty("index_range_read_ext", "Retrying transaction", 1090, *err);
+diff --git a/ldap/servers/slapd/back-ldbm/init.c b/ldap/servers/slapd/back-ldbm/init.c
+index e124b40a9..37bf08ac8 100644
+--- a/ldap/servers/slapd/back-ldbm/init.c
++++ b/ldap/servers/slapd/back-ldbm/init.c
+@@ -160,6 +160,8 @@ ldbm_back_init(Slapi_PBlock *pb)
+     return (0);
+ 
+ fail:
++
++    objset_delete(&li->li_instance_set);
+     ldbm_config_destroy(li);
+     slapi_pblock_set(pb, SLAPI_PLUGIN_PRIVATE, NULL);
+     return (-1);
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+index e3d765893..1047b4b94 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_entryrdn.c
+@@ -2112,7 +2112,7 @@ _entryrdn_replace_suffix_id(entryrdn_db_ctx_t *ctx, dbi_val_t *key, dbi_val_t *a
+                      * DBI_RC_NOTFOUND means that redirect db is corrupted
+                      */
+                     _ENTRYRDN_DEBUG_GOTO_BAIL();
+-                    goto bail;
++                    goto bail0;
+                 }
+             }
+             dblayer_value_set_buffer(ctx->be, &moddata, childelem, _entryrdn_rdn_elem_size(childelem));
+diff --git a/ldap/servers/slapd/back-ldbm/vlv.c b/ldap/servers/slapd/back-ldbm/vlv.c
+index 4e40d1a41..c2c2c5cda 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv.c
++++ b/ldap/servers/slapd/back-ldbm/vlv.c
+@@ -503,23 +503,22 @@ vlv_init(ldbm_instance *inst)
+ 
+     /* Initialize lock first time through */
+     if (be->vlvSearchList_lock == NULL) {
+-        char *rwlockname = slapi_ch_smprintf("vlvSearchList_%s", inst->inst_name);
+         be->vlvSearchList_lock = slapi_new_rwlock();
+-        slapi_ch_free((void **)&rwlockname);
+     }
++
++    slapi_rwlock_wrlock(be->vlvSearchList_lock);
+     if (NULL != (struct vlvSearch *)be->vlvSearchList) {
+         struct vlvSearch *t = NULL;
+         struct vlvSearch *nt = NULL;
+         /* vlvSearchList is modified; need Wlock */
+-        slapi_rwlock_wrlock(be->vlvSearchList_lock);
+         for (t = (struct vlvSearch *)be->vlvSearchList; NULL != t;) {
+             nt = t->vlv_next;
+             vlvSearch_delete(&t);
+             t = nt;
+         }
+         be->vlvSearchList = NULL;
+-        slapi_rwlock_unlock(be->vlvSearchList_lock);
+     }
++    slapi_rwlock_unlock(be->vlvSearchList_lock);
+ 
+     {
+         basedn = slapi_create_dn_string("cn=%s,cn=%s,cn=plugins,cn=config",
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index c09e54c7f..298eb2122 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -1327,6 +1327,7 @@ slapd_daemon(daemon_ports_t *ports)
+     /* final cleanup for ASAN and other analyzers */
+     PR_JoinThread(accept_thread_p);
+     free_worker_thread_indexes();
++    free_server_dataversion();
+ }
+ 
+ void
+diff --git a/ldap/servers/slapd/entry.c b/ldap/servers/slapd/entry.c
+index 358c802a7..658b9b279 100644
+--- a/ldap/servers/slapd/entry.c
++++ b/ldap/servers/slapd/entry.c
+@@ -1502,6 +1502,9 @@ entry2str_internal_put_value(const char *attrtype, const CSN *attrcsn, CSNType a
+         strcpy(p, attrtype);
+         p += attrtypelen;
+         if (attrcsn != NULL) {
++            /* coverity false positive: there is no alloc involved in this case
++             * because p is not NULL */
++            /* coverity[leaked_storage] */
+             csn_as_attr_option_string(attrcsntype, attrcsn, p);
+             p += attrcsnlen;
+         }
+diff --git a/ldap/servers/slapd/generation.c b/ldap/servers/slapd/generation.c
+index 89f097322..1d98df3ac 100644
+--- a/ldap/servers/slapd/generation.c
++++ b/ldap/servers/slapd/generation.c
+@@ -87,6 +87,11 @@ set_database_dataversion(const char *dn, const char *dataversion)
+ 
+ static char *server_dataversion_id = NULL;
+ 
++void
++free_server_dataversion(void) {
++    slapi_ch_free_string(&server_dataversion_id);
++}
++
+ const char *
+ get_server_dataversion()
+ {
+diff --git a/ldap/servers/slapd/libglobs.c b/ldap/servers/slapd/libglobs.c
+index f8f6096c7..57228eafa 100644
+--- a/ldap/servers/slapd/libglobs.c
++++ b/ldap/servers/slapd/libglobs.c
+@@ -9753,7 +9753,9 @@ validate_num_config_reservedescriptors(void)
+     for (be = slapi_get_first_backend(&cookie); be != NULL; be = slapi_get_next_backend(cookie)) {
+         entry_str = slapi_create_dn_string("cn=%s,cn=ldbm database,cn=plugins,cn=config", be->be_name);
+         if (NULL == entry_str) {
+-            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create backend dn string");
++            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors",
++                          "Failed to create backend dn string\n");
++            slapi_ch_free_string(&cookie);
+             return -1;
+         }
+         slapi_sdn_init_dn_byref(&sdn, entry_str);
+@@ -9776,7 +9778,9 @@ validate_num_config_reservedescriptors(void)
+     for (be = slapi_get_first_backend(&cookie); be; be = slapi_get_next_backend(cookie)) {
+         entry_str = slapi_create_dn_string("cn=index,cn=%s,cn=ldbm database,cn=plugins,cn=config", be->be_name);
+         if (NULL == entry_str) {
+-            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create index dn string");
++            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors",
++                          "Failed to create index dn string\n");
++            slapi_ch_free_string(&cookie);
+             return -1;
+         }
+         slapi_sdn_init_dn_byref(&sdn, entry_str);
+@@ -9841,7 +9845,9 @@ validate_num_config_reservedescriptors(void)
+     for (be = slapi_get_first_backend(&cookie); be; be = slapi_get_next_backend(cookie)) {
+         entry_str = slapi_create_dn_string("cn=%s,cn=chaining database,cn=plugins,cn=config", be->be_name);
+         if (NULL == entry_str) {
+-            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors", "Failed to create chaining be dn string");
++            slapi_log_err(SLAPI_LOG_ERR, "validate_num_config_reservedescriptors",
++                          "Failed to create chaining be dn string\n");
++            slapi_ch_free_string(&cookie);
+             return -1;
+         }
+         slapi_sdn_init_dn_byref(&sdn, entry_str);
+diff --git a/ldap/servers/slapd/main.c b/ldap/servers/slapd/main.c
+index 5c841c528..adfa6731c 100644
+--- a/ldap/servers/slapd/main.c
++++ b/ldap/servers/slapd/main.c
+@@ -647,7 +647,7 @@ main(int argc, char **argv)
+      * consideration of rust etc)
+      */
+     slapi_td_init();
+-    
++
+     /* Init the global counters */
+     alloc_global_snmp_vars();
+ 
+@@ -2790,6 +2790,7 @@ static struct slapd_debug_level_entry
+     {LDAP_DEBUG_TIMING, "timing", 0},
+     {LDAP_DEBUG_ACLSUMMARY, "accesscontrolsummary", 0},
+     {LDAP_DEBUG_BACKLDBM, "backend", 0},
++    {LDAP_DEBUG_PWDPOLICY, "pwpolicy", 0},
+     {LDAP_DEBUG_ALL_LEVELS, "ALL", 0},
+     {0, NULL, 0}};
+ 
+diff --git a/ldap/servers/slapd/passwd_extop.c b/ldap/servers/slapd/passwd_extop.c
+index 4a89483cf..9f19d5060 100644
+--- a/ldap/servers/slapd/passwd_extop.c
++++ b/ldap/servers/slapd/passwd_extop.c
+@@ -287,7 +287,9 @@ passwd_modify_generate_policy_passwd(passwdPolicy *pwpolicy,
+ 
+     /* if only minalphas is set, divide it into minuppers and minlowers. */
+     if (pwpolicy->pw_minalphas > 0 &&
+-        (my_policy[idx_minuppers] == 0 && my_policy[idx_minlowers] == 0)) {
++        (my_policy[idx_minuppers] == 0 && my_policy[idx_minlowers] == 0))
++    {
++        /* coverity[store_truncates_time_t] */
+         unsigned int x = (unsigned int)time(NULL);
+         my_policy[idx_minuppers] = slapi_rand_r(&x) % pwpolicy->pw_minalphas;
+         my_policy[idx_minlowers] = pwpolicy->pw_minalphas - my_policy[idx_minuppers];
+@@ -346,6 +348,7 @@ passwd_modify_generate_policy_passwd(passwdPolicy *pwpolicy,
+     /* if password length is longer the sum of my_policy's,
+        let them share the burden */
+     if (passlen > tmplen) {
++        /* coverity[store_truncates_time_t] */
+         unsigned int x = (unsigned int)time(NULL);
+         int delta = passlen - tmplen;
+         for (i = 0; i < delta; i++) {
+diff --git a/ldap/servers/slapd/plugin_internal_op.c b/ldap/servers/slapd/plugin_internal_op.c
+index 0164a70be..4f87ad3cf 100644
+--- a/ldap/servers/slapd/plugin_internal_op.c
++++ b/ldap/servers/slapd/plugin_internal_op.c
+@@ -249,11 +249,12 @@ slapi_search_internal_set_pb(Slapi_PBlock *pb, const char *base, int scope, cons
+         return;
+     }
+ 
+-    /* Free op just in case this pb is being reused */
+     slapi_pblock_get(pb, SLAPI_OPERATION, &op);
+     operation_free(&op, NULL);
++    slapi_pblock_set(pb, SLAPI_OPERATION, NULL);
+     slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
+     slapi_ch_array_free(tmp_attrs);
++    slapi_pblock_set(pb, SLAPI_SEARCH_ATTRS, NULL);
+ 
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+@@ -261,7 +262,7 @@ slapi_search_internal_set_pb(Slapi_PBlock *pb, const char *base, int scope, cons
+     slapi_pblock_set(pb, SLAPI_SEARCH_SCOPE, &scope);
+     slapi_pblock_set(pb, SLAPI_SEARCH_STRFILTER, (void *)filter);
+     slapi_pblock_set(pb, SLAPI_CONTROLS_ARG, controls);
+-    /* forbidden attrs could be removed in slapi_pblock_set. */
++    /* forbidden attrs could be removed in slapi_pblock_set */
+     tmp_attrs = slapi_ch_array_dup(attrs);
+     slapi_pblock_set(pb, SLAPI_SEARCH_ATTRS, tmp_attrs);
+     slapi_pblock_set(pb, SLAPI_SEARCH_ATTRSONLY, &attrsonly);
+@@ -282,12 +283,6 @@ slapi_search_internal_set_pb_ext(Slapi_PBlock *pb, Slapi_DN *sdn, int scope, con
+         return;
+     }
+ 
+-    /* Free op/attrs just in case this pb is being reused */
+-    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
+-    operation_free(&op, NULL);
+-    slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
+-    slapi_ch_array_free(tmp_attrs);
+-
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+     slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET_DN,
+@@ -317,12 +312,6 @@ slapi_seq_internal_set_pb(Slapi_PBlock *pb, char *base, int type, char *attrname
+         return;
+     }
+ 
+-    /* Free op/attrs just in case this pb is being reused */
+-    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
+-    operation_free(&op, NULL);
+-    slapi_pblock_get(pb, SLAPI_SEARCH_ATTRS, &tmp_attrs);
+-    slapi_ch_array_free(tmp_attrs);
+-
+     op = internal_operation_new(SLAPI_OPERATION_SEARCH, operation_flags);
+     slapi_pblock_set(pb, SLAPI_OPERATION, op);
+     slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET_DN, (void *)base);
+diff --git a/ldap/servers/slapd/proto-slap.h b/ldap/servers/slapd/proto-slap.h
+index 2031cfb7d..175a39a6c 100644
+--- a/ldap/servers/slapd/proto-slap.h
++++ b/ldap/servers/slapd/proto-slap.h
+@@ -1374,11 +1374,11 @@ void g_set_global_mrl(struct matchingRuleList *newglobalmrl);
+ /*
+  * generation.c
+  */
++void free_server_dataversion(void);
+ 
+ /*
+  * factory.c
+  */
+-
+ int factory_register_type(const char *name, size_t offset);
+ void *factory_create_extension(int type, void *object, void *parent);
+ void factory_destroy_extension(int type, void *object, void *parent, void **extension);
+diff --git a/ldap/servers/slapd/result.c b/ldap/servers/slapd/result.c
+index 9772e8213..4e351eff5 100644
+--- a/ldap/servers/slapd/result.c
++++ b/ldap/servers/slapd/result.c
+@@ -2106,7 +2106,7 @@ log_op_stat(Slapi_PBlock *pb, uint64_t connid, int32_t op_id, int32_t op_interna
+                                        key_info->id_lookup_cnt);
+                     }
+                 }
+-               
++
+                 /* total elapsed time */
+                 slapi_timespec_diff(&op_stat->search_stat->keys_lookup_end, &op_stat->search_stat->keys_lookup_start, &duration);
+                 snprintf(stat_etime, ETIME_BUFSIZ, "%" PRId64 ".%.09" PRId64 "", (int64_t)duration.tv_sec, (int64_t)duration.tv_nsec);
+@@ -2173,6 +2173,13 @@ log_result(Slapi_PBlock *pb, Operation *op, int err, ber_tag_t tag, int nentries
+ 
+ 
+     operation_notes = slapi_pblock_get_operation_notes(pb);
++    if (0 == operation_notes) {
++        notes_str = "";
++    } else {
++        notes_str = notes_buf;
++        *notes_buf = ' ';
++        notes2str(operation_notes, notes_buf + 1, sizeof(notes_buf) - 1);
++    }
+ 
+     if (0 == operation_notes) {
+         notes_str = "";
+diff --git a/ldap/servers/slapd/task.c b/ldap/servers/slapd/task.c
+index 7e75b2082..b7fe19d9f 100644
+--- a/ldap/servers/slapd/task.c
++++ b/ldap/servers/slapd/task.c
+@@ -1962,6 +1962,7 @@ task_upgradedb_add(Slapi_PBlock *pb __attribute__((unused)),
+     const char *database_type = "ldbm database";
+     const char *my_database_type = NULL;
+     char *cookie = NULL;
++    char *seq_val = NULL;
+ 
+     *returncode = LDAP_SUCCESS;
+     if (slapi_entry_attr_get_ref(e, "cn") == NULL) {
+@@ -2030,7 +2031,7 @@ task_upgradedb_add(Slapi_PBlock *pb __attribute__((unused)),
+         int32_t seq_type = SLAPI_UPGRADEDB_FORCE; /* force; reindex all regardless the dbversion */
+         slapi_pblock_set(mypb, SLAPI_SEQ_TYPE, &seq_type);
+     }
+-    char *seq_val = slapi_ch_strdup(archive_dir);
++    seq_val = slapi_ch_strdup(archive_dir);
+     slapi_pblock_set(pb, SLAPI_BACKEND_TASK, task);
+     int32_t task_flags = SLAPI_TASK_RUNNING_AS_TASK;
+     slapi_pblock_set(mypb, SLAPI_TASK_FLAGS, &task_flags);
+@@ -2044,7 +2045,7 @@ task_upgradedb_add(Slapi_PBlock *pb __attribute__((unused)),
+     }
+ 
+ out:
+-    slapi_ch_free((void **)&seq_val);
++    slapi_ch_free_string(&seq_val);
+     if (rv != 0) {
+         if (task)
+             destroy_task(1, task);
+diff --git a/ldap/servers/slapd/tools/ldclt/ldclt.c b/ldap/servers/slapd/tools/ldclt/ldclt.c
+index b0e3bedae..466622e92 100644
+--- a/ldap/servers/slapd/tools/ldclt/ldclt.c
++++ b/ldap/servers/slapd/tools/ldclt/ldclt.c
+@@ -1179,6 +1179,7 @@ basicInit(void)
+          * Find the attribute name
+          */
+         for (i = 0; (i < strlen(mctx.attrpl)) && (mctx.attrpl[i] != ':'); i++);
++        free(mctx.attrplName);
+         mctx.attrplName = (char *)calloc(1, i + 1);
+         if (mctx.attrplName == NULL) {
+             printf("Error: unable to allocate memory for attrplName\n");
+diff --git a/ldap/servers/slapd/vattr.c b/ldap/servers/slapd/vattr.c
+index da7d244c2..0c3d312dc 100644
+--- a/ldap/servers/slapd/vattr.c
++++ b/ldap/servers/slapd/vattr.c
+@@ -198,6 +198,7 @@ vattr_check_thread(void *arg)
+                     }
+                 }
+                 slapi_free_search_results_internal(search_pb);
++                slapi_pblock_init(search_pb);
+             } /* check_suffix */
+         } /* suffix */
+         be = (backend *) slapi_get_next_backend(cookie);
+diff --git a/lib/libsi18n/reshash.c b/lib/libsi18n/reshash.c
+index 657287b8a..5e610e9d9 100644
+--- a/lib/libsi18n/reshash.c
++++ b/lib/libsi18n/reshash.c
+@@ -221,37 +221,32 @@ ResHashCreate(char *name)
+     ResHash *pResHash;
+ 
+     /* Create hash table  */
+-    pResHash = (ResHash *)malloc(sizeof(ResHash));
++    pResHash = (ResHash *)calloc(1, sizeof(ResHash));
+     if (pResHash == NULL)
+-        goto error;
+-
+-    memset(pResHash, 0, sizeof(ResHash));
++        return NULL;
+ 
+     if (name)
+         pResHash->name = strdup(name);
+ 
+     /* Create initial tree item and it's valuelist to hash table */
+-    pResHash->treelist = (TreeNode *)malloc(sizeof(TreeNode));
++    pResHash->treelist = (TreeNode *)calloc(1, sizeof(TreeNode));
+     if (pResHash->treelist == NULL)
+         goto error;
+ 
+-    memset(pResHash->treelist, 0, sizeof(TreeNode));
+-
+-    pResHash->treelist->vlist = (ValueNode *)malloc(sizeof(ValueNode));
++    pResHash->treelist->vlist = (ValueNode *)calloc(1, sizeof(ValueNode));
+     if (pResHash->treelist->vlist == NULL)
+         goto error;
+ 
+-    memset(pResHash->treelist->vlist, 0, sizeof(ValueNode));
+-
+     goto done;
+ 
+ error:
+-    if (pResHash && pResHash->treelist && pResHash->treelist->vlist)
++    if (pResHash->treelist) {
+         free(pResHash->treelist->vlist);
+-    if (pResHash && pResHash->treelist)
+         free(pResHash->treelist);
+-    if (pResHash)
+-        free(pResHash);
++    }
++    free(pResHash->name);
++    free(pResHash);
++
+     return NULL;
+ 
+ done:
+diff --git a/src/rewriters/adfilter.c b/src/rewriters/adfilter.c
+index 84582228f..bd77e54e4 100644
+--- a/src/rewriters/adfilter.c
++++ b/src/rewriters/adfilter.c
+@@ -83,6 +83,7 @@ dom_sid_to_bin_sid(dom_sid_t *dom_sid, bin_sid_t *res)
+ 
+     for (size_t i = 0; i < dom_sid->num_auths; i++) {
+         if ((p + sizeof(uint32_t)) > bin_sid.length) {
++            slapi_ch_free((void **)&bin_sid.sid);
+             return -1;
+         }
+         val = htole32(dom_sid->sub_auths[i]);
+-- 
+2.48.1
+

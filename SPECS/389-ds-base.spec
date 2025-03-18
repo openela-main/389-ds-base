@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.5.2
-Release:          5%{?dist}
+Release:          8%{?dist}
 License:          GPL-3.0-or-later AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (CC-BY-4.0 AND MIT) AND (MIT OR Apache-2.0) AND Unicode-DFS-2016 AND (MIT OR CC0-1.0) AND (MIT OR Unlicense) AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT AND MIT AND ISC AND MPL-2.0 AND PSF-2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -478,6 +478,24 @@ Patch:            0006-Issue-6390-Adjust-cleanAllRUV-max-per-txn-and-interv.patc
 Patch:            0007-Issue-6284-BUG-freelist-ordering-causes-high-wtime-6.patch
 Patch:            0008-Issue-6296-basic_test.py-test_conn_limits-fails-in-m.patch
 Patch:            0009-Issue-5798-Fix-dsconf-config-multi-valued-attr-opera.patch
+Patch:            0010-Issue-6417-If-an-entry-RDN-is-identical-to-the-suffi.patch
+Patch:            0011-Issue-6417-2nd-If-an-entry-RDN-is-identical-to-the-s.patch
+Patch:            0012-Issue-6417-3rd-If-an-entry-RDN-is-identical-to-the-s.patch
+Patch:            0013-Issue-6432-Crash-during-bind-when-acct-policy-plugin.patch
+Patch:            0014-Issue-6386-backup-restore-broken-after-db-log-rotati.patch
+Patch:            0015-Issue-6446-on-replica-consumer-account-policy-plugin.patch
+Patch:            0016-Issue-6446-Fix-test_acct_policy_consumer-test-to-wai.patch
+Patch:            0017-Issue-6554-During-import-of-entries-without-nsUnique.patch
+Patch:            0018-Issue-6561-TLS-1.2-stickiness-in-FIPS-mode.patch
+Patch:            0019-Issue-6229-After-an-initial-failure-subsequent-onlin.patch
+Patch:            0020-Issue-6372-Deadlock-while-doing-online-backup-6475.patch
+Patch:            0021-Issue-6509-Race-condition-with-Paged-Result-searches.patch
+Patch:            0022-Issue-6436-MOD-on-a-large-group-slow-if-substring-in.patch
+Patch:            0023-Issue-6494-Various-errors-when-using-extended-matchi.patch
+Patch:            0024-Issue-6485-Fix-double-free-in-USN-cleanup-task.patch
+Patch:            0025-Issue-6427-fix-various-memory-leaks.patch
+Patch:            0026-Issue-6442-Fix-latest-covscan-memory-leaks.patch
+Patch:            0027-Issue-6442-Fix-latest-covscan-memory-leaks-part-2.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -920,6 +938,25 @@ exit 0
 %endif
 
 %changelog
+* Wed Mar 05 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-8
+- Fix changelog
+
+* Tue Mar 04 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-6
+- Resolves: RHEL-69825 - "Duplicated DN detected" errors when creating indexes or importing entries. [rhel-9.5.z]
+- Resolves: RHEL-70126 - Crash in attrlist_find() when the Account Policy plugin is enabled. [rhel-9.5.z]
+- Resolves: RHEL-74152 - backup/restore broken [rhel-9.5.z]
+- Resolves: RHEL-74157 - If an entry RDN is identical to the suffix, then Entryrdn gets broken during a reindex [rhel-9.5.z]
+- Resolves: RHEL-74167 - On replica consumer, account policy plugin fails to manage the last login history [rhel-9.5.z]
+- Resolves: RHEL-78343 - During import of entries without nsUniqueId, a supplier generates duplicate nsUniqueId (LMDB only) [rhel-9.5.z]
+- Resolves: RHEL-79497 - Failed to set sslversionmax to TLS1.3  in FIPS mode with dsconf $INSTANCE security set --tls-protocol-max TLS1.3 [rhel-9.5.z]
+- Resolves: RHEL-81102 - After an initial failure, subsequent online backups will not work. [rhel-9.5.z]
+- Resolves: RHEL-81107 - Online backup hangs sporadically. [rhel-9.5.z]
+- Resolves: RHEL-81113 - IPA LDAP error code T3 when no exceeded time limit from a paged search result [rhel-9.5.z]
+- Resolves: RHEL-81139 - Healthcheck tool should warn admin about creating a substring index on membership attribute [rhel-9.5.z]
+- Resolves: RHEL-81146 - 389DirectoryServer Process Stops When Setting up Sorted VLV Index [rhel-9.5.z]
+- Resolves: RHEL-81157 - AddressSanitizer: double-free  [rhel-9.5.z]
+- Resolves: RHEL-81171 - leaked_storage: Variable "childelems" going out of scope leaks the storage it points to. [rhel-9.5.z]
+
 * Fri Jan 24 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-5
 - Resolves: RHEL-74350 - Some nsslapd-haproxy-trusted-ip values are discarded upon a restart. [rhel-9.5.z]
 
