@@ -1,0 +1,3998 @@
+From 1bcb7f2fed1d3ac91b1e2b75041fe2d36ca7550d Mon Sep 17 00:00:00 2001
+From: Thierry Bordaz <tbordaz@redhat.com>
+Date: Thu, 29 Aug 2024 16:20:47 +0200
+Subject: [PATCH] Issue 6304 - RFE when memberof is enabled, defer updates of
+ members from the update of the group
+
+Bug Description:
+	When an update of a static group changes
+	impacts a large portion of its members, memberof triggers
+	a large number of internal updates on members.
+	All the updates are done a same TXN that may hold
+	sensitive DB pages and block others SRCH req
+	waiting for those pages.
+	In extreme condition, all workers are stuck on
+	SRCH req waiting for the completion of the update.
+	Then the server appears unresponsive.
+
+Fix Description:
+	The fix is to defer the update of the members.
+
+	Memberof tests:
+		- for the verification of the membership, if deferred update is set,
+	then adds a delay before checking
+			- automember_plugin/automember_test.py
+			- automember_plugin/basic_test.py
+			- memberof_plugin/memberof_include_scopes_test.py
+			- plugins/acceptance_test.py
+			- plugins/entryusn_test.py
+			- plugins/memberof_test.py
+			- lib389/plugins.py
+		- original update (group) succeeds even if deferred updates fails (multiple TXN)
+			- betxns/betxn_test.py
+		- Check replication of memberof
+			- memberof_plugin/memberof_deferred_repl_test.py
+		- Check deferred update and shutdown
+			- memberof_plugin/memberof_include_scopes_test.py
+
+	Core implementation:
+
+		- Make sure that direct update (not internal) wait for
+		  deferred update before returning a result
+			- back-ldbm/ldbm_add.c
+			- back-ldbm/ldbm_delete.c
+			- back-ldbm/ldbm_modify.c
+			- back-ldbm/ldbm_modrdn.c
+
+		- Implementation of the deferred update
+			- memberof/memberof.h
+			- memberof/memberof.c
+			- memberof/memberof_config.c
+			- slapd/pblock.c
+			- slapd/pblock_v3.h
+			- slapd/schema.c
+			- slapd/slapi-plugin.h
+	memberof_be_postop_init
+		registers memberof_push_deferred_task that:
+		push deferred update to deferred thread
+			task taken from pblock (SLAPI_MEMBEROF_DEFERRED_TASK)
+			push to the memberof config deferred_list
+
+	deferred thread (deferred_thread_func)
+		if 'memberOfNeedFixup: on' then run fixup task
+		loop until shutdown
+			fetch task (remove_deferred_task) from the memberof config deferred_list
+			proceed with the task
+		if it exits abruptly, it logs an alert and add 'memberOfNeedFixup: on' to the config
+
+	memberof_postop_start
+		if deferred update is configured then it creates a deferred_list in the config
+		it spawn the deferred thread + CV
+
+	Each postop_operation memberof_postop_modrdn, memberof_postop_del, memberof_postop_modify, memberof_postop_add
+		if deferred update it allocates a task and add it in the pblock (SLAPI_MEMBEROF_DEFERRED_TASK)
+
+Related: #6304
+
+Reviewed by: Simon Pichugin (THanks !!!)
+---
+ .../automember_plugin/automember_test.py      |   26 +-
+ .../suites/automember_plugin/basic_test.py    |   90 +-
+ dirsrvtests/tests/suites/betxns/betxn_test.py |   34 +-
+ .../memberof_deferred_repl_test.py            |  178 +++
+ .../memberof_include_scopes_test.py           |    6 +
+ .../suites/memberof_plugin/regression_test.py |  378 ++++-
+ .../tests/suites/plugins/acceptance_test.py   |   16 +
+ .../tests/suites/plugins/entryusn_test.py     |    7 +
+ .../tests/suites/plugins/memberof_test.py     |   68 +
+ ldap/servers/plugins/memberof/memberof.c      | 1312 +++++++++++++++--
+ ldap/servers/plugins/memberof/memberof.h      |   71 +
+ .../plugins/memberof/memberof_config.c        |   26 +-
+ ldap/servers/slapd/back-ldbm/ldbm_add.c       |   15 +
+ ldap/servers/slapd/back-ldbm/ldbm_delete.c    |   15 +
+ ldap/servers/slapd/back-ldbm/ldbm_modify.c    |   15 +
+ ldap/servers/slapd/back-ldbm/ldbm_modrdn.c    |   16 +
+ ldap/servers/slapd/pblock.c                   |   17 +
+ ldap/servers/slapd/pblock_v3.h                |    9 +
+ ldap/servers/slapd/schema.c                   |   21 +
+ ldap/servers/slapd/slapi-plugin.h             |    7 +
+ ldap/servers/slapd/slapi-private.h            |    3 +
+ src/lib389/lib389/plugins.py                  |   20 +
+ 22 files changed, 2168 insertions(+), 182 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/memberof_plugin/memberof_deferred_repl_test.py
+
+diff --git a/dirsrvtests/tests/suites/automember_plugin/automember_test.py b/dirsrvtests/tests/suites/automember_plugin/automember_test.py
+index e1976bd78..fc3726221 100644
+--- a/dirsrvtests/tests/suites/automember_plugin/automember_test.py
++++ b/dirsrvtests/tests/suites/automember_plugin/automember_test.py
+@@ -10,6 +10,7 @@ import logging
+ import pytest
+ import os
+ import ldap
++import time
+ from lib389.utils import ds_is_older
+ from lib389._constants import *
+ from lib389.plugins import AutoMembershipPlugin, AutoMembershipDefinition, AutoMembershipDefinitions, AutoMembershipRegexRule
+@@ -172,6 +173,10 @@ def test_delete_default_group(automember_fixture, topo):
+ 
+     from lib389.plugins import MemberOfPlugin
+     memberof = MemberOfPlugin(topo.standalone)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        tries = 10 # to avoid any risk of transient failure
++    else:
++        tries = 1
+     memberof.enable()
+     topo.standalone.restart()
+     topo.standalone.setLogLevel(65536)
+@@ -182,8 +187,20 @@ def test_delete_default_group(automember_fixture, topo):
+     try:
+         assert group.is_member(user_1.dn)
+         group.delete()
+-        error_lines = topo.standalone.ds_error_log.match('.*auto-membership-plugin - automember_update_member_value - group .default or target. does not exist .%s.$' % group.dn)
+-        assert (len(error_lines) == 1)
++        # Check there is the expected message
++        while tries > 0:
++            error_lines = topo.standalone.ds_error_log.match('.*auto-membership-plugin - automember_update_member_value - group .default or target. does not exist .%s.$' % group.dn)
++            nb_match = len(error_lines)
++            log.info("len(error_lines)=%d" % nb_match)
++            for i in error_lines:
++                log.info(" - %s" % i)
++            assert nb_match <= 1
++            if (nb_match == 1):
++                # we are done the test is successful
++                break
++            time.sleep(1)
++            tries -= 1
++        assert tries > 0
+     finally:
+         user_1.delete()
+         topo.standalone.setLogLevel(0)
+@@ -285,6 +302,10 @@ def test_delete_target_group(automember_fixture, topo):
+ 
+     from lib389.plugins import MemberOfPlugin
+     memberof = MemberOfPlugin(topo.standalone)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     memberof.enable()
+ 
+     topo.standalone.restart()
+@@ -300,6 +321,7 @@ def test_delete_target_group(automember_fixture, topo):
+ 
+         # delete that target filter group
+         group_regex.delete()
++        time.sleep(delay)
+         error_lines = topo.standalone.ds_error_log.match('.*auto-membership-plugin - automember_update_member_value - group .default or target. does not exist .%s.$' % group_regex.dn)
+         # one line for default group and one for target group
+         assert (len(error_lines) == 1)
+diff --git a/dirsrvtests/tests/suites/automember_plugin/basic_test.py b/dirsrvtests/tests/suites/automember_plugin/basic_test.py
+index 075e85996..51acfeadc 100644
+--- a/dirsrvtests/tests/suites/automember_plugin/basic_test.py
++++ b/dirsrvtests/tests/suites/automember_plugin/basic_test.py
+@@ -12,6 +12,7 @@ Will test AutoMememer Plugin with AotoMember Task and Retro Changelog
+ 
+ import os
+ import pytest
++import time
+ from lib389.topologies import topology_m1 as topo
+ from lib389.idm.organizationalunit import OrganizationalUnits
+ from lib389.idm.domain import Domain
+@@ -365,19 +366,23 @@ def test_ability_to_control_behavior_of_modifiers_name(topo, _create_all_entries
+         7. Should success
+     """
+     instance1 = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance1)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     configure = Config(instance1)
+     configure.replace('nsslapd-plugin-binddn-tracking', 'on')
+     instance1.restart()
+     assert configure.get_attr_val_utf8('nsslapd-plugin-binddn-tracking') == 'on'
+     user = add_user(topo, "User_autoMembers_05", "ou=Employees,{}".format(TEST_BASE),
+                     "19", "18", "Supervisor")
++    time.sleep(delay)
+     # search the User DN name for the creatorsname in user entry
+     assert user.get_attr_val_utf8('creatorsname') == 'cn=directory manager'
+     # search the User DN name for the internalCreatorsname in user entry
+     assert user.get_attr_val_utf8('internalCreatorsname') == \
+            'cn=ldbm database,cn=plugins,cn=config'
+-    # search the modifiersname in the user entry
+-    assert user.get_attr_val_utf8('modifiersname') == 'cn=directory manager'
+     # search the internalModifiersname in the user entry
+     assert user.get_attr_val_utf8('internalModifiersname') == \
+            'cn=MemberOf Plugin,cn=plugins,cn=config'
+@@ -401,10 +406,18 @@ def test_posixaccount_objectclass_automemberdefaultgroup(topo, _create_all_entri
+         2. Should success
+     """
+     test_id = "autoMembers_05"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     default_group = "cn=TestDef1,CN=testuserGroups,{}".format(TEST_BASE)
+     user = add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "18", "Supervisor")
++    time.sleep(delay)
+     assert check_groups(topo, default_group, user.dn, "member")
+     user.delete()
++    time.sleep(delay)
+     with pytest.raises(AssertionError):
+         assert check_groups(topo, default_group, user.dn, "member")
+ 
+@@ -430,13 +443,22 @@ def test_duplicated_member_attributes_added_when_the_entry_is_re_created(topo, _
+         6. Should success
+     """
+     test_id = "autoMembers_06"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     default_group = "cn=TestDef1,CN=testuserGroups,{}".format(TEST_BASE)
+     user = add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "16", "Supervisor")
++    time.sleep(delay)
+     assert check_groups(topo, default_group, user.dn, "member")
+     user.delete()
++    time.sleep(delay)
+     with pytest.raises(AssertionError):
+         assert check_groups(topo, default_group, user.dn, "member")
+     user = add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "15", "Supervisor")
++    time.sleep(delay)
+     assert check_groups(topo, default_group, user.dn, "member")
+     user.delete()
+ 
+@@ -458,13 +480,21 @@ def test_multi_valued_automemberdefaultgroup_for_hostgroups(topo, _create_all_en
+         4. Should success
+     """
+     test_id = "autoMembers_07"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     default_group1 = "cn=TestDef1,CN=testuserGroups,{}".format(TEST_BASE)
+     default_group2 = "cn=TestDef2,CN=testuserGroups,{}".format(TEST_BASE)
+     default_group3 = "cn=TestDef3,CN=testuserGroups,{}".format(TEST_BASE)
+     user = add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "14", "TestEngr")
++    time.sleep(delay)
+     for grp in [default_group1, default_group2, default_group3]:
+         assert check_groups(topo, grp, user.dn, "member")
+     user.delete()
++    time.sleep(delay)
+     with pytest.raises(AssertionError):
+         assert check_groups(topo, default_group1, user.dn, "member")
+ 
+@@ -485,6 +515,12 @@ def test_plugin_creates_member_attributes_of_the_automemberdefaultgroup(topo, _c
+         3. Should success
+     """
+     test_id = "autoMembers_08"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     default_group1 = "cn=TestDef1,CN=testuserGroups,{}".format(TEST_BASE)
+     default_group2 = "cn=TestDef5,CN=testuserGroups,{}".format(TEST_BASE)
+     default_group3 = "cn=TestDef3,CN=testuserGroups,{}".format(TEST_BASE)
+@@ -495,6 +531,7 @@ def test_plugin_creates_member_attributes_of_the_automemberdefaultgroup(topo, _c
+                     "cn=TestDef4,CN=testuserGroups,{}".format(TEST_BASE),
+                     "uid=User_{},{}".format(test_id, AUTO_MEM_SCOPE_TEST), "member")
+     user = add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "14", "TestEngr")
++    time.sleep(delay)
+     for grp in [default_group1, default_group2, default_group3]:
+         assert check_groups(topo, grp, user.dn, "member")
+     user.delete()
+@@ -520,6 +557,11 @@ def test_multi_valued_automemberdefaultgroup_with_uniquemember(topo, _create_all
+     """
+     test_id = "autoMembers_09"
+     instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     auto = AutoMembershipPlugin(topo.ms["supplier1"])
+     # Modify automember config entry to use uniquemember: cn=testuserGroups,PLUGIN_AUTO
+     AutoMembershipDefinition(
+@@ -570,11 +612,18 @@ def test_invalid_automembergroupingattr_member(topo, _create_all_entries):
+         5. Should success
+     """
+     test_id = "autoMembers_10"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     default_group = "cn=TestDef1,CN=testuserGroups,{}".format(TEST_BASE)
+     instance_of_group = Group(topo.ms["supplier1"], default_group)
+     change_grp_objclass("groupOfUniqueNames", "member", instance_of_group)
+     with pytest.raises(ldap.UNWILLING_TO_PERFORM):
+         add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "20", "Invalid")
++    time.sleep(delay)
+     with pytest.raises(AssertionError):
+         assert check_groups(topo, default_group,
+                             "uid=User_{},{}".format(test_id, AUTO_MEM_SCOPE_TEST), "member")
+@@ -600,6 +649,14 @@ def test_valid_and_invalid_automembergroupingattr(topo, _create_all_entries):
+         5. Should success
+     """
+     test_id = "autoMembers_11"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        singleTXN = False
++        delay = 3
++    else:
++        singleTXN = True
++        delay = 0
+     default_group_1 = "cn=TestDef1,CN=testuserGroups,{}".format(TEST_BASE)
+     default_group_2 = "cn=TestDef2,CN=testuserGroups,{}".format(TEST_BASE)
+     default_group_3 = "cn=TestDef3,CN=testuserGroups,{}".format(TEST_BASE)
+@@ -611,6 +668,7 @@ def test_valid_and_invalid_automembergroupingattr(topo, _create_all_entries):
+         change_grp_objclass("groupOfUniqueNames", "member", instance_of_group)
+     with pytest.raises(ldap.UNWILLING_TO_PERFORM):
+         add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_TEST, "19", "24", "MixUsers")
++    time.sleep(delay)
+     for grp in [default_group_1, default_group_2, default_group_3]:
+         assert not check_groups(topo, grp, "cn=User_{},{}".format(test_id,
+                                                                   AUTO_MEM_SCOPE_TEST), "member")
+@@ -637,8 +695,15 @@ def test_add_regular_expressions_for_user_groups_and_check_for_member_attribute_
+         2. Should success
+     """
+     test_id = "autoMembers_12"
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     default_group = f'cn=SuffDef1,ou=userGroups,{BASE_SUFF}'
+     user = add_user(topo, "User_{}".format(test_id), AUTO_MEM_SCOPE_BASE, "19", "0", "HR")
++    time.sleep(delay)
+     assert check_groups(topo, default_group, user.dn, "member")
+     assert number_memberof(topo, user.dn, 5)
+     user.delete()
+@@ -675,6 +740,13 @@ def test_matching_gid_role_inclusive_regular_expression(topo, _create_all_entrie
+     user1 = add_user(topo, "User_{}".format(testid), AUTO_MEM_SCOPE_BASE, uid, gid, role)
+     user2 = add_user(topo, "SecondUser_{}".format(testid), AUTO_MEM_SCOPE_BASE,
+                      uid2, gid2, role)
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
++    time.sleep(delay)
+     for user_dn in [user1.dn, user2.dn]:
+         assert check_groups(topo, contract_grp, user_dn, "member")
+     assert number_memberof(topo, user1.dn, 1)
+@@ -715,9 +787,16 @@ def test_gid_and_role_inclusive_exclusive_regular_expression(topo, _create_all_e
+         3. Should success
+         4. Should success
+     """
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     contract_grp = f'cn={c_grp},ou=userGroups,{BASE_SUFF}'
+     default_group = f'cn={m_grp},ou=userGroups,{BASE_SUFF}'
+     user = add_user(topo, "User_{}".format(testid), AUTO_MEM_SCOPE_BASE, uid, gid, role)
++    time.sleep(delay)
+     with pytest.raises(AssertionError):
+         assert check_groups(topo, contract_grp, user.dn, "member")
+     check_groups(topo, default_group, user.dn, "member")
+@@ -755,7 +834,14 @@ def test_managers_contractors_exclusive_regex_rules_member_uid(topo, _create_all
+     """
+     default_group1 = f'cn={c_grp},{SUBSUFFIX}'
+     default_group2 = f'cn={m_grp},{SUBSUFFIX}'
++    instance = topo.ms["supplier1"]
++    memberof = MemberOfPlugin(instance)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     user = add_user(topo, "User_{}".format(testid), AUTO_MEM_SCOPE_BASE, uid, gid, role)
++    time.sleep(delay)
+     for group in [default_group1, default_group2]:
+         assert check_groups(topo, group, user.dn, "memberuid")
+     user.delete()
+diff --git a/dirsrvtests/tests/suites/betxns/betxn_test.py b/dirsrvtests/tests/suites/betxns/betxn_test.py
+index 76850a992..68fd72bd5 100644
+--- a/dirsrvtests/tests/suites/betxns/betxn_test.py
++++ b/dirsrvtests/tests/suites/betxns/betxn_test.py
+@@ -159,6 +159,10 @@ def test_betxn_memberof(topology_st):
+     memberof = MemberOfPlugin(topology_st.standalone)
+     memberof.enable()
+     memberof.set_autoaddoc('referral')
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        singleTXN = False
++    else:
++        singleTXN = True
+     topology_st.standalone.restart()
+ 
+     groups = Groups(topology_st.standalone, DEFAULT_SUFFIX)
+@@ -171,11 +175,17 @@ def test_betxn_memberof(topology_st):
+         group2.remove('objectClass', 'nsMemberOf')
+ 
+     # Add group2 to group1 - it should fail with objectclass violation
+-    with pytest.raises(ldap.OBJECT_CLASS_VIOLATION):
++    if singleTXN:
++        with pytest.raises(ldap.OBJECT_CLASS_VIOLATION):
++            group1.add_member(group2.dn)
++
++        # verify entry cache reflects the current/correct state of group1
++        assert not group1.is_member(group2.dn)
++    else:
+         group1.add_member(group2.dn)
+ 
+-    # verify entry cache reflects the current/correct state of group1
+-    assert not group1.is_member(group2.dn)
++        # verify entry cache reflects the current/correct state of group1
++        assert group1.is_member(group2.dn)
+ 
+     # Done
+     log.info('test_betxn_memberof: PASSED')
+@@ -208,6 +218,10 @@ def test_betxn_modrdn_memberof_cache_corruption(topology_st):
+     memberof.set_autoaddoc('nsContainer')  # Bad OC
+     memberof.set('memberOfEntryScope', peoplebase)
+     memberof.set('memberOfAllBackends', 'on')
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        singleTXN = False
++    else:
++        singleTXN = True
+     topology_st.standalone.restart()
+ 
+     groups = Groups(topology_st.standalone, DEFAULT_SUFFIX)
+@@ -223,12 +237,16 @@ def test_betxn_modrdn_memberof_cache_corruption(topology_st):
+ 
+     group.add_member(user.dn)
+ 
+-    # Attempt modrdn that should fail, but the original entry should stay in the cache
+-    with pytest.raises(ldap.OBJECT_CLASS_VIOLATION):
+-        group.rename('cn=group_to_people', newsuperior=peoplebase)
++    if singleTXN:
++        # Attempt modrdn that should fail, but the original entry should stay in the cache
++        with pytest.raises(ldap.OBJECT_CLASS_VIOLATION):
++            group.rename('cn=group_to_people', newsuperior=peoplebase)
+ 
+-    # Should fail, but not with NO_SUCH_OBJECT as the original entry should still be in the cache
+-    with pytest.raises(ldap.OBJECT_CLASS_VIOLATION):
++        # Should fail, but not with NO_SUCH_OBJECT as the original entry should still be in the cache
++        with pytest.raises(ldap.OBJECT_CLASS_VIOLATION):
++            group.rename('cn=group_to_people', newsuperior=peoplebase)
++    else:
++        group.rename('cn=group_to_people', newsuperior=peoplebase)
+         group.rename('cn=group_to_people', newsuperior=peoplebase)
+ 
+     # Done
+diff --git a/dirsrvtests/tests/suites/memberof_plugin/memberof_deferred_repl_test.py b/dirsrvtests/tests/suites/memberof_plugin/memberof_deferred_repl_test.py
+new file mode 100644
+index 000000000..e92df0661
+--- /dev/null
++++ b/dirsrvtests/tests/suites/memberof_plugin/memberof_deferred_repl_test.py
+@@ -0,0 +1,178 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2024 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import pytest
++import os
++import time
++from lib389._constants import DEFAULT_SUFFIX, AGMT_ATTR_LIST
++from lib389.topologies import topology_m2 as topo_m2
++from lib389.agreement import Agreements
++from lib389.replica import Replicas
++from lib389.plugins import MemberOfPlugin
++from lib389.idm.user import UserAccounts
++from lib389.idm.group import Groups
++
++log = logging.getLogger(__name__)
++
++
++def test_repl_deferred_updates(topo_m2):
++    """Test memberOf plugin deferred updates work in different types of
++    replicated environments
++
++    :id: f7b20a60-7e52-411d-8693-cd7235df8e84
++    :setup: 2 Supplier Instances
++    :steps:
++        1. Enable memberOf with deferred updates on Supplier 1
++        2. Test deferred updates are replicated to Supplier 2
++        3. Enable memberOf with deferred updates on Supplier 2
++        4. Edit both agreements to strip memberOf updates
++        5. Test that supplier 2 will update memberOf after receving replicated
++           group update
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Success
++        5. Success
++    """
++    s1 = topo_m2.ms["supplier1"]
++    s2 = topo_m2.ms["supplier2"]
++
++    # Setup - create users and groups
++    s1_users = UserAccounts(s1, DEFAULT_SUFFIX)
++    s2_users = UserAccounts(s2, DEFAULT_SUFFIX)
++    user_dn_list = []
++    for idx in range(5):
++        USER_NAME = f'user_{idx}'
++        user = s1_users.create(properties={
++            'uid': USER_NAME,
++            'sn': USER_NAME,
++            'cn': USER_NAME,
++            'uidNumber': f'{idx}',
++            'gidNumber': f'{idx}',
++            'homeDirectory': f'/home/{USER_NAME}'
++        })
++        user_dn_list.append(user.dn)
++
++    groups = Groups(s1, DEFAULT_SUFFIX)
++    group = groups.create(properties={'cn': 'group'})
++
++    #
++    # Configure MO plugin Supplier 1, we're testing that deferred updates are
++    # replicated
++    #
++    memberof = MemberOfPlugin(s1)
++    memberof.enable()
++    memberof.set_autoaddoc('nsMemberOf')
++    memberof.set_memberofdeferredupdate('on')
++    #s1.config.set('nsslapd-errorlog','/dev/shm/slapd-supplier1/errors')
++    #s1.setLogLevel(65536)
++    #s1.setAccessLogLevel(260)
++    #s1.config.set('nsslapd-plugin-logging', 'on')
++    #s1.config.set('nsslapd-auditlog-logging-enabled',  'on')
++    s1.restart()
++
++    # Update group
++    for dn in user_dn_list:
++        group.add('member', dn)
++
++    # Check memberOf was added to all users in S1 and S2
++    for count in range(10):
++        log.debug(f"Phase 1 - pass: {count}")
++        all_good = True
++        time.sleep(2)
++        # Check supplier 1
++        users_s1 = s1_users.list()
++        for user in users_s1:
++            memberof = user.get_attr_vals('memberof')
++            log.debug("Checking %s" % user.dn)
++            log.debug("memberof: %s" % str(memberof))
++
++        for user in users_s1:
++            if not user.present('memberof'):
++                log.debug("missing  memberof: %s !!!!" % user.dn)
++                all_good = False
++                break
++            else:
++                log.debug("Checking memberof: %s" % user.dn)
++        if not all_good:
++            continue
++
++        # Supplier 1 is good, now check Supplier 2 ...
++        users_s2 = s2_users.list()
++        for user in users_s2:
++            if not user.present('memberof'):
++                all_good = False
++                break
++
++        # If we are all good then we can break out
++        if all_good:
++            break
++
++    assert all_good
++
++    #
++    # New test that when a supplier receives a group update (memberOf is not
++    # replicated in this test) that it updates memberOf locally from the
++    # replicated group update
++    #
++
++    # Exclude memberOf from replication
++    replica = Replicas(s1).get(DEFAULT_SUFFIX)
++    agmt = Agreements(s1, replica.dn).list()[0]
++    agmt.replace(AGMT_ATTR_LIST, '(objectclass=*) $ EXCLUDE memberOf')
++    agmt = Agreements(s2, replica.dn).list()[0]
++    agmt.replace(AGMT_ATTR_LIST, '(objectclass=*) $ EXCLUDE memberOf')
++
++    # enable MO plugin on Supplier 2
++    memberof = MemberOfPlugin(s2)
++    memberof.enable()
++    memberof.set_autoaddoc('nsMemberOf')
++    memberof.set_memberofdeferredupdate('on')
++    s1.restart()
++    s2.restart()
++
++    # Remove members
++    group.remove_all('member')
++
++    # Check memberOf is removed from users on S1 and S2
++    all_good = True
++    for count in range(10):
++        log.debug(f"Phase 2 - pass: {count}")
++        all_good = True
++        time.sleep(2)
++        # Check supplier 1
++        users_s1 = s1_users.list()
++        for user in users_s1:
++            if user.present('memberof'):
++                all_good = False
++                break
++        if not all_good:
++            continue
++
++        # Supplier 1 is good, now check Supplier 2 ...
++        users_s2 = s2_users.list()
++        for user in users_s2:
++            if user.present('memberof'):
++                all_good = False
++                break
++
++        # If we are all good then we can break out
++        if all_good:
++            break
++
++    assert all_good
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main(["-s", CURRENT_FILE])
++
+diff --git a/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py b/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py
+index b310b15ea..e1d3b0a96 100644
+--- a/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py
++++ b/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py
+@@ -9,6 +9,7 @@
+ import pytest
+ import os
+ import ldap
++import time
+ from lib389.utils import ensure_str
+ from lib389.topologies import topology_st as topo
+ from lib389._constants import *
+@@ -81,6 +82,10 @@ def test_multiple_scopes(topo):
+     memberof.enable()
+     memberof.add('memberOfEntryScope', SUBTREE_1)
+     memberof.add('memberOfEntryScope', SUBTREE_2)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     inst.restart()
+ 
+     # Add setup entries
+@@ -113,6 +118,7 @@ def test_multiple_scopes(topo):
+     user = UserAccount(topo.standalone, dn=INCLUDED_USER)
+     user.rename("uid=test_m1", newsuperior=EXCLUDED_SUBTREE)
+ 
++    time.sleep(delay)
+     # Check memberOf and group are cleaned up
+     check_membership(inst, EXCLUDED_USER, GROUP_DN, False)
+     group = Group(topo.standalone,  dn=GROUP_DN)
+diff --git a/dirsrvtests/tests/suites/memberof_plugin/regression_test.py b/dirsrvtests/tests/suites/memberof_plugin/regression_test.py
+index dd073dcc7..4c681a909 100644
+--- a/dirsrvtests/tests/suites/memberof_plugin/regression_test.py
++++ b/dirsrvtests/tests/suites/memberof_plugin/regression_test.py
+@@ -10,7 +10,9 @@ import logging
+ import pytest
+ import os
+ import time
++import signal
+ import ldap
++from datetime import datetime
+ from random import sample
+ from lib389.utils import ds_is_older, ensure_list_bytes, ensure_bytes, ensure_str
+ from lib389.topologies import topology_m1h1c1 as topo, topology_st, topology_m2 as topo_m2
+@@ -22,6 +24,10 @@ from lib389.idm.group import Groups, Group
+ from lib389.replica import ReplicationManager
+ from lib389.tasks import *
+ from lib389.idm.nscontainer import nsContainers
++from lib389.idm.domain import Domain
++from lib389.dirsrv_log import DirsrvErrorLog
++from lib389.dseldif import DSEldif
++from contextlib import suppress
+ 
+ 
+ # Skip on older versions
+@@ -302,6 +308,10 @@ def test_scheme_violation_errors_logged(topo_m2):
+     memberof = MemberOfPlugin(inst)
+     memberof.enable()
+     memberof.set_autoaddoc('nsMemberOf')
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     inst.restart()
+ 
+     users = UserAccounts(inst, SUFFIX)
+@@ -315,6 +325,7 @@ def test_scheme_violation_errors_logged(topo_m2):
+ 
+     testgroup.add('member', testuser.dn)
+ 
++    time.sleep(delay)
+     user_memberof_attr = testuser.get_attr_val_utf8('memberof')
+     assert user_memberof_attr
+     log.info('memberOf attr value - {}'.format(user_memberof_attr))
+@@ -354,11 +365,19 @@ def test_memberof_with_changelog_reset(topo_m2):
+ 
+     log.info("Configure memberof on M1 and M2")
+     memberof = MemberOfPlugin(m1)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        # too difficult to make a large update work at shutdown
++        # need a dedicated test
++        return
+     memberof.enable()
+     memberof.set_autoaddoc('nsMemberOf')
+     m1.restart()
+ 
+     memberof = MemberOfPlugin(m2)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        # too difficult to make a large update work at shutdown
++        # need a dedicated test
++        return
+     memberof.enable()
+     memberof.set_autoaddoc('nsMemberOf')
+     m2.restart()
+@@ -483,6 +502,10 @@ def test_memberof_group(topology_st):
+     memberof = MemberOfPlugin(inst)
+     memberof.enable()
+     memberof.replace('memberOfEntryScope', SUBTREE_1)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     inst.restart()
+ 
+     add_container(inst, SUFFIX, 'sub1')
+@@ -492,6 +515,7 @@ def test_memberof_group(topology_st):
+     add_group(inst, 'g1', SUBTREE_1)
+     add_group(inst, 'g2', SUBTREE_2)
+ 
++    time.sleep(delay)
+     # _check_memberof
+     dn1 = '%s,%s' % ('uid=test_m1', SUBTREE_1)
+     dn2 = '%s,%s' % ('uid=test_m2', SUBTREE_1)
+@@ -504,6 +528,7 @@ def test_memberof_group(topology_st):
+ 
+     rename_entry(inst, 'cn=g2', SUBTREE_2, SUBTREE_1)
+ 
++    time.sleep(delay)
+     g2n = '%s,%s' % ('cn=g2-new', SUBTREE_1)
+     _find_memberof_ext(inst, dn1, g1, True)
+     _find_memberof_ext(inst, dn2, g1, True)
+@@ -566,6 +591,11 @@ def test_entrycache_on_modrdn_failure(topology_st):
+ 
+     # only scopes peoplebase
+     _config_memberof_entrycache_on_modrdn_failure(topology_st.standalone)
++    memberof = MemberOfPlugin(topology_st.standalone)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     topology_st.standalone.restart(timeout=10)
+ 
+     # create 10 users
+@@ -587,6 +617,7 @@ def test_entrycache_on_modrdn_failure(topology_st):
+                                    ],
+                              'description': 'mygroup'})))
+ 
++    time.sleep(delay)
+     # Check the those entries have memberof with group0
+     for i in range(2):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -609,6 +640,7 @@ def test_entrycache_on_modrdn_failure(topology_st):
+                                    ],
+                              'description': 'mygroup'})))
+ 
++    time.sleep(delay)
+     # Check the those entries have not memberof with group1
+     for i in range(2):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -625,6 +657,8 @@ def test_entrycache_on_modrdn_failure(topology_st):
+     # move group1 into the scope and check user0 and user1 are memberof group1
+     topology_st.standalone.rename_s(group1_dn, 'cn=group_in1', newsuperior=peoplebase, delold=0)
+     new_group1_dn = 'cn=group_in1,%s' % peoplebase
++
++    time.sleep(delay)
+     for i in range(2):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+         ent = topology_st.standalone.getEntry(user_dn, ldap.SCOPE_BASE, "(objectclass=*)", ['memberof'])
+@@ -646,7 +680,7 @@ def test_entrycache_on_modrdn_failure(topology_st):
+                                    'cn=user3,%s' % peoplebase,
+                                    ],
+                              'description': entry_description})))
+-
++    time.sleep(delay)
+     # Check the those entries have not memberof with group2
+     for i in (2, 3):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -657,31 +691,36 @@ def test_entrycache_on_modrdn_failure(topology_st):
+     _disable_auto_oc_memberof(topology_st.standalone)
+     topology_st.standalone.restart(timeout=10)
+ 
+-    # move group2 into the scope and check it fails
+-    try:
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        # move group2 into the scope and check it succeeds
+         topology_st.standalone.rename_s(group2_dn, 'cn=group_in2', newsuperior=peoplebase, delold=0)
+-        topology_st.standalone.log.info("This is unexpected, modrdn should fail as the member entry have not the appropriate objectclass")
+-        assert False
+-    except ldap.OBJECT_CLASS_VIOLATION:
+-        pass
+-
+-    # retrieve the entry having the specific description value
+-    # check that the entry DN is the original group2 DN
+-    ents = topology_st.standalone.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, '(cn=gr*)')
+-    found = False
+-    for ent in ents:
+-        topology_st.standalone.log.info("retrieve: %s with desc=%s" % (ent.dn, ent.getValue('description')))
+-        if ent.getValue('description') == entry_description.encode():
+-            found = True
+-            assert ent.dn == group2_dn
+-    assert found
++        topology_st.standalone.log.info("This is expected, modrdn does not fail only updates of members will fail")
++    else:
++        # move group2 into the scope and check it fails
++        try:
++            topology_st.standalone.rename_s(group2_dn, 'cn=group_in2', newsuperior=peoplebase, delold=0)
++            topology_st.standalone.log.info("This is unexpected, modrdn should fail as the member entry have not the appropriate objectclass")
++            assert False
++        except ldap.OBJECT_CLASS_VIOLATION:
++            pass
++
++        # retrieve the entry having the specific description value
++        # check that the entry DN is the original group2 DN
++        ents = topology_st.standalone.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, '(cn=gr*)')
++        found = False
++        for ent in ents:
++            topology_st.standalone.log.info("retrieve: %s with desc=%s" % (ent.dn, ent.getValue('description')))
++            if ent.getValue('description') == entry_description.encode():
++                found = True
++                assert ent.dn == group2_dn
++        assert found
+ 
+ 
+ def _config_memberof_silent_memberof_failure(server):
+     _config_memberof_entrycache_on_modrdn_failure(server)
+ 
+ 
+-def test_silent_memberof_failure(topology_st):
++def test_silent_memberof_failure(topology_st, request):
+     """This test checks that if during a MODRDN, the memberof plugin fails
+     then MODRDN also fails
+ 
+@@ -720,6 +759,11 @@ def test_silent_memberof_failure(topology_st):
+     """
+     # only scopes peoplebase
+     _config_memberof_silent_memberof_failure(topology_st.standalone)
++    memberof = MemberOfPlugin(topology_st.standalone)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     topology_st.standalone.restart(timeout=10)
+ 
+     # first do some cleanup
+@@ -727,10 +771,21 @@ def test_silent_memberof_failure(topology_st):
+     for i in range(10):
+         cn = 'user%d' % i
+         dn = 'cn=%s,%s' % (cn, peoplebase)
+-        topology_st.standalone.delete_s(dn)
+-    topology_st.standalone.delete_s('cn=group_in0,%s' % peoplebase)
+-    topology_st.standalone.delete_s('cn=group_in1,%s' % peoplebase)
+-    topology_st.standalone.delete_s('cn=group_out2,%s' % SUFFIX)
++        try:
++            topology_st.standalone.delete_s(dn)
++        except ldap.NO_SUCH_OBJECT:
++            pass
++
++    for i in range(3):
++        try:
++            topology_st.standalone.delete_s('cn=group_in%d,%s' % (i, peoplebase))
++        except ldap.NO_SUCH_OBJECT:
++                pass
++
++    try:
++        topology_st.standalone.delete_s('cn=group_out2,%s' % SUFFIX)
++    except ldap.NO_SUCH_OBJECT:
++            pass
+ 
+     # create 10 users
+     for i in range(10):
+@@ -750,6 +805,7 @@ def test_silent_memberof_failure(topology_st):
+                                    ],
+                              'description': 'mygroup'})))
+ 
++    time.sleep(delay)
+     # Check the those entries have memberof with group0
+     for i in range(2):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -772,6 +828,7 @@ def test_silent_memberof_failure(topology_st):
+                                    ],
+                              'description': 'mygroup'})))
+ 
++    time.sleep(delay)
+     # Check the those entries have not memberof with group1
+     for i in range(2):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -788,6 +845,7 @@ def test_silent_memberof_failure(topology_st):
+     # move group1 into the scope and check user0 and user1 are memberof group1
+     topology_st.standalone.rename_s(group1_dn, 'cn=group_in1', newsuperior=peoplebase, delold=0)
+     new_group1_dn = 'cn=group_in1,%s' % peoplebase
++    time.sleep(delay)
+     for i in range(2):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+         ent = topology_st.standalone.getEntry(user_dn, ldap.SCOPE_BASE, "(objectclass=*)", ['memberof'])
+@@ -809,6 +867,7 @@ def test_silent_memberof_failure(topology_st):
+                                    ],
+                              'description': 'mygroup'})))
+ 
++    time.sleep(delay)
+     # Check the those entries have not memberof with group2
+     for i in (2, 3):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -819,14 +878,20 @@ def test_silent_memberof_failure(topology_st):
+     _disable_auto_oc_memberof(topology_st.standalone)
+     topology_st.standalone.restart(timeout=10)
+ 
+-    # move group2 into the scope and check it fails
+-    try:
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        # move group2 into the scope and check it succeeds
+         topology_st.standalone.rename_s(group2_dn, 'cn=group_in2', newsuperior=peoplebase, delold=0)
+-        topology_st.standalone.log.info("This is unexpected, modrdn should fail as the member entry have not the appropriate objectclass")
+-        assert False
+-    except ldap.OBJECT_CLASS_VIOLATION:
+-        pass
+-
++        topology_st.standalone.log.info("This is expected, modrdn does not fail only updates of members will fail")
++    else:
++        # move group2 into the scope and check it fails
++        try:
++            topology_st.standalone.rename_s(group2_dn, 'cn=group_in2', newsuperior=peoplebase, delold=0)
++            topology_st.standalone.log.info("This is unexpected, modrdn should fail as the member entry have not the appropriate objectclass")
++            assert False
++        except ldap.OBJECT_CLASS_VIOLATION:
++            pass
++
++    time.sleep(delay)
+     # Check the those entries have not memberof
+     for i in (2, 3):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -834,22 +899,32 @@ def test_silent_memberof_failure(topology_st):
+         topology_st.standalone.log.info("Should assert %s has memberof is %s" % (user_dn, ent.hasAttr('memberof')))
+         assert not ent.hasAttr('memberof')
+ 
+-    # Create a group3 in the scope
+-    group3_dn = 'cn=group3_in,%s' % peoplebase
+-    try:
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        # Create a group3 in the scope
++        group3_dn = 'cn=group3_in,%s' % peoplebase
+         topology_st.standalone.add_s(Entry((group3_dn, {'objectclass': ['top', 'groupofnames'],
+-                             'member': [
+-                                   'cn=user4,%s' % peoplebase,
+-                                   'cn=user5,%s' % peoplebase,
+-                                   ],
+-                             'description': 'mygroup'})))
+-        topology_st.standalone.log.info("This is unexpected, ADD should fail as the member entry have not the appropriate objectclass")
+-        assert False
+-    except ldap.OBJECT_CLASS_VIOLATION:
+-        pass
+-    except ldap.OPERATIONS_ERROR:
+-        pass
+-
++                                                        'member': ['cn=user4,%s' % peoplebase,
++                                                                   'cn=user5,%s' % peoplebase,],
++                                                        'description': 'mygroup'})))
++        topology_st.standalone.log.info("This is expected, add does not fail only updates of members will fail")
++    else:
++        # Create a group3 in the scope
++        group3_dn = 'cn=group3_in,%s' % peoplebase
++        try:
++            topology_st.standalone.add_s(Entry((group3_dn, {'objectclass': ['top', 'groupofnames'],
++                                 'member': [
++                                       'cn=user4,%s' % peoplebase,
++                                       'cn=user5,%s' % peoplebase,
++                                       ],
++                                 'description': 'mygroup'})))
++            topology_st.standalone.log.info("This is unexpected, ADD should fail as the member entry have not the appropriate objectclass")
++            assert False
++        except ldap.OBJECT_CLASS_VIOLATION:
++            pass
++        except ldap.OPERATIONS_ERROR:
++            pass
++
++    time.sleep(delay)
+     # Check the those entries do not have memberof
+     for i in (4, 5):
+         user_dn = 'cn=user%d,%s' % (i, peoplebase)
+@@ -857,6 +932,219 @@ def test_silent_memberof_failure(topology_st):
+         topology_st.standalone.log.info("Should assert %s has memberof is %s" % (user_dn, ent.hasAttr('memberof')))
+         assert not ent.hasAttr('memberof')
+ 
++    def fin():
++        # Cleanup the user[0-9]* entries
++        peoplebase = 'ou=people,%s' % SUFFIX
++        for i in range(10):
++            cn = 'user%d' % i
++            dn = 'cn=%s,%s' % (cn, peoplebase)
++            try:
++                topology_st.standalone.delete_s(dn)
++            except ldap.NO_SUCH_OBJECT:
++                pass
++
++        # Cleanup the user_ entries
++        ents = topology_st.standalone.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, '(uid=user_*)')
++        for ent in ents:
++            try:
++                topology_st.standalone.delete_s(ent.dn)
++            except ldap.NO_SUCH_OBJECT:
++                pass
++
++        # Cleanup the test_ entries
++        ents = topology_st.standalone.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, '(uid=test_*)')
++        for ent in ents:
++            try:
++                topology_st.standalone.delete_s(ent.dn)
++            except ldap.NO_SUCH_OBJECT:
++                pass
++
++        for i in range(3):
++            try:
++                topology_st.standalone.delete_s('cn=group_in%d,%s' % (i, peoplebase))
++            except ldap.NO_SUCH_OBJECT:
++                    pass
++
++        try:
++            topology_st.standalone.delete_s('cn=group_out2,%s' % SUFFIX)
++        except ldap.NO_SUCH_OBJECT:
++                pass
++
++    request.addfinalizer(fin)
++
++
++def check_memberof_consistency(inst, group):
++    """This function checks that there is same number of:
++         - entries having 'memberOf' attribute
++         - members in the group
++    """
++    suffix = Domain(inst, SUFFIX)
++    group_members = len(group.get_attr_vals('member'))
++    users_memberof = len(suffix.search(filter='(memberof=*)'))
++    assert group_members == users_memberof
++
++
++def count_global_fixup_message(errlog):
++    """This function returns a tuple (nbstarted, nsfinished) telling how many messages
++       (about Memberof pluging global fixed task) are found in the error log.
++    """
++    nbstarted = 0
++    nbfinished = 0
++    for line in errlog.match('.*Memberof plugin [a-z]* the global fixup task.*'):
++        if 'started' in line:
++            nbstarted += 1
++        elif 'finished' in line:
++            nbfinished += 1
++    log.info(f'Global fixup start was started {nbstarted} times.')
++    log.info(f'Global fixup start was finished {nbfinished} times.')
++    return (nbstarted, nbfinished)
++
++def _kill_instance(inst, sig=signal.SIGTERM, delay=None):
++    pid = None
++    try:
++        with open(inst.pid_file(), 'rb') as f:
++            for line in f.readlines():
++                try:
++                    pid = int(line.strip())
++                    break
++                except ValueError:
++                    continue
++    except IOError:
++        pass
++
++    if not pid or pid == 0:
++        pytest.raises(AssertionError)
++
++    if delay:
++        time.sleep(delay)
++    os.kill(pid, signal.SIGKILL)
++
++def test_shutdown_on_deferred_memberof(topology_st):
++    """This test checks that shutdown is handled properly if memberof updayes are deferred.
++
++    :id: c5629cae-15a0-11ee-8807-482ae39447e5
++    :setup: Standalone Instance
++    :steps:
++        1. Enable memberof plugin to scope SUFFIX
++        2. create 1000 users
++        3. Create a large groups with 500 members
++        4. Restart the instance (using the default 2 minutes timeout)
++        5. Check that users memberof and group members are in sync.
++        6. Modify the group to have 10 members.
++        7. Restart the instance with short timeout
++        8. Check that fixup task is in progress
++        9. Wait until fixup task is completed
++        10. Check that users memberof and group members are in sync.
++    :expectedresults:
++        1. should succeed
++        2. should succeed
++        3. should succeed
++        4. should succeed
++        5. should succeed
++        6. should succeed
++        7. should succeed
++        8. should succeed
++        9. should succeed
++        10. should succeed
++    """
++
++    inst = topology_st.standalone
++    inst.config.loglevel(vals=(ErrorLog.DEFAULT,ErrorLog.PLUGIN))
++    errlog = DirsrvErrorLog(inst)
++    test_timeout = 900
++
++    # Step 1. Enable memberof plugin to scope SUFFIX
++    memberof = MemberOfPlugin(inst)
++    delay=0
++    memberof.set_memberofdeferredupdate("on")
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() != "on"):
++        pytest.skip("Memberof deferred update not enabled or not supported.");
++    else:
++        delay=10
++    memberof.set_attr('memberOf')
++    memberof.replace_groupattr('member')
++    memberof.remove_all_entryscope()
++    memberof.remove_all_excludescope()
++    memberof.remove_configarea()
++    memberof.remove_autoaddoc()
++    memberof.enable()
++    inst.restart()
++
++    #Creates users and groups
++    users_dn = []
++
++    # Step 2. create 1000 users
++    for i in range(1000):
++        CN = '%s%d' % (USER_CN, i)
++        users = UserAccounts(inst, SUFFIX)
++        user_props = TEST_USER_PROPERTIES.copy()
++        user_props.update({'uid': CN, 'cn': CN, 'sn': '_%s' % CN})
++        testuser = users.create(properties=user_props)
++        users_dn.append(testuser.dn)
++
++    # Step 3. Create a large groups with 250 members
++    groups = Groups(inst, SUFFIX)
++    testgroup = groups.create(properties={'cn': 'group500', 'member': users_dn[0:249]})
++
++    # Step 4. Restart the instance (using the default 2 minutes timeout)
++    time.sleep(10)
++    log.info(f'Stopping instance at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
++    inst.stop()
++    log.info(f'Instance stopped at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
++    inst.start()
++
++    time.sleep(delay)
++    # Step 5. Check that users memberof and group members are in sync.
++    check_memberof_consistency(inst, testgroup)
++
++    # Step 6. Modify the group to get another big group.
++    testgroup.replace('member', users_dn[500:999])
++
++    # Step 7. Restart the instance with short timeout
++    pattern = 'deferred_thread_func - thread has stopped'
++    original_nbcleanstop = len(errlog.match(pattern))
++    log.info(f'Stopping instance at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
++    _kill_instance(inst, sig=signal.SIGKILL, delay=5)
++    log.info(f'Instance stopped at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
++    # Double check that timeout occured during shutdown
++    #  (i.e: no new 'deferred_thread_func - thread has stopped' message)
++    nbcleanstop = len(errlog.match(pattern))
++    assert nbcleanstop == original_nbcleanstop
++
++    original_nbfixupmsg = count_global_fixup_message(errlog)
++    log.info(f'Instance restarted after timeout at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
++    inst.restart()
++    assert inst.status()
++    log.info(f'Restart completed at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
++
++    # Check that memberofneedfixup is present
++    dse = DSEldif(inst)
++    assert dse.get(memberof.dn, 'memberofneedfixup', single=True)
++
++    # Step 8. Check that fixup task is in progress
++    # Note we have to wait as there may be some delay
++    elapsed_time = 0
++    nbfixupmsg = count_global_fixup_message(errlog)
++    while nbfixupmsg[0] == original_nbfixupmsg[0]:
++        assert elapsed_time <= test_timeout
++        assert inst.status()
++        time.sleep(5)
++        elapsed_time += 5
++        nbfixupmsg = count_global_fixup_message(errlog)
++
++    # Step 9. Wait until fixup task is completed
++    while nbfixupmsg[1] == original_nbfixupmsg[1]:
++        assert elapsed_time <= test_timeout
++        assert inst.status()
++        time.sleep(10)
++        elapsed_time += 10
++        nbfixupmsg = count_global_fixup_message(errlog)
++
++    # Step 10. Check that users memberof and group members are in sync.
++    time.sleep(delay)
++    check_memberof_consistency(inst, testgroup)
++
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/dirsrvtests/tests/suites/plugins/acceptance_test.py b/dirsrvtests/tests/suites/plugins/acceptance_test.py
+index f34690483..193878f9a 100644
+--- a/dirsrvtests/tests/suites/plugins/acceptance_test.py
++++ b/dirsrvtests/tests/suites/plugins/acceptance_test.py
+@@ -887,6 +887,10 @@ def test_memberof(topo, args=None):
+ 
+     # stop the plugin, and start it
+     plugin = MemberOfPlugin(inst)
++    if (plugin.get_memberofdeferredupdate() and plugin.get_memberofdeferredupdate().lower() == "on"):
++        delay = 5
++    else:
++        delay = 0
+     plugin.disable()
+     plugin.enable()
+ 
+@@ -921,6 +925,7 @@ def test_memberof(topo, args=None):
+                                        'memberOfGroupAttr': 'member',
+                                        'memberOfAttr': MEMBER_ATTR})
+ 
++    time.sleep(delay)
+     # Check if the user now has a "memberOf" attribute
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert entries
+@@ -928,6 +933,7 @@ def test_memberof(topo, args=None):
+     # Remove "member" should remove "memberOf" from the entry
+     group.remove_all('member')
+ 
++    time.sleep(delay)
+     # Check that "memberOf" was removed
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert not entries
+@@ -942,6 +948,7 @@ def test_memberof(topo, args=None):
+     ############################################################################
+     group.replace('uniquemember', user1.dn)
+ 
++    time.sleep(delay)
+     # Check if the user now has a "memberOf" attribute
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert entries
+@@ -949,6 +956,7 @@ def test_memberof(topo, args=None):
+     # Remove "uniquemember" should remove "memberOf" from the entry
+     group.remove_all('uniquemember')
+ 
++    time.sleep(delay)
+     # Check that "memberOf" was removed
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert not entries
+@@ -970,6 +978,7 @@ def test_memberof(topo, args=None):
+                                       'member': user1.dn})
+     group.add('objectclass', 'groupOfUniqueNames')
+ 
++    time.sleep(delay)
+     # Test the shared config
+     # Check if the user now has a "memberOf" attribute
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+@@ -977,6 +986,7 @@ def test_memberof(topo, args=None):
+ 
+     group.remove_all('member')
+ 
++    time.sleep(delay)
+     # Check that "memberOf" was removed
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert not entries
+@@ -988,6 +998,7 @@ def test_memberof(topo, args=None):
+ 
+     group.replace('uniquemember', user1.dn)
+ 
++    time.sleep(delay)
+     # Check if the user now has a "memberOf" attribute
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert entries
+@@ -995,6 +1006,7 @@ def test_memberof(topo, args=None):
+     # Remove "uniquemember" should remove "memberOf" from the entry
+     group.remove_all('uniquemember')
+ 
++    time.sleep(delay)
+     # Check that "memberOf" was removed
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert not entries
+@@ -1007,9 +1019,11 @@ def test_memberof(topo, args=None):
+ 
+     # Remove shared config from plugin
+     plugin.remove_configarea()
++    inst.restart()
+ 
+     group.replace('member', user1.dn)
+ 
++    time.sleep(delay)
+     # Check if the user now has a "memberOf" attribute
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert entries
+@@ -1017,6 +1031,7 @@ def test_memberof(topo, args=None):
+     # Remove "uniquemember" should remove "memberOf" from the entry
+     group.remove_all('member')
+ 
++    time.sleep(delay)
+     # Check that "memberOf" was removed
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert not entries
+@@ -1036,6 +1051,7 @@ def test_memberof(topo, args=None):
+     # Add uniquemember, should not update USER1
+     group.replace('uniquemember', user1.dn)
+ 
++    time.sleep(delay)
+     # Check for "memberOf"
+     entries = inst.search_s(user1.dn, ldap.SCOPE_BASE, '({}=*)'.format(MEMBER_ATTR))
+     assert not entries
+diff --git a/dirsrvtests/tests/suites/plugins/entryusn_test.py b/dirsrvtests/tests/suites/plugins/entryusn_test.py
+index 60580c370..ab82f1df5 100644
+--- a/dirsrvtests/tests/suites/plugins/entryusn_test.py
++++ b/dirsrvtests/tests/suites/plugins/entryusn_test.py
+@@ -115,6 +115,11 @@ def test_entryusn_no_duplicates(topology_st, setup):
+     """
+ 
+     inst = topology_st.standalone
++    plugin = MemberOfPlugin(inst)
++    if (plugin.get_memberofdeferredupdate() and plugin.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+     config = Config(inst)
+     config.replace('nsslapd-accesslog-level', '260')  # Internal op
+     config.replace('nsslapd-errorlog-level', '65536')
+@@ -125,6 +130,7 @@ def test_entryusn_no_duplicates(topology_st, setup):
+     groups = setup["groups"]
+ 
+     groups[0].replace('member', users[0].dn)
++    time.sleep(delay)
+     entryusn_list.append(users[0].get_attr_val_int('entryusn'))
+     log.info(f"{users[0].dn}_1: {entryusn_list[-1:]}")
+     entryusn_list.append(groups[0].get_attr_val_int('entryusn'))
+@@ -132,6 +138,7 @@ def test_entryusn_no_duplicates(topology_st, setup):
+     check_entryusn_no_duplicates(entryusn_list)
+ 
+     groups[1].replace('member', [users[0].dn, users[1].dn])
++    time.sleep(delay)
+     entryusn_list.append(users[0].get_attr_val_int('entryusn'))
+     log.info(f"{users[0].dn}_2: {entryusn_list[-1:]}")
+     entryusn_list.append(users[1].get_attr_val_int('entryusn'))
+diff --git a/dirsrvtests/tests/suites/plugins/memberof_test.py b/dirsrvtests/tests/suites/plugins/memberof_test.py
+index d3b32c856..2de1389fd 100644
+--- a/dirsrvtests/tests/suites/plugins/memberof_test.py
++++ b/dirsrvtests/tests/suites/plugins/memberof_test.py
+@@ -11,6 +11,7 @@ from lib389.tasks import *
+ from lib389.utils import *
+ from lib389.topologies import topology_st
+ from lib389._constants import PLUGIN_MEMBER_OF, SUFFIX
++from lib389.plugins import MemberOfPlugin
+ 
+ pytestmark = pytest.mark.tier1
+ 
+@@ -34,6 +35,16 @@ USERS_CONTAINER = "ou=people,%s" % SUFFIX
+ GROUP_RDN = "group"
+ GROUPS_CONTAINER = "ou=groups,%s" % SUFFIX
+ 
++def _memberof_checking_delay(inst):
++    memberof = MemberOfPlugin(inst)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        # In case of deferred update then a safe delay
++        # to let the deferred thread processing is 3 sec
++        delay = 3
++    else:
++        # Else it is the same TXN, no reason to wait
++        delay = 0
++    return delay
+ 
+ def _set_memberofgroupattr_add(topology_st, values):
+     topology_st.standalone.modify_s(MEMBEROF_PLUGIN_DN,
+@@ -200,6 +211,10 @@ def test_member_add(topology_st):
+         2. Success
+         3. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
++
++    topology_st.standalone.plugins.enable(name=PLUGIN_MEMBER_OF)
++    topology_st.standalone.restart()
+ 
+     memofenh1 = _create_user(topology_st, 'memofenh1')
+     memofenh2 = _create_user(topology_st, 'memofenh2')
+@@ -216,6 +231,7 @@ def test_member_add(topology_st):
+     log.info("Update %s is memberof %s (uniqueMember)" % (memofenh2, memofegrp2))
+     topology_st.standalone.modify_s(ensure_str(memofegrp2), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is member of grp1 and grp2
+     assert _check_memberof(topology_st, member=memofenh1, group=memofegrp1)
+     assert _check_memberof(topology_st, member=memofenh1, group=memofegrp2)
+@@ -238,6 +254,8 @@ def test_member_delete_gr1(topology_st):
+         2. Success
+     """
+ 
++    delay = _memberof_checking_delay(topology_st.standalone)
++
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+ 
+@@ -247,6 +265,7 @@ def test_member_delete_gr1(topology_st):
+     mods = [(ldap.MOD_DELETE, 'member', memofenh1)]
+     topology_st.standalone.modify_s(ensure_str(memofegrp1), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is NOT member of grp1 and  is member of grp2
+     assert not _check_memberof(topology_st, member=memofenh1, group=memofegrp1)
+     assert _check_memberof(topology_st, member=memofenh1, group=memofegrp2)
+@@ -268,6 +287,7 @@ def test_member_delete_gr2(topology_st):
+         1. Success
+         2. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -279,6 +299,7 @@ def test_member_delete_gr2(topology_st):
+     mods = [(ldap.MOD_DELETE, 'uniqueMember', memofenh2)]
+     topology_st.standalone.modify_s(ensure_str(memofegrp2), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is NOT member of grp1 and  is member of grp2
+     assert not _check_memberof(topology_st, member=memofenh1, group=memofegrp1)
+     assert _check_memberof(topology_st, member=memofenh1, group=memofegrp2)
+@@ -300,6 +321,7 @@ def test_member_delete_all(topology_st):
+         1. Success
+         2. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -315,6 +337,7 @@ def test_member_delete_all(topology_st):
+     mods = [(ldap.MOD_DELETE, 'member', memofenh1)]
+     topology_st.standalone.modify_s(ensure_str(memofegrp2), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is NOT member of grp1 and  is member of grp2
+     assert not _check_memberof(topology_st, member=memofenh1, group=memofegrp1)
+     assert not _check_memberof(topology_st, member=memofenh1, group=memofegrp2)
+@@ -338,6 +361,7 @@ def test_member_after_restart(topology_st):
+         2. Success
+         3. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -353,6 +377,7 @@ def test_member_after_restart(topology_st):
+     log.info("Update %s is memberof %s (uniqueMember)" % (memofenh2, memofegrp2))
+     topology_st.standalone.modify_s(ensure_str(memofegrp2), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is member of grp1 and  is NOT member of grp2
+     assert _check_memberof(topology_st, member=memofenh1, group=memofegrp1)
+     assert not _check_memberof(topology_st, member=memofenh1, group=memofegrp2)
+@@ -548,6 +573,8 @@ def test_member_uniquemember_same_user(topology_st):
+         6. Success
+     """
+ 
++    delay = _memberof_checking_delay(topology_st.standalone)
++
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+ 
+@@ -570,6 +597,7 @@ def test_member_uniquemember_same_user(topology_st):
+     log.info("Update %s is memberof %s (uniqueMember)" % (memofenh1, memofegrp3))
+     topology_st.standalone.modify_s(ensure_str(memofegrp3), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -586,6 +614,7 @@ def test_member_uniquemember_same_user(topology_st):
+     log.info("Update %s is memberof %s (member)" % (memofenh2, memofegrp3))
+     topology_st.standalone.modify_s(ensure_str(memofegrp3), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -658,6 +687,7 @@ def test_member_not_exists(topology_st):
+         2. Success
+         3. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -700,6 +730,7 @@ def test_member_not_exists(topology_st):
+     assert ensure_bytes(dummy1) not in ent.getValues('uniqueMember')
+     assert ensure_bytes(dummy2) in ent.getValues('uniqueMember')
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -770,6 +801,7 @@ def test_member_not_exists_complex(topology_st):
+         5. Success
+         6. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -807,6 +839,7 @@ def test_member_not_exists_complex(topology_st):
+     log.info("Update %s is memberof %s (uniqueMember)" % (memofenh1, memofegrp016))
+     topology_st.standalone.modify_s(ensure_str(memofegrp016), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -851,6 +884,7 @@ def test_member_not_exists_complex(topology_st):
+     assert ent.hasAttr('uniqueMember')
+     assert ensure_bytes(dummy1) in ent.getValues('uniqueMember')
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -944,6 +978,8 @@ def test_complex_group_scenario_1(topology_st):
+         8. Success
+     """
+ 
++    delay = _memberof_checking_delay(topology_st.standalone)
++
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+ 
+@@ -1013,6 +1049,7 @@ def test_complex_group_scenario_1(topology_st):
+     log.info("Update %s is memberof %s (memberuid)" % (memofuser3, memofegrp017))
+     topology_st.standalone.modify_s(ensure_str(memofegrp017), mods)
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -1168,6 +1205,7 @@ def test_complex_group_scenario_2(topology_st):
+         6. Success
+         7. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -1263,6 +1301,7 @@ def test_complex_group_scenario_2(topology_st):
+     log.info("Update %s is memberof %s (memberuid)" % (memofuser1, memofegrp017))
+     topology_st.standalone.modify_s(ensure_str(memofegrp018), mods)
+ 
++    time.sleep(delay)
+     # assert user1 is member of
+     #       - not grp1
+     #       - not grp2
+@@ -1284,6 +1323,7 @@ def test_complex_group_scenario_2(topology_st):
+     log.info("Update %s is no longer memberof %s (uniqueMember)" % (memofuser1, memofegrp018))
+     topology_st.standalone.modify_s(ensure_str(memofegrp018), mods)
+ 
++    time.sleep(delay)
+     # assert user1 is member of
+     #       - not grp1
+     #       - not grp2
+@@ -1306,6 +1346,7 @@ def test_complex_group_scenario_2(topology_st):
+     topology_st.standalone.delete_s(ensure_str(memofuser3))
+     topology_st.standalone.delete_s(ensure_str(memofegrp017))
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -1442,6 +1483,7 @@ def test_complex_group_scenario_3(topology_st):
+         11. Success
+         12. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -1503,6 +1545,7 @@ def test_complex_group_scenario_3(topology_st):
+     mods = [(ldap.MOD_ADD, 'member', memofegrp019_2), (ldap.MOD_ADD, 'member', memofegrp019_3)]
+     topology_st.standalone.modify_s(ensure_str(memofegrp019_1), mods)
+ 
++    time.sleep(delay)
+     # assert memofegrp019_1 is member of
+     #       - not grp1
+     #       - not grp2
+@@ -1610,6 +1653,7 @@ def test_complex_group_scenario_3(topology_st):
+     topology_st.standalone.delete_s(ensure_str(memofegrp019_2))
+     topology_st.standalone.delete_s(ensure_str(memofegrp019_3))
+ 
++    time.sleep(delay)
+     # assert enh1 is member of
+     #       - grp1 (member)
+     #       - not grp2
+@@ -1677,6 +1721,7 @@ def test_complex_group_scenario_4(topology_st):
+         5. Success
+         6. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -1740,6 +1785,7 @@ def test_complex_group_scenario_4(topology_st):
+         mods.append((ldap.MOD_ADD, 'member', grp))
+     topology_st.standalone.modify_s(ensure_str(memofegrp020_5), mods)
+ 
++    time.sleep(delay)
+     assert _check_memberof(topology_st, member=memofuser1, group=memofegrp020_1)
+     assert _check_memberof(topology_st, member=memofuser1, group=memofegrp020_2)
+     assert _check_memberof(topology_st, member=memofuser1, group=memofegrp020_3)
+@@ -1817,6 +1863,7 @@ def test_complex_group_scenario_5(topology_st):
+         10. Success
+         11. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -1882,6 +1929,7 @@ def test_complex_group_scenario_5(topology_st):
+         mods.append((ldap.MOD_ADD, 'member', grp))
+     topology_st.standalone.modify_s(ensure_str(memofegrp020_5), mods)
+ 
++    time.sleep(delay)
+     # assert user[1-4] are member of grp20_5
+     for user in [memofuser1, memofuser2, memofuser3, memofuser4]:
+         assert _check_memberof(topology_st, member=user, group=memofegrp020_5)
+@@ -2009,6 +2057,7 @@ def test_complex_group_scenario_6(topology_st):
+         7. Success
+         8. Success
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -2108,6 +2157,7 @@ def test_complex_group_scenario_6(topology_st):
+         mods = [(ldap.MOD_ADD, 'member', x[1])]
+         topology_st.standalone.modify_s(ensure_str(x[0]), mods)
+ 
++    time.sleep(delay)
+     # check that user[1-4] are 'member' and 'uniqueMember' of the grp20_[1-4]
+     for x in [(memofegrp020_1, memofuser1),
+               (memofegrp020_2, memofuser2),
+@@ -2287,6 +2337,7 @@ def test_complex_group_scenario_7(topology_st):
+                      |<--uniquemember-/
+ 
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofenh1 = _get_user_dn('memofenh1')
+     memofenh2 = _get_user_dn('memofenh2')
+@@ -2412,6 +2463,7 @@ def test_complex_group_scenario_7(topology_st):
+          |----member ---> G4 ---member/uniqueMember -> U4
+          |<--uniquemember-/  
+     """
++    time.sleep(delay)
+     verify_post_023(topology_st, memofegrp020_1, memofegrp020_2, memofegrp020_3, memofegrp020_4, memofegrp020_5,
+                     memofuser1, memofuser2, memofuser3, memofuser4)
+ 
+@@ -2504,6 +2556,7 @@ def test_complex_group_scenario_8(topology_st):
+                      |<--uniquemember-/
+ 
+     """
++    delay = _memberof_checking_delay(topology_st.standalone)
+ 
+     memofuser1 = _get_user_dn('memofuser1')
+     memofuser2 = _get_user_dn('memofuser2')
+@@ -2521,6 +2574,8 @@ def test_complex_group_scenario_8(topology_st):
+     # ADD user1 as 'member' of grp20_1
+     mods = [(ldap.MOD_ADD, 'member', memofuser1)]
+     topology_st.standalone.modify_s(ensure_str(memofegrp020_1), mods)
++
++    time.sleep(delay)
+     verify_post_024(topology_st, memofegrp020_1, memofegrp020_2, memofegrp020_3, memofegrp020_4, memofegrp020_5,
+                     memofuser1, memofuser2, memofuser3, memofuser4)
+ 
+@@ -2599,6 +2654,11 @@ def test_complex_group_scenario_9(topology_st):
+                      |----member ---> G4
+ 
+     """
++    memberof = MemberOfPlugin(topology_st.standalone)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
+ 
+     memofuser1 = _get_user_dn('memofuser1')
+     memofuser2 = _get_user_dn('memofuser2')
+@@ -2652,6 +2712,7 @@ def test_complex_group_scenario_9(topology_st):
+ 
+     """
+ 
++    time.sleep(delay)
+     verify_post_025(topology_st, memofegrp020_1, memofegrp020_2, memofegrp020_3, memofegrp020_4, memofegrp020_5,
+                     memofuser1, memofuser2, memofuser3, memofuser4)
+ 
+@@ -2689,6 +2750,12 @@ def test_memberof_auto_add_oc(topology_st):
+         11. Success
+     """
+ 
++    memberof = MemberOfPlugin(topology_st.standalone)
++    if (memberof.get_memberofdeferredupdate() and memberof.get_memberofdeferredupdate().lower() == "on"):
++        delay = 3
++    else:
++        delay = 0
++
+     # enable dynamic plugins
+     try:
+         topology_st.standalone.modify_s(DN_CONFIG,
+@@ -2731,6 +2798,7 @@ def test_memberof_auto_add_oc(topology_st):
+         log.fatal('Failed to add group entry, error: ' + e.message['desc'])
+         assert False
+ 
++    time.sleep(delay)
+     # Assert memberOf on user1
+     _check_memberof(topology_st, USER1_DN, GROUP_DN)
+ 
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index a5f48d2c0..e75b99b14 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -36,11 +36,13 @@
+ 
+ #include <ctype.h>
+ #include <time.h>
++#include <unistd.h>
+ #include "slapi-plugin.h"
+ #include "string.h"
+ #include "nspr.h"
+ #include "plhash.h"
+ #include "memberof.h"
++#include "slap.h"
+ 
+ static Slapi_PluginDesc pdesc = {"memberof", VENDOR,
+                                  DS_PACKAGE_VERSION, "memberof plugin"};
+@@ -108,6 +110,7 @@ typedef struct _task_data
+ /*** function prototypes ***/
+ 
+ /* exported functions */
++static int memberof_be_postop_init(Slapi_PBlock *pb);
+ int memberof_postop_init(Slapi_PBlock *pb);
+ static int memberof_internal_postop_init(Slapi_PBlock *pb);
+ static int memberof_preop_init(Slapi_PBlock *pb);
+@@ -119,6 +122,7 @@ static int memberof_postop_modify(Slapi_PBlock *pb);
+ static int memberof_postop_add(Slapi_PBlock *pb);
+ static int memberof_postop_start(Slapi_PBlock *pb);
+ static int memberof_postop_close(Slapi_PBlock *pb);
++int memberof_push_deferred_task(Slapi_PBlock *pb);
+ 
+ /* supporting cast */
+ static int memberof_oktodo(Slapi_PBlock *pb);
+@@ -158,6 +162,7 @@ static void memberof_task_destructor(Slapi_Task *task);
+ static void memberof_fixup_task_thread(void *arg);
+ static int memberof_fix_memberof(MemberOfConfig *config, Slapi_Task *task, task_data *td);
+ static int memberof_fix_memberof_callback(Slapi_Entry *e, void *callback_data);
++static int memberof_fixup_memberof_callback(Slapi_Entry *e, void *callback_data);
+ static int memberof_entry_in_scope(MemberOfConfig *config, Slapi_DN *sdn);
+ static int memberof_add_objectclass(char *auto_add_oc, const char *dn);
+ static int memberof_add_memberof_attr(LDAPMod **mods, const char *dn, char *add_oc);
+@@ -234,6 +239,22 @@ memberof_postop_init(Slapi_PBlock *pb)
+            slapi_pblock_set(pb, SLAPI_PLUGIN_START_FN, (void *)memberof_postop_start) != 0 ||
+            slapi_pblock_set(pb, SLAPI_PLUGIN_CLOSE_FN, (void *)memberof_postop_close) != 0);
+ 
++    if (!ret) {
++
++        if (slapi_register_plugin("bepostoperation",        /* op type */
++                                  1,                        /* Enabled */
++                                  "memberof_bepostop_init", /* this function desc */
++                                  memberof_be_postop_init,  /* init func for be_post op */
++                                  MEMBEROF_BEPOSTOP_DESC,   /* plugin desc */
++                                  NULL,
++                                  memberof_plugin_identity  /* access control */)) {
++            slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_postop_init - memberof_be_postop_init Failed\n");
++            ret = 1;
++        }
++
++    }
++
+     if (!ret && !usetxn &&
+         slapi_register_plugin("internalpostoperation",       /* op type */
+                               1,                             /* Enabled */
+@@ -272,48 +293,793 @@ memberof_postop_init(Slapi_PBlock *pb)
+     slapi_log_err(SLAPI_LOG_TRACE, MEMBEROF_PLUGIN_SUBSYSTEM,
+                   "<-- memberof_postop_init\n");
+ 
+-    return ret;
++    return ret;
++}
++
++static int
++memberof_be_postop_init(Slapi_PBlock *pb)
++{
++    int rc;
++    rc = slapi_pblock_set(pb, SLAPI_PLUGIN_BE_POST_ADD_FN, (void *)memberof_push_deferred_task);
++    rc |= slapi_pblock_set(pb, SLAPI_PLUGIN_BE_POST_DELETE_FN, (void *)memberof_push_deferred_task);
++    rc |= slapi_pblock_set(pb, SLAPI_PLUGIN_BE_POST_MODIFY_FN, (void *)memberof_push_deferred_task);
++    rc |= slapi_pblock_set(pb, SLAPI_PLUGIN_BE_POST_MODRDN_FN, (void *)memberof_push_deferred_task);
++    return (rc);
++}
++
++static int
++memberof_preop_init(Slapi_PBlock *pb)
++{
++    int status = 0;
++
++    if (slapi_pblock_set(pb, SLAPI_PLUGIN_VERSION, SLAPI_PLUGIN_VERSION_01) != 0 ||
++        slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&pdesc) != 0 ||
++        slapi_pblock_set(pb, premodfn, (void *)memberof_shared_config_validate) != 0) {
++        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_preop_init: Failed to register plugin\n");
++        status = -1;
++    }
++
++    return status;
++}
++
++static int
++memberof_internal_postop_init(Slapi_PBlock *pb)
++{
++    int status = 0;
++
++    if (slapi_pblock_set(pb, SLAPI_PLUGIN_VERSION,
++                         SLAPI_PLUGIN_VERSION_01) != 0 ||
++        slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION,
++                         (void *)&pdesc) != 0 ||
++        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_DELETE_FN,
++                         (void *)memberof_postop_del) != 0 ||
++        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_MODRDN_FN,
++                         (void *)memberof_postop_modrdn) != 0 ||
++        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_MODIFY_FN,
++                         (void *)memberof_postop_modify) != 0 ||
++        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_ADD_FN,
++                         (void *)memberof_postop_add) != 0) {
++        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_internal_postop_init - Failed to register plugin\n");
++        status = -1;
++    }
++
++    return status;
++}
++
++/* Caller must hold deferred_list->deferred_list_mutex
++ * deferred_list is FIFO
++ */
++MemberofDeferredTask *
++remove_deferred_task(MemberofDeferredList *deferred_list)
++{
++    MemberofDeferredTask *task;
++    if ((deferred_list == NULL) || (deferred_list->current_task == 0)) {
++        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                        "Unexpected empty/not allocated deferred list\n");
++        return NULL;
++    }
++
++    /* extract the task from the queue */
++    task = deferred_list->tasks_queue;
++    if (task == NULL) {
++        /* error condition current_task said there was a task available */
++        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Unexpected current_task counter said there was %d task(s)\n",
++                      deferred_list->current_task);
++        deferred_list->current_task = 0;
++        return NULL;
++    }
++    deferred_list->tasks_queue = task->prev;
++    if (deferred_list->tasks_queue) {
++        /* the queue is not empty
++         * Make this task the end of the queue
++         */
++        deferred_list->tasks_queue->next = NULL;
++    } else {
++        /* The queue is now empty reset head */
++        deferred_list->tasks_head = NULL;
++    }
++    task->prev = NULL;
++    task->next = NULL;
++    deferred_list->current_task--;
++    if (task) deferred_list->total_removed++;
++
++    return task;
++}
++
++/*
++ * deferred_list is FIFO
++ */
++int
++add_deferred_task(MemberofDeferredList *deferred_list, MemberofDeferredTask *task)
++{
++    if (deferred_list == NULL) {
++        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                        "Not allocated deferred list\n");
++        return -1;
++    }
++    pthread_mutex_lock(&deferred_list->deferred_list_mutex);
++    /* add the task at the head of the queue */
++    if (deferred_list->tasks_head == NULL) {
++        /* this is the first task in the queue */
++        task->next = NULL;
++        task->prev = NULL;
++        deferred_list->tasks_head = task;
++        deferred_list->tasks_queue = task;
++        deferred_list->current_task = 1;
++    } else {
++        deferred_list->tasks_head->prev = task;
++        task->next = deferred_list->tasks_head;
++        task->prev = NULL;
++        deferred_list->tasks_head = task;
++        deferred_list->current_task++;
++    }
++    deferred_list->total_added++;
++    /* wake up deferred_thread_func */
++    pthread_cond_signal(&deferred_list->deferred_list_cv);
++    pthread_mutex_unlock(&deferred_list->deferred_list_mutex);
++
++    return 0;
++}
++
++typedef struct _memberof_del_dn_data
++{
++    char *dn;
++    char *type;
++} memberof_del_dn_data;
++
++int
++deferred_modrdn_func(MemberofDeferredModrdnTask *task)
++{
++    Slapi_PBlock *pb;
++    MemberOfConfig *mainConfig = 0;
++    MemberOfConfig configCopy = {0};
++    struct slapi_entry *pre_e = NULL;
++    struct slapi_entry *post_e = NULL;
++    Slapi_DN *pre_sdn = 0;
++    Slapi_DN *post_sdn = 0;
++    Slapi_DN *sdn = NULL;
++    int ret = SLAPI_PLUGIN_SUCCESS;
++
++    pb = task->pb;
++    slapi_pblock_get(pb, SLAPI_TARGET_SDN, &sdn);
++    slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &pre_e);
++    slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &post_e);
++    if (pre_e && post_e) {
++        pre_sdn = slapi_entry_get_sdn(pre_e);
++        post_sdn = slapi_entry_get_sdn(post_e);
++    }
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_mod_func: target %s\n", slapi_sdn_get_dn(sdn));
++
++    if (pre_sdn && post_sdn && slapi_sdn_compare(pre_sdn, post_sdn) == 0) {
++        /* Regarding memberof plugin, this rename is a no-op
++         * but it can be expensive to process it. So skip it
++         */
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "deferred_modrdn_func: Skip modrdn operation because src/dst identical %s\n",
++                      slapi_sdn_get_dn(post_sdn));
++        goto skip_op;
++    }
++
++    /* copy config so it doesn't change out from under us */
++    memberof_rlock_config();
++    mainConfig = memberof_get_config();
++    memberof_copy_config(&configCopy, mainConfig);
++    memberof_unlock_config();
++
++    /* Need to check both the pre/post entries */
++    if ((pre_sdn && !memberof_entry_in_scope(&configCopy, pre_sdn)) &&
++        (post_sdn && !memberof_entry_in_scope(&configCopy, post_sdn)))
++    {
++        /* The entry is not in scope */
++        goto bail;
++    }
++
++    /*  update any downstream members */
++    if (pre_sdn && post_sdn && configCopy.group_filter &&
++        0 == slapi_filter_test_simple(post_e, configCopy.group_filter))
++    {
++        Slapi_Attr *attr = 0;
++
++        /* get a list of member attributes present in the group
++         * entry that is being renamed. */
++        for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i]; i++) {
++            if (0 == slapi_entry_attr_find(post_e, configCopy.groupattrs[i], &attr)) {
++                if ((ret = memberof_moddn_attr_list(pb, &configCopy, pre_sdn, post_sdn, attr)) != 0) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "deferred_modrdn_func - Update failed for (%s), error (%d)\n",
++                                  slapi_sdn_get_dn(pre_sdn), ret);
++                    break;
++                }
++            }
++        }
++    }
++
++    /* It's possible that this is an entry who is a member
++     * of other group entries.  We need to update any member
++     * attributes to refer to the new name. */
++    if (ret == LDAP_SUCCESS && pre_sdn && post_sdn) {
++        if (!memberof_entry_in_scope(&configCopy, post_sdn)) {
++            /*
++             * After modrdn the group contains both the pre and post DN's as
++             * members, so we need to cleanup both in this case.
++             */
++            if ((ret = memberof_del_dn_from_groups(pb, &configCopy, pre_sdn))) {
++                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                              "deferred_modrdn_func - Delete dn failed for preop entry(%s), error (%d)\n",
++                              slapi_sdn_get_dn(pre_sdn), ret);
++            }
++            if ((ret = memberof_del_dn_from_groups(pb, &configCopy, post_sdn))) {
++                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                              "deferred_modrdn_func - Delete dn failed for postop entry(%s), error (%d)\n",
++                              slapi_sdn_get_dn(post_sdn), ret);
++            }
++
++            if (ret == LDAP_SUCCESS && pre_e && configCopy.group_filter &&
++                0 == slapi_filter_test_simple(pre_e, configCopy.group_filter))
++            {
++                /* is the entry of interest as a group? */
++                Slapi_Attr *attr = 0;
++
++                /* Loop through to find each grouping attribute separately. */
++                for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i] && ret == LDAP_SUCCESS; i++) {
++                    if (0 == slapi_entry_attr_find(pre_e, configCopy.groupattrs[i], &attr)) {
++                        if ((ret = memberof_del_attr_list(pb, &configCopy, pre_sdn, attr))) {
++                            slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                          "deferred_modrdn_func - Error deleting attr list - dn (%s). Error (%d)\n",
++                                          slapi_sdn_get_dn(pre_sdn), ret);
++                        }
++                    }
++                }
++            }
++            if (ret == LDAP_SUCCESS) {
++                memberof_del_dn_data del_data = {0, configCopy.memberof_attr};
++                if ((ret = memberof_del_dn_type_callback(post_e, &del_data))) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "deferred_modrdn_func - Delete dn callback failed for (%s), error (%d)\n",
++                                  slapi_entry_get_dn(post_e), ret);
++                }
++            }
++        } else {
++            if ((ret = memberof_replace_dn_from_groups(pb, &configCopy, pre_sdn, post_sdn))) {
++                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                              "deferred_modrdn_func - Replace dn failed for (%s), error (%d)\n",
++                              slapi_sdn_get_dn(pre_sdn), ret);
++            }
++        }
++    }
++bail:
++    memberof_free_config(&configCopy);
++
++skip_op:
++    if (ret) {
++        slapi_log_err(SLAPI_LOG_ALERT, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Failed applying deferred updates: memberof values are invalid, please run fixup task\n");
++        slapi_pblock_set(pb, SLAPI_RESULT_CODE, &ret);
++        ret = SLAPI_PLUGIN_FAILURE;
++    }
++    slapi_entry_free(pre_e);
++    slapi_entry_free(post_e);
++    slapi_sdn_free(&sdn);
++    slapi_pblock_destroy(pb);
++
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "<-- deferred_modrdn_func\n");
++    return ret;
++}
++
++int
++deferred_del_func(MemberofDeferredDelTask *task)
++{
++    Slapi_PBlock *pb;
++    struct slapi_entry *e = NULL;
++    Slapi_DN *sdn = 0;
++    MemberOfConfig configCopy = {0};
++    PRBool free_configCopy = PR_FALSE;
++    MemberOfConfig *mainConfig;
++    int ret = SLAPI_PLUGIN_SUCCESS;
++
++    pb = task->pb;
++    slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &e);
++    slapi_pblock_get(pb, SLAPI_TARGET_SDN, &sdn);
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_mod_func: target %s\n", slapi_sdn_get_dn(sdn));
++
++    memberof_rlock_config();
++    mainConfig = memberof_get_config();
++    if (!memberof_entry_in_scope(mainConfig, slapi_entry_get_sdn(e))) {
++        /* The entry is not in scope, bail...*/
++        memberof_unlock_config();
++        goto bail;
++    }
++    memberof_copy_config(&configCopy, memberof_get_config());
++    free_configCopy = PR_TRUE;
++    memberof_unlock_config();
++
++    /* remove this DN from the
++     * membership lists of groups
++     */
++    if ((ret = memberof_del_dn_from_groups(pb, &configCopy, sdn))) {
++        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                "deferred_del_func - Error deleting dn (%s) from group. Error (%d)\n",
++                slapi_sdn_get_dn(sdn), ret);
++        goto bail;
++    }
++
++    /* is the entry of interest as a group? */
++    if (e && configCopy.group_filter && 0 == slapi_filter_test_simple(e, configCopy.group_filter)) {
++        Slapi_Attr *attr = 0;
++
++        /* Loop through to find each grouping attribute separately. */
++        for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i] && ret == LDAP_SUCCESS; i++) {
++            if (0 == slapi_entry_attr_find(e, configCopy.groupattrs[i], &attr)) {
++                if ((ret = memberof_del_attr_list(pb, &configCopy, sdn, attr))) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                            "deferred_del_func - Error deleting attr list - dn (%s). Error (%d)\n",
++                            slapi_sdn_get_dn(sdn), ret);
++                }
++            }
++        }
++    }
++bail:
++    if (free_configCopy) {
++        memberof_free_config(&configCopy);
++    }
++    slapi_entry_free(e);
++    slapi_sdn_free(&sdn);
++    slapi_pblock_destroy(pb);
++
++    if (ret) {
++        slapi_log_err(SLAPI_LOG_ALERT, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Failed applying deferred updates: memberof values are invalid, please run fixup task\n");
++        slapi_pblock_set(pb, SLAPI_RESULT_CODE, &ret);
++        ret = SLAPI_PLUGIN_FAILURE;
++    }
++
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "<-- deferred_del_func\n");
++
++    return ret;
++}
++int
++deferred_add_func(MemberofDeferredAddTask *task)
++{
++    Slapi_PBlock *pb;
++    struct slapi_entry *e = NULL;
++    Slapi_DN *sdn = 0;
++    MemberOfConfig configCopy = {0};
++    MemberOfConfig *mainConfig;
++    int interested = 0;
++    int ret = SLAPI_PLUGIN_SUCCESS;
++
++    pb = task->pb;
++
++    slapi_pblock_get(pb, SLAPI_TARGET_SDN, &sdn);
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_mod_func: target %s\n", slapi_sdn_get_dn(sdn));
++    slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &e);
++
++    /* is the entry of interest? */
++    memberof_rlock_config();
++    mainConfig = memberof_get_config();
++    if (e && mainConfig && mainConfig->group_filter &&
++        0 == slapi_filter_test_simple(e, mainConfig->group_filter))
++    {
++        interested = 1;
++        if (!memberof_entry_in_scope(mainConfig, slapi_entry_get_sdn(e))) {
++            /* Entry is not in scope */
++            memberof_unlock_config();
++            goto bail;
++        }
++        memberof_copy_config(&configCopy, memberof_get_config());
++    }
++    memberof_unlock_config();
++
++    if (interested) {
++        Slapi_Attr *attr = 0;
++
++        for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i]; i++) {
++            if (0 == slapi_entry_attr_find(e, configCopy.groupattrs[i], &attr)) {
++                if ((ret = memberof_add_attr_list(pb, &configCopy, sdn, attr))) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "deferred_add_func - Failed to add dn(%s), error (%d)\n",
++                                  slapi_sdn_get_dn(sdn), ret);
++                    break;
++                }
++            }
++        }
++        memberof_free_config(&configCopy);
++    }
++
++bail:
++    if (ret) {
++        slapi_log_err(SLAPI_LOG_ALERT, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Failed applying deferred updates: memberof values are invalid, please run fixup task\n");
++        slapi_pblock_set(pb, SLAPI_RESULT_CODE, &ret);
++        ret = SLAPI_PLUGIN_FAILURE;
++    }
++
++    slapi_entry_free(e);
++    slapi_sdn_free(&sdn);
++    slapi_pblock_destroy(pb);
++
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "<-- deferred_add_func\n");
++
++    return ret;
++}
++int
++deferred_mod_func(MemberofDeferredModTask *task)
++{
++    Slapi_PBlock *pb;
++    Slapi_Mod *next_mod = 0;
++    Slapi_Mods *smods = 0;
++    Slapi_Mod *smod = 0;
++    LDAPMod **mods;
++    Slapi_DN *sdn;
++    Slapi_Entry *pre_e = NULL;
++    Slapi_Entry *post_e = NULL;
++    int ret = SLAPI_PLUGIN_SUCCESS;
++    int config_copied = 0;
++    MemberOfConfig *mainConfig = 0;
++    MemberOfConfig configCopy = {0};
++
++    pb = task->pb;
++    slapi_pblock_get(pb, SLAPI_TARGET_SDN, &sdn);
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_mod_func: target %s\n", slapi_sdn_get_dn(sdn));
++    /* get the mod set */
++    slapi_pblock_get(pb, SLAPI_MODIFY_MODS, &mods);
++    smods = slapi_mods_new();
++    slapi_mods_init_byref(smods, mods);
++
++    next_mod = slapi_mod_new();
++    smod = slapi_mods_get_first_smod(smods, next_mod);
++    while (smod) {
++        int interested = 0;
++        char *type = (char *)slapi_mod_get_type(smod);
++        /* We only want to copy the config if we encounter an
++         * operation that we need to act on.  We also want to
++         * only copy the config the first time it's needed so
++         * it remains the same for all mods in the operation,
++         * despite any config changes that may be made. */
++        if (!config_copied) {
++            memberof_rlock_config();
++            mainConfig = memberof_get_config();
++            if (memberof_is_grouping_attr(type, mainConfig)) {
++                interested = 1;
++                if (!memberof_entry_in_scope(mainConfig, sdn)) {
++                    /* Entry is not in scope */
++                    memberof_unlock_config();
++                    goto bail;
++                }
++                /* copy config so it doesn't change out from under us */
++                memberof_copy_config(&configCopy, mainConfig);
++                config_copied = 1;
++            }
++            memberof_unlock_config();
++        } else if (memberof_is_grouping_attr(type, &configCopy)) {
++            interested = 1;
++        }
++
++        if (interested) {
++            int op = slapi_mod_get_operation(smod);
++
++            /* the modify op decides the function */
++            switch (op & ~LDAP_MOD_BVALUES) {
++            case LDAP_MOD_ADD: {
++                /* add group DN to targets */
++                if ((ret = memberof_add_smod_list(pb, &configCopy, sdn, smod))) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "memberof_postop_modify - Failed to add dn (%s) to target.  "
++                                  "Error (%d)\n",
++                                  slapi_sdn_get_dn(sdn), ret);
++                    slapi_mod_done(next_mod);
++                    goto bail;
++                }
++                break;
++            }
++
++            case LDAP_MOD_DELETE: {
++                /* If there are no values in the smod, we should
++                 * just do a replace instead.  The  user is just
++                 * trying to delete all members from this group
++                 * entry, which the replace code deals with. */
++                if (slapi_mod_get_num_values(smod) == 0) {
++                    if ((ret = memberof_replace_list(pb, &configCopy, sdn))) {
++                        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                      "memberof_postop_modify - Failed to replace list (%s).  "
++                                      "Error (%d)\n",
++                                      slapi_sdn_get_dn(sdn), ret);
++                        slapi_mod_done(next_mod);
++                        goto bail;
++                    }
++                } else {
++                    /* remove group DN from target values in smod*/
++                    if ((ret = memberof_del_smod_list(pb, &configCopy, sdn, smod))) {
++                        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                      "memberof_postop_modify: failed to remove dn (%s).  "
++                                      "Error (%d)\n",
++                                      slapi_sdn_get_dn(sdn), ret);
++                        slapi_mod_done(next_mod);
++                        goto bail;
++                    }
++                }
++                break;
++            }
++
++            case LDAP_MOD_REPLACE: {
++                /* replace current values */
++                if ((ret = memberof_replace_list(pb, &configCopy, sdn))) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "memberof_postop_modify - Failed to replace values in  dn (%s).  "
++                                  "Error (%d)\n",
++                                  slapi_sdn_get_dn(sdn), ret);
++                    slapi_mod_done(next_mod);
++                    goto bail;
++                }
++                break;
++            }
++
++            default: {
++                slapi_log_err(
++                    SLAPI_LOG_ERR,
++                    MEMBEROF_PLUGIN_SUBSYSTEM,
++                    "memberof_postop_modify - Unknown mod type\n");
++                ret = SLAPI_PLUGIN_FAILURE;
++                break;
++            }
++            }
++        }
++
++        slapi_mod_done(next_mod);
++        smod = slapi_mods_get_next_smod(smods, next_mod);
++    }
++
++bail:
++    if (config_copied) {
++        memberof_free_config(&configCopy);
++    }
++
++    slapi_mod_free(&next_mod);
++    slapi_mods_free(&smods);
++    slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &pre_e);
++    slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &post_e);
++    slapi_entry_free(pre_e);
++    slapi_entry_free(post_e);
++    slapi_sdn_free(&sdn);
++    ldap_mods_free(task->mods, 1);
++    slapi_pblock_destroy(pb);
++
++    if (ret) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "deferred_mod_func - fail to update new members of %s. Run fixup-task\n",
++                      slapi_sdn_get_dn(task->target_sdn));
++        slapi_log_err(SLAPI_LOG_ALERT, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Failed applying deferred updates: memberof values are invalid, please run fixup task\n");
++        ret = SLAPI_PLUGIN_FAILURE;
++    }
++
++    return ret;
++
++}
++
++/* Perform fixup (similar as fixup task) on all backends */
++int
++perform_needed_fixup()
++{
++    task_data td = {0};
++    MemberOfConfig config = {0};
++    Slapi_Backend *be = NULL;
++    char *cookie = NULL;
++    char **ocs = NULL;
++    size_t filter_size = 0;
++    char *filter = NULL;
++    int rc = 0;
++
++    /* copy config so it doesn't change out from under us */
++    memberof_rlock_config();
++    memberof_copy_config(&config, memberof_get_config());
++    memberof_unlock_config();
++    slapi_log_err(SLAPI_LOG_INFO, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "Memberof plugin started the global fixup task for attribute %s\n", config.memberof_attr);
++    /* Compute the filter for entries that may contains the attribute */
++    ocs = schema_get_objectclasses_by_attribute(config.memberof_attr);
++    if (ocs == NULL) {
++        slapi_log_err(SLAPI_LOG_ALERT, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Failed to perform memberof fixup task because no objectclass contains the %s attribute.\n",
++                      config.memberof_attr);
++        return -1;
++    }
++    filter_size = 4; /* For "(|...)\0" */
++    for (size_t i=0; ocs[i]; i++) {
++        filter_size += 14 + strlen(ocs[i]);  /* For "(objectclass=...)" */
++    }
++    td.filter_str = filter = slapi_ch_malloc(filter_size);
++    strcpy(filter, "(|");
++    for (size_t i=0; ocs[i]; i++) {
++		sprintf(filter+strlen(filter), "(objectclass=%s)", ocs[i]);
++    }
++    strcat(filter, ")");
++    slapi_ch_array_free(ocs);
++    ocs = NULL;
++    td.bind_dn = slapi_ch_strdup(slapi_sdn_get_dn(memberof_get_config_area()));
++    /* Then perform fixup on all backends */
++    be = slapi_get_first_backend(&cookie);
++    while (be) {
++        td.dn = (char*) slapi_sdn_get_dn(slapi_be_getsuffix(be, 0));
++        if (td.dn) {
++            int rc1 = memberof_fix_memberof(&config, NULL, &td);
++            if (rc1) {
++                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                              "memberof plugin failed to perform fixup on dn %s with filter %s - error: %d\n",
++                               td.dn, td.filter_str, rc1);
++                rc = -1;
++            }
++        }
++        be = slapi_get_next_backend(cookie);
++    }
++    slapi_ch_free_string(&td.bind_dn);
++    slapi_ch_free_string(&td.filter_str);
++    slapi_log_err(SLAPI_LOG_INFO, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "Memberof plugin finished the global fixup task for attribute %s\n", config.memberof_attr);
++    return rc;
+ }
+ 
+-static int
+-memberof_preop_init(Slapi_PBlock *pb)
++/* Change memberOfNeedFixup attribute in config entry */
++void
++modify_need_fixup(int set)
+ {
+-    int status = 0;
++    int rc = 0;
++    LDAPMod mod;
++    LDAPMod *mods[2] = { &mod, NULL };
++    char *val[2] = { "true", NULL };
++    Slapi_PBlock *mod_pb = 0;
+ 
+-    if (slapi_pblock_set(pb, SLAPI_PLUGIN_VERSION, SLAPI_PLUGIN_VERSION_01) != 0 ||
+-        slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&pdesc) != 0 ||
+-        slapi_pblock_set(pb, premodfn, (void *)memberof_shared_config_validate) != 0) {
++    if (set) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "modify_need_fixup - set memberOfNeedFixup in config entry.\n");
++    } else {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "modify_need_fixup - reset memberOfNeedFixup in config entry.\n");
++    }
++    mod_pb = slapi_pblock_new();
++    mod.mod_op = LDAP_MOD_REPLACE;
++    mod.mod_type = MEMBEROF_NEED_FIXUP;
++    mod.mod_values = set ? val : NULL;
++    slapi_modify_internal_set_pb_ext(
++        mod_pb, memberof_get_config_area(),
++        mods, 0, 0,
++        memberof_get_plugin_id(), SLAPI_OP_FLAG_BYPASS_REFERRALS);
++
++    slapi_modify_internal_pb(mod_pb);
++    slapi_pblock_get(mod_pb, SLAPI_PLUGIN_INTOP_RESULT, &rc);
++    slapi_pblock_destroy(mod_pb);
++    if (rc) {
+         slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                      "memberof_preop_init: Failed to register plugin\n");
+-        status = -1;
++                      "modify_need_fixup - failed to modify config entry. rc=%d\n", rc);
++    } else {
++        memberof_get_config()->need_fixup = set;
+     }
++}
+ 
+-    return status;
++int
++is_memberof_plugin_started(struct slapdplugin **plg_addr)
++{
++    volatile struct slapdplugin *plg = *plg_addr;
++    const char *plg_dn = slapi_sdn_get_ndn(memberof_get_config_area());
++    if (!plg) {
++        /* Find our slapdplugin struct */
++        for (int type = 0; type < PLUGIN_LIST_GLOBAL_MAX; type++) {
++            struct slapdplugin *plg_list = get_plugin_list(type);
++            for (struct slapdplugin *p = plg_list; plg == NULL && p != NULL; p = p->plg_next) {
++                if (strcmp(plg_dn, p->plg_dn) == 0) {
++                    plg = *plg_addr = p;
++                }
++            }
++        }
++    }
++    if (!plg) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Unable to find the struct slapdplugin entry for %s.\n", plg_dn);
++        return 0;
++    }
++    return plg->plg_started;
+ }
+ 
+-static int
+-memberof_internal_postop_init(Slapi_PBlock *pb)
++void
++deferred_thread_func(void *arg)
+ {
+-    int status = 0;
++    MemberofDeferredList *deferred_list = (MemberofDeferredList *) arg;
++    MemberofDeferredTask *task;
++    struct slapdplugin *plg = NULL;
++    const char *dn = slapi_sdn_get_dn(memberof_get_config_area());
+ 
+-    if (slapi_pblock_set(pb, SLAPI_PLUGIN_VERSION,
+-                         SLAPI_PLUGIN_VERSION_01) != 0 ||
+-        slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION,
+-                         (void *)&pdesc) != 0 ||
+-        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_DELETE_FN,
+-                         (void *)memberof_postop_del) != 0 ||
+-        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_MODRDN_FN,
+-                         (void *)memberof_postop_modrdn) != 0 ||
+-        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_MODIFY_FN,
+-                         (void *)memberof_postop_modify) != 0 ||
+-        slapi_pblock_set(pb, SLAPI_PLUGIN_INTERNAL_POST_ADD_FN,
+-                         (void *)memberof_postop_add) != 0) {
+-        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                      "memberof_internal_postop_init - Failed to register plugin\n");
+-        status = -1;
++    /*
++     * Wait until plugin is fully started. (Otherwise modify_need_fixup silently fails
++     * to update the dse.ldif file
++     */
++    while (!is_memberof_plugin_started(&plg)) {
++        usleep(200);
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_thread_func wait for startup\n");
+     }
+ 
+-    return status;
++    /*
++     * keep running this thread until plugin is signaled to close
++     */
++    g_incr_active_threadcnt();
++    if (memberof_get_config()->need_fixup && perform_needed_fixup()) {
++        slapi_log_err(SLAPI_LOG_ALERT, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "Failure occured during global fixup task: memberof values are invalid\n");
++    }
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_thread_func - thread is starting "
++                  "processing deferred updates for plugin %s\n", dn);
++
++    /* Tells that global fixup should be done (in case of crash/kill -9) */
++    modify_need_fixup(1);
++    while (1) {
++        pthread_mutex_lock(&deferred_list->deferred_list_mutex);
++        if (deferred_list->current_task) {
++            /* it exists a task, pick it up */
++            task = remove_deferred_task(deferred_list);
++        } else {
++            struct timespec current_time = {0};
++            if (g_get_shutdown()) {
++                /* In shutdown case, lets go on to loop until the queue is empty */
++                slapi_log_err(SLAPI_LOG_INFO, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_thread_func - ending with added %d / removed %d\n",
++                        deferred_list->total_added, deferred_list->total_removed);
++                pthread_mutex_unlock(&deferred_list->deferred_list_mutex);
++                break;
++            }
++            /* let wait for a next notification */
++            task = NULL;
++            clock_gettime(CLOCK_MONOTONIC, &current_time);
++            current_time.tv_sec += 1;
++            pthread_cond_timedwait(&deferred_list->deferred_list_cv, &deferred_list->deferred_list_mutex, &current_time);
++        }
++        pthread_mutex_unlock(&deferred_list->deferred_list_mutex);
++
++        if (task) {
++            int deferred_op_running = 0;
++            switch(task->deferred_choice) {
++                case SLAPI_OPERATION_MODIFY:
++                    deferred_mod_func(task->d_mod);
++                    slapi_pblock_set(task->d_mod->pb_original, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running);
++                    slapi_ch_free((void **)&task->d_mod);
++                    break;
++                case SLAPI_OPERATION_ADD:
++                    deferred_add_func(task->d_add);
++                    slapi_pblock_set(task->d_add->pb_original, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running);
++                    slapi_ch_free((void **)&task->d_add);
++                    break;
++                case SLAPI_OPERATION_DELETE:
++                    deferred_del_func(task->d_del);
++                    slapi_pblock_set(task->d_del->pb_original, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running);
++                    slapi_ch_free((void **)&task->d_del);
++                    break;
++                case SLAPI_OPERATION_MODRDN:
++                    deferred_modrdn_func(task->d_modrdn);
++                    slapi_pblock_set(task->d_modrdn->pb_original, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running);
++                    slapi_ch_free((void **)&task->d_modrdn);
++                    break;
++                default:
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "unsupported deferred operation %ld\n", task->deferred_choice);
++            }
++            slapi_ch_free((void **)&task);
++        }
++    } /* main loop */
++    modify_need_fixup(0);
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "deferred_thread_func - thread has stopped "
++                  "processing deferred updates for plugin %s\n", dn);
++    g_decr_active_threadcnt();
+ }
+ 
+ /*
+@@ -328,6 +1094,7 @@ memberof_postop_start(Slapi_PBlock *pb)
+     Slapi_PBlock *search_pb = NULL;
+     Slapi_Entry **entries = NULL;
+     Slapi_Entry *config_e = NULL; /* entry containing plugin config */
++    MemberOfConfig *mainConfig = NULL;
+     char *config_area = NULL;
+     int result = 0;
+     int rc = 0;
+@@ -399,6 +1166,52 @@ memberof_postop_start(Slapi_PBlock *pb)
+         rc = -1;
+         goto bail;
+     }
++    memberof_rlock_config();
++    mainConfig = memberof_get_config();
++    /* if the update of the members is deferred then allocate mutex/cv */
++    if (mainConfig->deferred_update) {
++        MemberofDeferredList *deferred_list;
++        pthread_condattr_t condAttr;
++
++        deferred_list = (MemberofDeferredList *) slapi_ch_calloc(1, sizeof(struct memberof_deferred_list));
++
++        /* initialize the cv and lock */
++        if ((rc = pthread_mutex_init(&deferred_list->deferred_list_mutex, NULL)) != 0) {
++            slapi_log_err(SLAPI_LOG_ERR, "memberof_postop_start",
++                          "cannot create new lock.  error %d (%s)\n",
++                          rc, strerror(rc));
++            exit(1);
++        }
++        if ((rc = pthread_condattr_init(&condAttr)) != 0) {
++            slapi_log_err(SLAPI_LOG_ERR, "memberof_postop_start",
++                          "cannot create new condition attribute variable.  error %d (%s)\n",
++                          rc, strerror(rc));
++            exit(1);
++        }
++        if ((rc = pthread_condattr_setclock(&condAttr, CLOCK_MONOTONIC)) != 0) {
++            slapi_log_err(SLAPI_LOG_ERR, "memberof_postop_start",
++                          "cannot set condition attr clock.  error %d (%s)\n",
++                          rc, strerror(rc));
++            exit(1);
++        }
++        if ((rc = pthread_cond_init(&deferred_list->deferred_list_cv, &condAttr)) != 0) {
++            slapi_log_err(SLAPI_LOG_ERR, "memberof_postop_start",
++                          "cannot create new condition variable.  error %d (%s)\n",
++                          rc, strerror(rc));
++            exit(1);
++        }
++        pthread_condattr_destroy(&condAttr); /* no longer needed */
++
++        deferred_list->deferred_tid = PR_CreateThread(PR_USER_THREAD,
++                                                      deferred_thread_func,
++                                                      deferred_list,
++                                                      PR_PRIORITY_NORMAL,
++                                                      PR_GLOBAL_THREAD,
++                                                      PR_UNJOINABLE_THREAD,
++                                                      SLAPD_DEFAULT_THREAD_STACKSIZE);
++        mainConfig->deferred_list = deferred_list;
++    }
++    memberof_unlock_config();
+ 
+     rc = slapi_plugin_task_register_handler("memberof task", memberof_task_add, pb);
+     if (rc) {
+@@ -533,7 +1346,43 @@ memberof_postop_del(Slapi_PBlock *pb)
+ 
+     if (memberof_oktodo(pb) && (sdn = memberof_getsdn(pb))) {
+         struct slapi_entry *e = NULL;
++        Slapi_DN *copied_sdn;
++        PRBool deferred_update;
++
++        /* retrieve deferred update params that are valid until shutdown */
++        memberof_rlock_config();
++        mainConfig = memberof_get_config();
++        deferred_update = mainConfig->deferred_update;
++        memberof_unlock_config();
+ 
++        if (deferred_update) {
++            MemberofDeferredTask* task;
++            Slapi_Operation *op;
++            int deferred_op_running = 1;
++
++            /* Should be freed with slapi_sdn_free(copied_sdn) */
++            copied_sdn = slapi_sdn_dup(sdn);
++
++            task = (MemberofDeferredTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredTask));
++            task->d_del= (MemberofDeferredDelTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredDelTask));
++            slapi_pblock_set(pb, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running); /* operation wait until the completion of the deferred update */
++            task->d_del->pb_original = pb;
++            task->d_del->pb = slapi_pblock_new();
++            op = internal_operation_new(SLAPI_OPERATION_DELETE, 0);
++            slapi_pblock_set(task->d_del->pb, SLAPI_OPERATION, op);
++            slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &e);
++            slapi_pblock_set(task->d_del->pb, SLAPI_ENTRY_PRE_OP, slapi_entry_dup(e));
++            slapi_pblock_set(task->d_del->pb, SLAPI_TARGET_SDN, copied_sdn);
++            task->deferred_choice = SLAPI_OPERATION_DELETE;
++            /* store the task in the pblock that will be added to
++             * the deferred list during the backend postop (after txn_commit)
++             */
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, (void *) task);
++            ret = SLAPI_PLUGIN_SUCCESS;
++            goto done;
++        } else {
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, NULL);
++        }
+         slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &e);
+         memberof_rlock_config();
+         mainConfig = memberof_get_config();
+@@ -557,11 +1406,10 @@ memberof_postop_del(Slapi_PBlock *pb)
+ 
+         /* is the entry of interest as a group? */
+         if (e && configCopy.group_filter && 0 == slapi_filter_test_simple(e, configCopy.group_filter)) {
+-            int i = 0;
+             Slapi_Attr *attr = 0;
+ 
+             /* Loop through to find each grouping attribute separately. */
+-            for (i = 0; configCopy.groupattrs && configCopy.groupattrs[i] && ret == LDAP_SUCCESS; i++) {
++            for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i] && ret == LDAP_SUCCESS; i++) {
+                 if (0 == slapi_entry_attr_find(e, configCopy.groupattrs[i], &attr)) {
+                     if ((ret = memberof_del_attr_list(pb, &configCopy, sdn, attr))) {
+                         slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+@@ -571,10 +1419,11 @@ memberof_postop_del(Slapi_PBlock *pb)
+                 }
+             }
+         }
+-    bail:
++bail:
+         memberof_free_config(&configCopy);
+     }
+ 
++done:
+     if (ret) {
+         slapi_pblock_set(pb, SLAPI_RESULT_CODE, &ret);
+         ret = SLAPI_PLUGIN_FAILURE;
+@@ -584,17 +1433,11 @@ memberof_postop_del(Slapi_PBlock *pb)
+     return ret;
+ }
+ 
+-typedef struct _memberof_del_dn_data
+-{
+-    char *dn;
+-    char *type;
+-} memberof_del_dn_data;
+ 
+ /* Deletes a member dn from all groups that refer to it. */
+ static int
+ memberof_del_dn_from_groups(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *sdn)
+ {
+-    int i = 0;
+     char *groupattrs[2] = {0, 0};
+     int rc = LDAP_SUCCESS;
+     int cached = 0;
+@@ -602,7 +1445,7 @@ memberof_del_dn_from_groups(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *
+     /* Loop through each grouping attribute to find groups that have
+      * dn as a member.  For any matches, delete the dn value from the
+      * same grouping attribute. */
+-    for (i = 0; config->groupattrs && config->groupattrs[i] && rc == LDAP_SUCCESS; i++) {
++    for (size_t i = 0; config->groupattrs && config->groupattrs[i] && rc == LDAP_SUCCESS; i++) {
+         memberof_del_dn_data data = {(char *)slapi_sdn_get_dn(sdn),
+                                      config->groupattrs[i]};
+ 
+@@ -725,7 +1568,6 @@ memberof_call_foreach_dn(Slapi_PBlock *pb __attribute__((unused)), Slapi_DN *sdn
+     int dn_len = slapi_sdn_get_ndn_len(sdn);
+     int free_it = 0;
+     int rc = 0;
+-    int i = 0;
+ 
+     *cached = 0;
+ 
+@@ -769,7 +1611,7 @@ memberof_call_foreach_dn(Slapi_PBlock *pb __attribute__((unused)), Slapi_DN *sdn
+         escaped_filter_val = (char *)slapi_sdn_get_dn(sdn);
+     }
+ 
+-    for (i = 0; types[i]; i++) {
++    for (size_t i = 0; types[i]; i++) {
+         /* Triggers one internal search per membership attribute.
+          * Assuming the attribute is indexed (eq), the search will
+          * bypass the evaluation of the filter (nsslapd-search-bypass-filter-test)
+@@ -804,10 +1646,10 @@ memberof_call_foreach_dn(Slapi_PBlock *pb __attribute__((unused)), Slapi_DN *sdn
+                     /* do nothing, entry scope is spanning
+                      * multiple suffixes, start at suffix */
+                 } else if (config->entryScopes) {
+-                    for (size_t i = 0; config->entryScopes[i]; i++) {
+-                        if (slapi_sdn_issuffix(config->entryScopes[i], base_sdn)) {
++                    for (size_t ii = 0; config->entryScopes[ii]; ii++) {
++                        if (slapi_sdn_issuffix(config->entryScopes[ii], base_sdn)) {
+                             /* Search each include scope */
+-                            slapi_search_internal_set_pb(search_pb, slapi_sdn_get_dn(config->entryScopes[i]),
++                            slapi_search_internal_set_pb(search_pb, slapi_sdn_get_dn(config->entryScopes[ii]),
+                                                          LDAP_SCOPE_SUBTREE, filter_str, 0, 0, 0, 0,
+                                                          memberof_get_plugin_id(), 0);
+                             slapi_search_internal_callback_pb(search_pb, callback_data, 0, callback, 0);
+@@ -887,7 +1729,51 @@ memberof_postop_modrdn(Slapi_PBlock *pb)
+         struct slapi_entry *post_e = NULL;
+         Slapi_DN *pre_sdn = 0;
+         Slapi_DN *post_sdn = 0;
++        Slapi_DN *origin_sdn;
++        Slapi_DN *copied_sdn;
++        PRBool deferred_update;
++
++        /* retrieve deferred update params that are valid until shutdown */
++        memberof_rlock_config();
++        mainConfig = memberof_get_config();
++        deferred_update = mainConfig->deferred_update;
++        memberof_unlock_config();
+ 
++        if (deferred_update) {
++            MemberofDeferredTask* task;
++            Slapi_Operation *op;
++            int deferred_op_running = 1;
++
++            task = (MemberofDeferredTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredTask));
++            task->d_modrdn= (MemberofDeferredModrdnTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredModrdnTask));
++            slapi_pblock_set(pb, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running); /* operation wait until the completion of the deferred update */
++            task->d_modrdn->pb_original = pb;
++            task->d_modrdn->pb = slapi_pblock_new();
++
++            op = internal_operation_new(SLAPI_OPERATION_MODRDN, 0);
++            slapi_pblock_set(task->d_modrdn->pb, SLAPI_OPERATION, op);
++
++            slapi_pblock_get(pb, SLAPI_TARGET_SDN, &origin_sdn);
++            /* Should be freed with slapi_sdn_free(copied_sdn) */
++            copied_sdn = slapi_sdn_dup(origin_sdn);
++            slapi_pblock_set(task->d_modrdn->pb, SLAPI_TARGET_SDN, copied_sdn);
++
++            slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &pre_e);
++            slapi_pblock_set(task->d_modrdn->pb, SLAPI_ENTRY_PRE_OP, slapi_entry_dup(pre_e));
++
++            slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &post_e);
++            slapi_pblock_set(task->d_modrdn->pb, SLAPI_ENTRY_POST_OP, slapi_entry_dup(post_e));
++
++            task->deferred_choice = SLAPI_OPERATION_MODRDN;
++            /* store the task in the pblock that will be added to
++             * the deferred list during the backend postop (after txn_commit)
++             */
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, (void *) task);
++            ret = SLAPI_PLUGIN_SUCCESS;
++            goto skip_op;
++        } else {
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, NULL);
++        }
+         slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &pre_e);
+         slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &post_e);
+         if (pre_e && post_e) {
+@@ -921,12 +1807,11 @@ memberof_postop_modrdn(Slapi_PBlock *pb)
+         /*  update any downstream members */
+         if (pre_sdn && post_sdn && configCopy.group_filter &&
+             0 == slapi_filter_test_simple(post_e, configCopy.group_filter)) {
+-            int i = 0;
+             Slapi_Attr *attr = 0;
+ 
+             /* get a list of member attributes present in the group
+              * entry that is being renamed. */
+-            for (i = 0; configCopy.groupattrs && configCopy.groupattrs[i]; i++) {
++            for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i]; i++) {
+                 if (0 == slapi_entry_attr_find(post_e, configCopy.groupattrs[i], &attr)) {
+                     if ((ret = memberof_moddn_attr_list(pb, &configCopy, pre_sdn, post_sdn, attr)) != 0) {
+                         slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+@@ -961,11 +1846,10 @@ memberof_postop_modrdn(Slapi_PBlock *pb)
+                 if (ret == LDAP_SUCCESS && pre_e && configCopy.group_filter &&
+                     0 == slapi_filter_test_simple(pre_e, configCopy.group_filter)) {
+                     /* is the entry of interest as a group? */
+-                    int i = 0;
+                     Slapi_Attr *attr = 0;
+ 
+                     /* Loop through to find each grouping attribute separately. */
+-                    for (i = 0; configCopy.groupattrs && configCopy.groupattrs[i] && ret == LDAP_SUCCESS; i++) {
++                    for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i] && ret == LDAP_SUCCESS; i++) {
+                         if (0 == slapi_entry_attr_find(pre_e, configCopy.groupattrs[i], &attr)) {
+                             if ((ret = memberof_del_attr_list(pb, &configCopy, pre_sdn, attr))) {
+                                 slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+@@ -1019,7 +1903,6 @@ typedef struct _replace_dn_data
+ static int
+ memberof_replace_dn_from_groups(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *pre_sdn, Slapi_DN *post_sdn)
+ {
+-    int i = 0;
+     char *groupattrs[2] = {0, 0};
+     int ret = LDAP_SUCCESS;
+     int cached = 0;
+@@ -1027,7 +1910,7 @@ memberof_replace_dn_from_groups(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_
+     /* Loop through each grouping attribute to find groups that have
+      * pre_dn as a member.  For any matches, replace pre_dn with post_dn
+      * using the same grouping attribute. */
+-    for (i = 0; config->groupattrs && config->groupattrs[i]; i++) {
++    for (size_t i = 0; config->groupattrs && config->groupattrs[i]; i++) {
+         replace_dn_data data = {(char *)slapi_sdn_get_dn(pre_sdn),
+                                 (char *)slapi_sdn_get_dn(post_sdn),
+                                 config->groupattrs[i],
+@@ -1083,7 +1966,25 @@ memberof_replace_dn_type_callback(Slapi_Entry *e, void *callback_data)
+ 
+     return rc;
+ }
+-
++LDAPMod **
++my_copy_mods(LDAPMod **orig_mods)
++{
++    LDAPMod **new_mods = NULL;
++    LDAPMod *mod;
++    Slapi_Mods smods_old;
++    Slapi_Mods smods_new;
++    slapi_mods_init_byref(&smods_old, orig_mods);
++    slapi_mods_init_passin(&smods_new, new_mods);
++    mod = slapi_mods_get_first_mod(&smods_old);
++    while (mod != NULL) {
++        slapi_mods_add_modbvps(&smods_new, mod->mod_op, mod->mod_type, mod->mod_bvalues);
++        mod = slapi_mods_get_next_mod(&smods_old);
++    }
++    new_mods = slapi_mods_get_ldapmods_passout(&smods_new);
++    slapi_mods_done(&smods_old);
++    slapi_mods_done(&smods_new);
++    return new_mods;
++}
+ /*
+  * memberof_postop_modify()
+  *
+@@ -1148,6 +2049,55 @@ memberof_postop_modify(Slapi_PBlock *pb)
+         int config_copied = 0;
+         MemberOfConfig *mainConfig = 0;
+         MemberOfConfig configCopy = {0};
++        PRBool deferred_update;
++
++        /* retrieve deferred update params that are valid until shutdown */
++        memberof_rlock_config();
++        mainConfig = memberof_get_config();
++        deferred_update = mainConfig->deferred_update;
++        memberof_unlock_config();
++
++        if (deferred_update) {
++            MemberofDeferredTask* task;
++            LDAPMod **copied_mods = NULL;
++            Slapi_DN *copied_sdn;
++            Slapi_Operation *op = NULL;
++            int deferred_op_running = 1;
++            struct slapi_entry *pre_e = NULL;
++            struct slapi_entry *post_e = NULL;
++            slapi_pblock_get(pb, SLAPI_MODIFY_MODS, &mods);
++
++            /* Should be free with ldap_mods_free(copied_mods, 1);*/
++            copied_mods = my_copy_mods(mods);
++
++            /* Should be freed with slapi_sdn_free(copied_sdn) */
++            copied_sdn = slapi_sdn_dup(sdn);
++
++            task = (MemberofDeferredTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredTask));
++            task->d_mod = (MemberofDeferredModTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredModTask));
++            slapi_pblock_set(pb, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running); /* operation wait until the completion of the deferred update */
++            task->d_mod->pb_original = pb;
++            task->d_mod->pb = slapi_pblock_new();
++            op = internal_operation_new(SLAPI_OPERATION_MODIFY, 0);
++            slapi_pblock_set(task->d_mod->pb, SLAPI_OPERATION, op);
++            slapi_pblock_set(task->d_mod->pb, SLAPI_MODIFY_MODS, copied_mods);
++            slapi_pblock_set(task->d_mod->pb, SLAPI_TARGET_SDN, copied_sdn);
++            slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &pre_e);
++            slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &post_e);
++            slapi_pblock_set(task->d_mod->pb, SLAPI_ENTRY_PRE_OP, slapi_entry_dup(pre_e));
++            slapi_pblock_set(task->d_mod->pb, SLAPI_ENTRY_POST_OP, slapi_entry_dup(post_e));
++            task->d_mod->mods = copied_mods; // TODO - is this needed?
++            task->d_mod->target_sdn = copied_sdn; // TODO - is this needed?
++            task->deferred_choice = SLAPI_OPERATION_MODIFY;
++            /* store the task in the pblock that will be added to
++             * the deferred list during the backend postop (after txn_commit)
++             */
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, (void *) task);
++            ret = SLAPI_PLUGIN_SUCCESS;
++            goto done;
++        } else {
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, NULL);
++        }
+ 
+         /* get the mod set */
+         slapi_pblock_get(pb, SLAPI_MODIFY_MODS, &mods);
+@@ -1192,68 +2142,68 @@ memberof_postop_modify(Slapi_PBlock *pb)
+ 
+                 /* the modify op decides the function */
+                 switch (op & ~LDAP_MOD_BVALUES) {
+-                case LDAP_MOD_ADD: {
+-                    /* add group DN to targets */
+-                    if ((ret = memberof_add_smod_list(pb, &configCopy, sdn, smod))) {
+-                        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                                      "memberof_postop_modify - Failed to add dn (%s) to target.  "
+-                                      "Error (%d)\n",
+-                                      slapi_sdn_get_dn(sdn), ret);
+-                        slapi_mod_done(next_mod);
+-                        goto bail;
+-                    }
+-                    break;
+-                }
+-
+-                case LDAP_MOD_DELETE: {
+-                    /* If there are no values in the smod, we should
+-                         * just do a replace instead.  The  user is just
+-                         * trying to delete all members from this group
+-                         * entry, which the replace code deals with. */
+-                    if (slapi_mod_get_num_values(smod) == 0) {
+-                        if ((ret = memberof_replace_list(pb, &configCopy, sdn))) {
++                    case LDAP_MOD_ADD: {
++                        /* add group DN to targets */
++                        if ((ret = memberof_add_smod_list(pb, &configCopy, sdn, smod))) {
+                             slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                                          "memberof_postop_modify - Failed to replace list (%s).  "
++                                          "memberof_postop_modify - Failed to add dn (%s) to target.  "
+                                           "Error (%d)\n",
+                                           slapi_sdn_get_dn(sdn), ret);
+                             slapi_mod_done(next_mod);
+                             goto bail;
+                         }
+-                    } else {
+-                        /* remove group DN from target values in smod*/
+-                        if ((ret = memberof_del_smod_list(pb, &configCopy, sdn, smod))) {
++                        break;
++                    }
++
++                    case LDAP_MOD_DELETE: {
++                        /* If there are no values in the smod, we should
++                         * just do a replace instead.  The  user is just
++                         * trying to delete all members from this group
++                         * entry, which the replace code deals with. */
++                        if (slapi_mod_get_num_values(smod) == 0) {
++                            if ((ret = memberof_replace_list(pb, &configCopy, sdn))) {
++                                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                              "memberof_postop_modify - Failed to replace list (%s).  "
++                                              "Error (%d)\n",
++                                              slapi_sdn_get_dn(sdn), ret);
++                                slapi_mod_done(next_mod);
++                                goto bail;
++                            }
++                        } else {
++                            /* remove group DN from target values in smod*/
++                            if ((ret = memberof_del_smod_list(pb, &configCopy, sdn, smod))) {
++                                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                              "memberof_postop_modify: failed to remove dn (%s).  "
++                                              "Error (%d)\n",
++                                              slapi_sdn_get_dn(sdn), ret);
++                                slapi_mod_done(next_mod);
++                                goto bail;
++                            }
++                        }
++                        break;
++                    }
++
++                    case LDAP_MOD_REPLACE: {
++                        /* replace current values */
++                        if ((ret = memberof_replace_list(pb, &configCopy, sdn))) {
+                             slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                                          "memberof_postop_modify: failed to remove dn (%s).  "
++                                          "memberof_postop_modify - Failed to replace values in  dn (%s).  "
+                                           "Error (%d)\n",
+                                           slapi_sdn_get_dn(sdn), ret);
+                             slapi_mod_done(next_mod);
+                             goto bail;
+                         }
++                        break;
+                     }
+-                    break;
+-                }
+ 
+-                case LDAP_MOD_REPLACE: {
+-                    /* replace current values */
+-                    if ((ret = memberof_replace_list(pb, &configCopy, sdn))) {
+-                        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                                      "memberof_postop_modify - Failed to replace values in  dn (%s).  "
+-                                      "Error (%d)\n",
+-                                      slapi_sdn_get_dn(sdn), ret);
+-                        slapi_mod_done(next_mod);
+-                        goto bail;
++                    default: {
++                        slapi_log_err(
++                            SLAPI_LOG_ERR,
++                            MEMBEROF_PLUGIN_SUBSYSTEM,
++                            "memberof_postop_modify - Unknown mod type\n");
++                        ret = SLAPI_PLUGIN_FAILURE;
++                        break;
+                     }
+-                    break;
+-                }
+-
+-                default: {
+-                    slapi_log_err(
+-                        SLAPI_LOG_ERR,
+-                        MEMBEROF_PLUGIN_SUBSYSTEM,
+-                        "memberof_postop_modify - Unknown mod type\n");
+-                    ret = SLAPI_PLUGIN_FAILURE;
+-                    break;
+-                }
+                 }
+             }
+ 
+@@ -1281,6 +2231,53 @@ done:
+     return ret;
+ }
+ 
++/* This callback is called during an operation be_postop
++ * So it is called AFTER the txn was committed
++ * In case there are deferred updates it is important so
++ * that the thread running the deferred updates uses an DB
++ * that is up to date. Especially, if it is using internal searches
++ * the indexes are valid.
++ * (required for mdb)
++ * The callback read the tasks, stored by the be_txn_postop
++ * in the pblock and push it to the list of tasks that the
++ * deferred update thread will process.
++ */
++int
++memberof_push_deferred_task(Slapi_PBlock *pb)
++{
++    int ret = SLAPI_PLUGIN_SUCCESS;
++    MemberOfConfig *mainConfig = NULL;
++    MemberofDeferredList* deferred_list;
++    MemberofDeferredTask* task = NULL;
++
++    /* retrieve deferred update params that are valid until shutdown */
++    memberof_rlock_config();
++    mainConfig = memberof_get_config();
++    if (mainConfig) {
++        deferred_list = mainConfig->deferred_list;
++    }
++    memberof_unlock_config();
++
++    if (!mainConfig) {
++        /* The configuration has not yet been uploaded. Get out of here */
++        return ret;
++    }
++
++    slapi_pblock_get(pb, SLAPI_MEMBEROF_DEFERRED_TASK, (void **) &task);
++    if (task) {
++        /* retrieve the task, registered during BE_TXN_POSTOP, and
++         * add it to the list of tasks that deferred update thread
++         * will process async
++         */
++        slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, NULL);
++        if (add_deferred_task(deferred_list, task)) {
++                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "memberof_push_deferred_task - failure during deferred update. Run memberof fixup.\n");
++            ret = SLAPI_PLUGIN_FAILURE;
++        }
++    }
++    return ret;
++}
+ 
+ /*
+  * memberof_postop_add()
+@@ -1311,6 +2308,43 @@ memberof_postop_add(Slapi_PBlock *pb)
+         struct slapi_entry *e = NULL;
+         MemberOfConfig configCopy = {0};
+         MemberOfConfig *mainConfig;
++        Slapi_DN *copied_sdn;
++        PRBool deferred_update;
++
++        /* retrieve deferred update params that are valid until shutdown */
++        memberof_rlock_config();
++        mainConfig = memberof_get_config();
++        deferred_update = mainConfig->deferred_update;
++        memberof_unlock_config();
++
++        if (deferred_update) {
++            MemberofDeferredTask* task;
++            Slapi_Operation *op;
++            int deferred_op_running = 1;
++
++            /* Should be freed with slapi_sdn_free(copied_sdn) */
++            copied_sdn = slapi_sdn_dup(sdn);
++
++            task = (MemberofDeferredTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredTask));
++            task->d_add = (MemberofDeferredAddTask *)slapi_ch_calloc(1, sizeof(MemberofDeferredAddTask));
++            slapi_pblock_set(pb, SLAPI_DEFERRED_MEMBEROF, &deferred_op_running); /* operation wait until the completion of the deferred update */
++            task->d_add->pb_original = pb;
++            task->d_add->pb = slapi_pblock_new();
++            op = internal_operation_new(SLAPI_OPERATION_ADD, 0);
++            slapi_pblock_set(task->d_add->pb, SLAPI_OPERATION, op);
++            slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &e);
++            slapi_pblock_set(task->d_add->pb, SLAPI_ENTRY_POST_OP, slapi_entry_dup(e));
++            slapi_pblock_set(task->d_add->pb, SLAPI_TARGET_SDN, copied_sdn);
++            task->deferred_choice = SLAPI_OPERATION_ADD;
++            /* store the task in the pblock that will be added to
++             * the deferred list during the backend postop (after txn_commit)
++             */
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, (void *) task);
++            ret = SLAPI_PLUGIN_SUCCESS;
++            goto bail;
++        } else {
++            slapi_pblock_set(pb, SLAPI_MEMBEROF_DEFERRED_TASK, NULL);
++        }
+         slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &e);
+ 
+         /* is the entry of interest? */
+@@ -1331,10 +2365,9 @@ memberof_postop_add(Slapi_PBlock *pb)
+         memberof_unlock_config();
+ 
+         if (interested) {
+-            int i = 0;
+             Slapi_Attr *attr = 0;
+ 
+-            for (i = 0; configCopy.groupattrs && configCopy.groupattrs[i]; i++) {
++            for (size_t i = 0; configCopy.groupattrs && configCopy.groupattrs[i]; i++) {
+                 if (0 == slapi_entry_attr_find(e, configCopy.groupattrs[i], &attr)) {
+                     if ((ret = memberof_add_attr_list(pb, &configCopy, sdn, attr))) {
+                         slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+@@ -1525,6 +2558,10 @@ memberof_modop_one_replace_r(Slapi_PBlock *pb, MemberOfConfig *config, int mod_o
+                       udn);
+         goto bail;
+     }
++    slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                  "memberof_modop_one_replace_r - mod_op=%d op_to=%s op_this=%s.\n",
++                  mod_op, op_to, op_this);
++
+     /* op_this and op_to are both case-normalized */
+     slapi_value_set_flags(this_dn_val, SLAPI_ATTR_FLAG_NORMALIZED_CIS);
+     slapi_value_set_flags(to_dn_val, SLAPI_ATTR_FLAG_NORMALIZED_CIS);
+@@ -1631,7 +2668,6 @@ memberof_modop_one_replace_r(Slapi_PBlock *pb, MemberOfConfig *config, int mod_o
+         /* group */
+         Slapi_Value *ll_dn_val = 0;
+         Slapi_Attr *members = 0;
+-        int i = 0;
+ 
+         ll = stack;
+ 
+@@ -1643,9 +2679,7 @@ memberof_modop_one_replace_r(Slapi_PBlock *pb, MemberOfConfig *config, int mod_o
+ 
+             if (0 == memberof_compare(config, &ll_dn_val, &to_dn_val)) {
+                 slapi_value_free(&ll_dn_val);
+-
+-                /*     someone set up infinitely
+-                    recursive groups - bail out */
++                /* someone set up infinitely recursive groups - bail out */
+                 slapi_log_err(SLAPI_LOG_PLUGIN,
+                               MEMBEROF_PLUGIN_SUBSYSTEM,
+                               "memberof_modop_one_replace_r - Group recursion"
+@@ -1653,7 +2687,6 @@ memberof_modop_one_replace_r(Slapi_PBlock *pb, MemberOfConfig *config, int mod_o
+                               op_to);
+                 goto bail;
+             }
+-
+             slapi_value_free(&ll_dn_val);
+             ll = ll->next;
+         }
+@@ -1669,11 +2702,14 @@ memberof_modop_one_replace_r(Slapi_PBlock *pb, MemberOfConfig *config, int mod_o
+         ll->next = stack;
+ 
+         /* Go through each grouping attribute one at a time. */
+-        for (i = 0; config->groupattrs && config->groupattrs[i]; i++) {
++        for (size_t i = 0; config->groupattrs && config->groupattrs[i]; i++) {
+             slapi_entry_attr_find(e, config->groupattrs[i], &members);
+             if (members) {
+                 if ((rc = memberof_mod_attr_list_r(pb, config, mod_op, group_sdn,
+                                                    op_this_sdn, members, ll)) != 0) {
++                    slapi_log_err(SLAPI_LOG_PLUGIN,
++                                  MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "memberof_modop_one_replace_r - memberof_mod_attr_list_r failed.\n");
+                     goto bail;
+                 }
+             }
+@@ -1769,6 +2805,10 @@ memberof_modop_one_replace_r(Slapi_PBlock *pb, MemberOfConfig *config, int mod_o
+     }
+ 
+ bail:
++    if (rc) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_modop_one_replace_r failed. rc=%d\n", rc);
++    }
+     slapi_value_free(&to_dn_val);
+     slapi_value_free(&this_dn_val);
+     slapi_search_get_entry_done(&entry_pb);
+@@ -2077,8 +3117,7 @@ memberof_get_groups(MemberOfConfig *config, Slapi_DN *member_sdn)
+ void
+ dump_cache_entry(memberof_cached_value *double_check, const char *msg)
+ {
+-    int i;
+-    for (i = 0; double_check[i].valid; i++) {
++    for (size_t i = 0; double_check[i].valid; i++) {
+         slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM, "dump_cache_entry: %s -> %s\n",
+                       msg ? msg : "<no key>",
+                       double_check[i].group_dn_val ? double_check[i].group_dn_val : "NULL");
+@@ -2307,7 +3346,9 @@ memberof_get_groups_callback(Slapi_Entry *e, void *callback_data)
+     MemberOfConfig *config = ((memberof_get_groups_data *)callback_data)->config;
+     int rc = 0;
+ 
+-    if (slapi_is_shutting_down()) {
++    if (!config->deferred_update && slapi_is_shutting_down()) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_get_groups_callback - aborted because shutdown is in progress\n");
+         rc = -1;
+         goto bail;
+     }
+@@ -2393,7 +3434,6 @@ memberof_is_direct_member(MemberOfConfig *config, Slapi_Value *groupdn, Slapi_Va
+     Slapi_DN *sdn = 0;
+     Slapi_Entry *group_e = 0;
+     Slapi_Attr *attr = 0;
+-    int i = 0;
+ 
+     sdn = slapi_sdn_new_normdn_byref(slapi_value_get_string(groupdn));
+ 
+@@ -2402,7 +3442,7 @@ memberof_is_direct_member(MemberOfConfig *config, Slapi_Value *groupdn, Slapi_Va
+ 
+     if (group_e) {
+         /* See if memberdn is referred to by any of the group attributes. */
+-        for (i = 0; config->groupattrs && config->groupattrs[i]; i++) {
++        for (size_t i = 0; config->groupattrs && config->groupattrs[i]; i++) {
+             slapi_entry_attr_find(group_e, config->groupattrs[i], &attr);
+             if (attr && (0 == slapi_attr_value_find(attr, slapi_value_get_berval(memberdn)))) {
+                 rc = 1;
+@@ -2427,9 +3467,8 @@ static int
+ memberof_is_grouping_attr(char *type, MemberOfConfig *config)
+ {
+     int match = 0;
+-    int i = 0;
+ 
+-    for (i = 0; config && config->groupattrs && config->groupattrs[i]; i++) {
++    for (size_t i = 0; config && config->groupattrs && config->groupattrs[i]; i++) {
+         match = slapi_attr_types_equivalent(type, config->groupattrs[i]);
+         if (match) {
+             /* If we found a match, we're done. */
+@@ -2634,12 +3673,11 @@ memberof_replace_list(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *group_
+     Slapi_Attr *pre_attr = 0;
+     Slapi_Attr *post_attr = 0;
+     int rc = 0;
+-    int i = 0;
+ 
+     slapi_pblock_get(pb, SLAPI_ENTRY_PRE_OP, &pre_e);
+     slapi_pblock_get(pb, SLAPI_ENTRY_POST_OP, &post_e);
+ 
+-    for (i = 0; config && config->groupattrs && config->groupattrs[i]; i++) {
++    for (size_t i = 0; config && config->groupattrs && config->groupattrs[i]; i++) {
+         if (pre_e && post_e) {
+             slapi_entry_attr_find(pre_e, config->groupattrs[i], &pre_attr);
+             slapi_entry_attr_find(post_e, config->groupattrs[i], &post_attr);
+@@ -2872,11 +3910,14 @@ memberof_fixup_task_thread(void *arg)
+         if (be) {
+             fixup_pb = slapi_pblock_new();
+             slapi_pblock_set(fixup_pb, SLAPI_BACKEND, be);
+-            rc = slapi_back_transaction_begin(fixup_pb);
+-            if (rc) {
+-                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                              "memberof_fixup_task_thread - Failed to start transaction\n");
+-                goto done;
++            /* Start a txn but not in deferred case: Should not do big txn in txn mode  */
++            if (!configCopy.deferred_update) {
++                rc = slapi_back_transaction_begin(fixup_pb);
++                if (rc) {
++                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++                                  "memberof_fixup_task_thread - Failed to start transaction\n");
++                    goto done;
++                }
+             }
+         } else {
+             slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+@@ -3072,6 +4113,7 @@ memberof_task_destructor(Slapi_Task *task)
+                   "memberof_task_destructor <--\n");
+ }
+ 
++/* The fixup task meat */
+ int
+ memberof_fix_memberof(MemberOfConfig *config, Slapi_Task *task, task_data *td)
+ {
+@@ -3086,7 +4128,7 @@ memberof_fix_memberof(MemberOfConfig *config, Slapi_Task *task, task_data *td)
+ 
+     rc = slapi_search_internal_callback_pb(search_pb,
+                                            config,
+-                                           0, memberof_fix_memberof_callback,
++                                           0, memberof_fixup_memberof_callback,
+                                            0);
+     if (rc) {
+         char *errmsg;
+@@ -3096,7 +4138,9 @@ memberof_fix_memberof(MemberOfConfig *config, Slapi_Task *task, task_data *td)
+         errmsg = ldap_err2string(result);
+         slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+                       "memberof_fix_memberof - Failed (%s)\n", errmsg);
+-        slapi_task_log_notice(task, "Memberof task failed (%s)", errmsg);
++        if (task) {
++            slapi_task_log_notice(task, "Memberof task failed (%s)", errmsg);
++        }
+     }
+ 
+     slapi_pblock_destroy(search_pb);
+@@ -3199,6 +4243,16 @@ ancestors_cache_add(MemberOfConfig *config, const void *key, void *value)
+     return e;
+ }
+ 
++int
++memberof_fixup_memberof_callback(Slapi_Entry *e, void *callback_data)
++{
++    /* Always check shutdown in fixup task */
++    if (slapi_is_shutting_down()) {
++        return -1;
++    }
++    return memberof_fix_memberof_callback(e, callback_data);
++}
++
+ /* memberof_fix_memberof_callback()
+  * Add initial and/or fix up broken group list in entry
+  *
+@@ -3220,7 +4274,9 @@ memberof_fix_memberof_callback(Slapi_Entry *e, void *callback_data)
+     /*
+      * If the server is ordered to shutdown, stop the fixup and return an error.
+      */
+-    if (slapi_is_shutting_down()) {
++    if (!config->deferred_update && slapi_is_shutting_down()) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM, "memberof_fix_memberof_callback - "
++                "Aborted because shutdown is in progress. rc = -1\n");
+         rc = -1;
+         goto bail;
+     }
+@@ -3338,6 +4394,10 @@ memberof_fix_memberof_callback(Slapi_Entry *e, void *callback_data)
+     }
+ 
+ bail:
++    if (rc) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_fix_memberof_callback failed. rc=%d\n", rc);
++    }
+     return rc;
+ }
+ 
+@@ -3383,6 +4443,8 @@ memberof_add_memberof_attr(LDAPMod **mods, const char *dn, char *add_oc)
+             slapi_pblock_destroy(mod_pb);
+         } else if (rc) {
+             /* Some other fatal error */
++            slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                          "memberof_add_memberof_attr - Internal modify failed. rc=%d\n", rc);
+             break;
+         } else {
+             /* success */
+@@ -3390,6 +4452,10 @@ memberof_add_memberof_attr(LDAPMod **mods, const char *dn, char *add_oc)
+         }
+     }
+     slapi_pblock_destroy(mod_pb);
++    if (rc) {
++        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
++                      "memberof_add_memberof_attr failed. rc=%d\n", rc);
++    }
+ 
+     return rc;
+ }
+diff --git a/ldap/servers/plugins/memberof/memberof.h b/ldap/servers/plugins/memberof/memberof.h
+index 6cb46a447..c11d901ab 100644
+--- a/ldap/servers/plugins/memberof/memberof.h
++++ b/ldap/servers/plugins/memberof/memberof.h
+@@ -35,21 +35,89 @@
+ #define MEMBEROF_PLUGIN_SUBSYSTEM "memberof-plugin" /* used for logging */
+ #define MEMBEROF_INT_PREOP_DESC   "memberOf internal postop plugin"
+ #define MEMBEROF_PREOP_DESC       "memberof preop plugin"
++#define MEMBEROF_BEPOSTOP_DESC    "memberof backend postop plugin"
+ #define MEMBEROF_GROUP_ATTR       "memberOfGroupAttr"
+ #define MEMBEROF_ATTR             "memberOfAttr"
+ #define MEMBEROF_BACKEND_ATTR     "memberOfAllBackends"
+ #define MEMBEROF_ENTRY_SCOPE_ATTR "memberOfEntryScope"
+ #define MEMBEROF_SKIP_NESTED_ATTR "memberOfSkipNested"
++#define MEMBEROF_DEFERRED_UPDATE_ATTR "memberOfDeferredUpdate"
+ #define MEMBEROF_AUTO_ADD_OC      "memberOfAutoAddOC"
++#define MEMBEROF_NEED_FIXUP       "memberOfNeedFixup"
+ #define NSMEMBEROF                "nsMemberOf"
+ #define MEMBEROF_ENTRY_SCOPE_EXCLUDE_SUBTREE "memberOfEntryScopeExcludeSubtree"
+ #define DN_SYNTAX_OID             "1.3.6.1.4.1.1466.115.121.1.12"
+ #define NAME_OPT_UID_SYNTAX_OID   "1.3.6.1.4.1.1466.115.121.1.34"
++#define SHUTDOWN_TIMEOUT          60   /* systemctl timeout is by default 90s */
+ 
+ 
+ /*
+  * structs
+  */
++
++typedef struct memberof_deferred_mod_task
++{
++    Slapi_PBlock *pb_original;
++    Slapi_PBlock *pb;
++    LDAPMod **mods;
++    Slapi_DN *target_sdn;
++} MemberofDeferredModTask;
++typedef struct memberof_deferred_add_task
++{
++    Slapi_PBlock *pb_original;
++    Slapi_PBlock *pb;
++    int foo;
++} MemberofDeferredAddTask;
++typedef struct memberof_deferred_del_task
++{
++    Slapi_PBlock *pb_original;
++    Slapi_PBlock *pb;
++    int foo;
++} MemberofDeferredDelTask;
++typedef struct memberof_deferred_modrdn_task
++{
++    Slapi_PBlock *pb_original;
++    Slapi_PBlock *pb;
++    int foo;
++} MemberofDeferredModrdnTask;
++typedef struct memberof_deferred_task
++{
++    unsigned long deferred_choice;
++    union
++    {
++        /* modify */
++        struct memberof_deferred_mod_task *d_un_mod;
++
++        /* modify */
++        struct memberof_deferred_add_task *d_un_add;
++
++        /* modify */
++        struct memberof_deferred_del_task *d_un_del;
++
++        /* modify */
++        struct memberof_deferred_modrdn_task *d_un_modrdn;
++    } d_un;
++#define d_mod d_un.d_un_mod
++#define d_add d_un.d_un_add
++#define d_del d_un.d_un_del
++#define d_modrdn d_un.d_un_modrdn
++    struct memberof_deferred_task *next;
++    struct memberof_deferred_task *prev;
++} MemberofDeferredTask;
++
++typedef struct memberof_deferred_list
++{
++    pthread_mutex_t deferred_list_mutex;
++    pthread_cond_t deferred_list_cv;
++    PRThread *deferred_tid;
++    int current_task;
++    int total_added;
++    int total_removed;
++    MemberofDeferredTask *tasks_head;
++    MemberofDeferredTask *tasks_queue;
++} MemberofDeferredList;
++
++
+ typedef struct memberofconfig
+ {
+     char **groupattrs;
+@@ -64,9 +132,12 @@ typedef struct memberofconfig
+     int skip_nested;
+     int fixup_task;
+     char *auto_add_oc;
++    PRBool deferred_update;
++    MemberofDeferredList *deferred_list;
+     PLHashTable *ancestors_cache;
+     PLHashTable *fixup_cache;
+     Slapi_Task *task;
++    int need_fixup;
+ } MemberOfConfig;
+ 
+ /* The key to access the hash table is the normalized DN
+diff --git a/ldap/servers/plugins/memberof/memberof_config.c b/ldap/servers/plugins/memberof/memberof_config.c
+index 586be11a9..89c44b014 100644
+--- a/ldap/servers/plugins/memberof/memberof_config.c
++++ b/ldap/servers/plugins/memberof/memberof_config.c
+@@ -36,8 +36,8 @@
+  */
+ static void fixup_hashtable_empty( MemberOfConfig *config, char *msg);
+ static void ancestor_hashtable_empty(MemberOfConfig *config, char *msg);
+-static int memberof_validate_config (Slapi_PBlock *pb, Slapi_Entry* entryBefore, Slapi_Entry* e, 
+-										 int *returncode, char *returntext, void *arg);
++static int memberof_validate_config (Slapi_PBlock *pb, Slapi_Entry* entryBefore, Slapi_Entry* e,
++                                     int *returncode, char *returntext, void *arg);
+ static int memberof_search (Slapi_PBlock *pb __attribute__((unused)),
+                             Slapi_Entry* entryBefore __attribute__((unused)),
+                             Slapi_Entry* e __attribute__((unused)),
+@@ -469,7 +469,9 @@ memberof_apply_config(Slapi_PBlock *pb __attribute__((unused)),
+     char **entryScopeExcludeSubtrees = NULL;
+     char *sharedcfg = NULL;
+     const char *skip_nested = NULL;
++    const char *deferred_update = NULL;
+     char *auto_add_oc = NULL;
++    const char *needfixup = NULL;
+     int num_vals = 0;
+ 
+     *returncode = LDAP_SUCCESS;
+@@ -503,7 +505,9 @@ memberof_apply_config(Slapi_PBlock *pb __attribute__((unused)),
+     memberof_attr = slapi_entry_attr_get_charptr(e, MEMBEROF_ATTR);
+     allBackends = slapi_entry_attr_get_ref(e, MEMBEROF_BACKEND_ATTR);
+     skip_nested = slapi_entry_attr_get_ref(e, MEMBEROF_SKIP_NESTED_ATTR);
++    deferred_update = slapi_entry_attr_get_ref(e, MEMBEROF_DEFERRED_UPDATE_ATTR);
+     auto_add_oc = slapi_entry_attr_get_charptr(e, MEMBEROF_AUTO_ADD_OC);
++    needfixup = slapi_entry_attr_get_ref(e, MEMBEROF_NEED_FIXUP);
+ 
+     if (auto_add_oc == NULL) {
+         auto_add_oc = slapi_ch_strdup(NSMEMBEROF);
+@@ -514,6 +518,7 @@ memberof_apply_config(Slapi_PBlock *pb __attribute__((unused)),
+      * a memberOf operation, so we obtain an exclusive lock here
+      */
+     memberof_wlock_config();
++    theConfig.need_fixup = (needfixup != NULL);
+ 
+     if (groupattrs) {
+         int i = 0;
+@@ -615,6 +620,15 @@ memberof_apply_config(Slapi_PBlock *pb __attribute__((unused)),
+         }
+     }
+ 
++
++    if (deferred_update) {
++        if (strcasecmp(deferred_update, "on") == 0) {
++            theConfig.deferred_update = PR_TRUE;
++        } else {
++            theConfig.deferred_update = PR_FALSE;
++        }
++    }
++
+     if (allBackends) {
+         if (strcasecmp(allBackends, "on") == 0) {
+             theConfig.allBackends = 1;
+@@ -755,6 +769,14 @@ memberof_copy_config(MemberOfConfig *dest, MemberOfConfig *src)
+         slapi_ch_free_string(&dest->auto_add_oc);
+         dest->auto_add_oc = slapi_ch_strdup(src->auto_add_oc);
+ 
++        dest->deferred_update = src->deferred_update;
++        dest->need_fixup = src->need_fixup;
++        /*
++         * deferred_list, ancestors_cache, fixup_cache are not config parameters
++         *  but simple global parameters and should not be copied as
++         *  and they are only meaningful in the original config (i.e: theConfig)
++         */
++
+         if (src->entryScopes) {
+             int num_vals = 0;
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_add.c b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+index ce4c314a1..bca660f22 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_add.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+@@ -85,6 +85,7 @@ ldbm_back_add(Slapi_PBlock *pb)
+     int is_tombstone_operation = 0;
+     int is_fixup_operation = 0;
+     int is_remove_from_cache = 0;
++    int is_internal = 0;
+     int op_plugin_call = 1;
+     int is_ruv = 0; /* True if the current entry is RUV */
+     CSN *opcsn = NULL;
+@@ -125,6 +126,7 @@ ldbm_back_add(Slapi_PBlock *pb)
+     is_fixup_operation = operation_is_flag_set(operation, OP_FLAG_REPL_FIXUP);
+     is_ruv = operation_is_flag_set(operation, OP_FLAG_REPL_RUV);
+     is_remove_from_cache = operation_is_flag_set(operation, OP_FLAG_NEVER_CACHE);
++    is_internal = operation_is_flag_set(operation, OP_FLAG_INTERNAL);
+     if (operation_is_flag_set(operation,OP_FLAG_NOOP)) op_plugin_call = 0;
+ 
+     inst = (ldbm_instance *)be->be_instance_info;
+@@ -1441,6 +1443,19 @@ common_return:
+             ldap_result_code = LDAP_SUCCESS;
+         }
+         if (!result_sent) {
++            int deferred;
++            PRIntervalTime delay;
++
++            if (!is_internal) {
++                slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                if (deferred) {
++                    delay = PR_MillisecondsToInterval(100);
++                }
++                while (deferred) {
++                    DS_Sleep(delay);
++                    slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                }
++            }
+             slapi_send_ldap_result(pb, ldap_result_code, ldap_result_matcheddn, ldap_result_message, 0, NULL);
+         }
+     }
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_delete.c b/ldap/servers/slapd/back-ldbm/ldbm_delete.c
+index 27f0ac58a..c0f2516de 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_delete.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_delete.c
+@@ -57,6 +57,7 @@ ldbm_back_delete(Slapi_PBlock *pb)
+     int is_ruv = 0; /* True if the current entry is RUV */
+     int is_replicated_operation = 0;
+     int is_tombstone_entry = 0;     /* True if the current entry is alreday a tombstone        */
++    int is_internal;
+     int delete_tombstone_entry = 0; /* We must remove the given tombstone entry from the DB    */
+     int create_tombstone_entry = 0; /* We perform a "regular" LDAP delete but since we use    */
+                                     /* replication, we must create a new tombstone entry    */
+@@ -141,6 +142,7 @@ ldbm_back_delete(Slapi_PBlock *pb)
+     is_fixup_operation = operation_is_flag_set(operation, OP_FLAG_REPL_FIXUP);
+     is_ruv = operation_is_flag_set(operation, OP_FLAG_REPL_RUV);
+     delete_tombstone_entry = operation_is_flag_set(operation, OP_FLAG_TOMBSTONE_ENTRY);
++    is_internal = operation_is_flag_set(operation, OP_FLAG_INTERNAL);
+ 
+     inst = (ldbm_instance *)be->be_instance_info;
+     if (inst && inst->inst_ref_count) {
+@@ -1567,6 +1569,19 @@ diskfull_return:
+             ldap_result_code = LDAP_SUCCESS;
+         }
+         if (!result_sent) {
++            int deferred;
++            PRIntervalTime delay;
++
++            if (!is_internal) {
++                slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                if (deferred) {
++                    delay = PR_MillisecondsToInterval(100);
++                }
++                while (deferred) {
++                    DS_Sleep(delay);
++                    slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                }
++            }
+             slapi_send_ldap_result(pb, ldap_result_code, NULL, ldap_result_message, 0, NULL);
+         }
+     }
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modify.c b/ldap/servers/slapd/back-ldbm/ldbm_modify.c
+index 64b293001..0c62c87f0 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modify.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modify.c
+@@ -511,6 +511,7 @@ ldbm_back_modify(Slapi_PBlock *pb)
+     entry_address *addr;
+     int is_fixup_operation = 0;
+     int is_ruv = 0; /* True if the current entry is RUV */
++    int is_internal = 0;
+     CSN *opcsn = NULL;
+     int repl_op;
+     int opreturn = 0;
+@@ -534,6 +535,7 @@ ldbm_back_modify(Slapi_PBlock *pb)
+     slapi_pblock_get(pb, SLAPI_OPERATION, &operation);
+ 
+     fixup_tombstone = operation_is_flag_set(operation, OP_FLAG_TOMBSTONE_FIXUP);
++    is_internal = operation_is_flag_set(operation, OP_FLAG_INTERNAL);
+ 
+     dblayer_txn_init(li, &txn); /* must do this before first goto error_return */
+     /* the calls to perform searches require the parent txn if any
+@@ -1158,6 +1160,19 @@ common_return:
+         }
+         if (!result_sent) {
+             /* result is already sent in find_entry. */
++            int deferred;
++            PRIntervalTime delay;
++
++            if (!is_internal) {
++                slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                if (deferred) {
++                    delay = PR_MillisecondsToInterval(100);
++                }
++                while (deferred) {
++                    DS_Sleep(delay);
++                    slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                }
++            }
+             slapi_send_ldap_result(pb, ldap_result_code, NULL, ldap_result_message, 0, NULL);
+         }
+     }
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+index 6a7b73ade..fe35991b5 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+@@ -81,6 +81,7 @@ ldbm_back_modrdn(Slapi_PBlock *pb)
+     int is_fixup_operation = 0;
+     int is_resurect_operation = 0;
+     int is_tombstone = 0;
++    int is_internal = 0;
+     entry_address new_addr;
+     entry_address *old_addr;
+     entry_address oldparent_addr;
+@@ -124,6 +125,7 @@ ldbm_back_modrdn(Slapi_PBlock *pb)
+     is_fixup_operation = operation_is_flag_set(operation, OP_FLAG_REPL_FIXUP);
+     is_resurect_operation = operation_is_flag_set(operation, OP_FLAG_RESURECT_ENTRY);
+     is_tombstone = operation_is_flag_set(operation, OP_FLAG_TOMBSTONE_ENTRY); /* tombstone_to_glue on parent entry*/
++    is_internal = operation_is_flag_set(operation, OP_FLAG_INTERNAL);
+     slapi_pblock_get(pb, SLAPI_CONNECTION, &pb_conn);
+ 
+     if (NULL == sdn) {
+@@ -1508,6 +1510,20 @@ common_return:
+             ldap_result_code = LDAP_SUCCESS;
+         }
+         if (!result_sent) {
++            int deferred;
++            PRIntervalTime delay;
++
++            if (!is_internal) {
++                /* for direct operation, wait for members update */
++                slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                if (deferred) {
++                    delay = PR_MillisecondsToInterval(100);
++                }
++                while (deferred) {
++                    DS_Sleep(delay);
++                    slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
++                }
++            }
+             slapi_send_ldap_result(pb, ldap_result_code, ldap_result_matcheddn,
+                                    ldap_result_message, 0, NULL);
+         }
+diff --git a/ldap/servers/slapd/pblock.c b/ldap/servers/slapd/pblock.c
+index c78d1250f..7c1cdc81c 100644
+--- a/ldap/servers/slapd/pblock.c
++++ b/ldap/servers/slapd/pblock.c
+@@ -443,6 +443,9 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         (*(char **)value) = (NULL == pblock->pb_conn->c_dn ? NULL : slapi_ch_strdup(pblock->pb_conn->c_dn));
+         pthread_mutex_unlock(&(pblock->pb_conn->c_mutex));
+         break;
++    case SLAPI_DEFERRED_MEMBEROF:
++        (*(int *)value) = pblock->pb_deferred_memberof;
++        break;
+     case SLAPI_CONN_AUTHTYPE: /* deprecated */
+         if (pblock->pb_conn == NULL) {
+             slapi_log_err(SLAPI_LOG_ERR,
+@@ -2496,6 +2499,13 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+             (*(int *)value) = 0;
+         }
+         break;
++    case SLAPI_MEMBEROF_DEFERRED_TASK:
++        if (pblock->pb_intop != NULL) {
++            (*(void **)value) = pblock->pb_intop->memberof_deferred_task;
++        } else {
++            (*(void **)value) = NULL;
++        }
++        break;
+ 
+     case SLAPI_USN_INCREMENT_FOR_TOMBSTONE:
+         if (pblock->pb_intop != NULL) {
+@@ -2592,6 +2602,9 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+                              (char *)value, NULL, NULL, NULL, NULL);
+         slapi_ch_free((void **)&authtype);
+         break;
++    case SLAPI_DEFERRED_MEMBEROF:
++        pblock->pb_deferred_memberof = *((int *)value);
++        break;
+     case SLAPI_CONN_AUTHTYPE: /* deprecated */
+     case SLAPI_CONN_AUTHMETHOD:
+         if (pblock->pb_conn == NULL) {
+@@ -4190,6 +4203,10 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+     case SLAPI_PAGED_RESULTS_COOKIE:
+         pblock->pb_intop->pb_paged_results_cookie = *(int *)value;
+         break;
++    case SLAPI_MEMBEROF_DEFERRED_TASK:
++        _pblock_assert_pb_intop(pblock);
++        pblock->pb_intop->memberof_deferred_task = (void *)value;
++        break;
+ 
+     case SLAPI_USN_INCREMENT_FOR_TOMBSTONE:
+         pblock->pb_intop->pb_usn_tombstone_incremented = *((int32_t *)value);
+diff --git a/ldap/servers/slapd/pblock_v3.h b/ldap/servers/slapd/pblock_v3.h
+index b35d78565..cd484115f 100644
+--- a/ldap/servers/slapd/pblock_v3.h
++++ b/ldap/servers/slapd/pblock_v3.h
+@@ -163,6 +163,14 @@ typedef struct _slapi_pblock_intop
+     int pb_paged_results_index;  /* stash SLAPI_PAGED_RESULTS_INDEX */
+     int pb_paged_results_cookie; /* stash SLAPI_PAGED_RESULTS_COOKIE */
+     int32_t pb_usn_tombstone_incremented; /* stash SLAPI_PAGED_RESULTS_COOKIE */
++
++    /* For memberof deferred thread
++     * It is set by be_txn_postop with the task that
++     * will be processed by the memberof deferred thread
++     * It is reset by the be_postop, once the txn is committed
++     * when it pushes the task to list of deferred tasks
++     */
++    void *memberof_deferred_task;
+ } slapi_pblock_intop;
+ 
+ /* Stuff that is rarely used, but still present */
+@@ -216,6 +224,7 @@ typedef struct slapi_pblock
+     struct _slapi_pblock_intop *pb_intop;
+     struct _slapi_pblock_intplugin *pb_intplugin;
+     struct _slapi_pblock_deprecated *pb_deprecated;
++    int pb_deferred_memberof;
+ 
+ #ifdef PBLOCK_ANALYTICS
+     uint32_t analytics_init;
+diff --git a/ldap/servers/slapd/schema.c b/ldap/servers/slapd/schema.c
+index a71b357ce..16f1861cf 100644
+--- a/ldap/servers/slapd/schema.c
++++ b/ldap/servers/slapd/schema.c
+@@ -6598,3 +6598,24 @@ supplier_learn_new_definitions(struct berval **objectclasses, struct berval **at
+     modify_schema_free_new_definitions(at_list);
+     modify_schema_free_new_definitions(oc_list);
+ }
++
++/*
++ * schema_get_objectclasses_by_attribute returns the name
++ *  of all objectclass containing the attribute)
++ */
++char **
++schema_get_objectclasses_by_attribute(const char *attribute)
++{
++    struct objclass *oc;
++    char **ocs = NULL;
++
++    schema_dse_lock_read();
++    for (oc = g_get_global_oc_nolock(); oc != NULL; oc = oc->oc_next) {
++        if (charray_inlist(oc->oc_required, (char*) attribute) ||
++            charray_inlist(oc->oc_allowed, (char*) attribute)) {
++            charray_add(&ocs,slapi_ch_strdup(oc->oc_name));
++        }
++    }
++    schema_dse_unlock();
++    return ocs;
++}
+diff --git a/ldap/servers/slapd/slapi-plugin.h b/ldap/servers/slapd/slapi-plugin.h
+index b3b715583..9fdcaccc8 100644
+--- a/ldap/servers/slapd/slapi-plugin.h
++++ b/ldap/servers/slapd/slapi-plugin.h
+@@ -7002,6 +7002,7 @@ slapi_timer_result slapi_timespec_expire_check(struct timespec *expire);
+ #define SLAPI_BE_LASTMOD       137
+ #define SLAPI_CONN_ID          139
+ #define SLAPI_BACKEND_COUNT    860
++#define SLAPI_DEFERRED_MEMBEROF 861
+ 
+ /* operation */
+ #define SLAPI_OPINITIATED_TIME            140
+@@ -7546,6 +7547,12 @@ typedef enum _slapi_op_note_t {
+ /* dbverify */
+ #define SLAPI_DBVERIFY_DBDIR 1947
+ 
++/* task passed by memberof be_txn_post to the
++ * memberof be_post to be pushed in the list
++ * of memberof deferred updates
++ */
++#define SLAPI_MEMBEROF_DEFERRED_TASK  1951
++
+ /* convenience macros for checking modify operation types */
+ #define SLAPI_IS_MOD_ADD(x)     (((x) & ~LDAP_MOD_BVALUES) == LDAP_MOD_ADD)
+ #define SLAPI_IS_MOD_DELETE(x)  (((x) & ~LDAP_MOD_BVALUES) == LDAP_MOD_DELETE)
+diff --git a/ldap/servers/slapd/slapi-private.h b/ldap/servers/slapd/slapi-private.h
+index d6d74e8a7..4b6cf29eb 100644
+--- a/ldap/servers/slapd/slapi-private.h
++++ b/ldap/servers/slapd/slapi-private.h
+@@ -756,6 +756,9 @@ char *slapi_schema_get_superior_name(const char *ocname_or_oid);
+ 
+ CSN *dup_global_schema_csn(void);
+ 
++/* schema access for memberof plugin */
++char **schema_get_objectclasses_by_attribute(const char *attribute);
++
+ /* misc function for the chaining backend */
+ #define CHAIN_ROOT_UPDATE_REJECT   0
+ #define CHAIN_ROOT_UPDATE_LOCAL    1
+diff --git a/src/lib389/lib389/plugins.py b/src/lib389/lib389/plugins.py
+index a1ad0a45b..6bf1843ad 100644
+--- a/src/lib389/lib389/plugins.py
++++ b/src/lib389/lib389/plugins.py
+@@ -907,6 +907,26 @@ class MemberOfPlugin(Plugin):
+ 
+         self.set('memberofskipnested', 'off')
+ 
++    def get_memberofdeferredupdate(self):
++        """Get memberOfDeferredUpdate attribute"""
++
++        return self.get_attr_val_utf8_l('memberofdeferredupdate')
++
++    def get_memberofdeferredupdate_formatted(self):
++        """Display memberofdeferredupdate attribute"""
++
++        return self.display_attr('memberofdeferredupdate')
++
++    def set_memberofdeferredupdate(self, value):
++        """Set memberofdeferredupdate attribute"""
++
++        self.set('memberofdeferredupdate', value)
++
++    def remove_memberofdeferredupdate(self):
++        """Remove all memberofdeferredupdate attributes"""
++
++        self.remove_all('memberofdeferredupdate')
++
+     def get_autoaddoc(self):
+         """Get memberofautoaddoc attribute"""
+ 
+-- 
+2.48.1
+

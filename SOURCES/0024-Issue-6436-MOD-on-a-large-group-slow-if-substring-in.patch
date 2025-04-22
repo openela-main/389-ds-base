@@ -1,0 +1,236 @@
+From 1845aed98becaba6b975342229cb5e0de79d208d Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Wed, 29 Jan 2025 17:41:55 +0000
+Subject: [PATCH] Issue 6436 - MOD on a large group slow if substring index is
+ present (#6437)
+
+Bug Description: If the substring index is configured for the group
+membership attribute ( member or uniqueMember ), the removal of a
+member from a large static group is pretty slow.
+
+Fix Description: A solution to this issue would be to introduce
+a new index to track a membership atttribute index. In the interm,
+we add a check to healthcheck to inform the user of the implications
+of this configuration.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6436
+
+Reviewed by: @Firstyear, @tbordaz, @droideck (Thanks)
+---
+ .../suites/healthcheck/health_config_test.py  | 89 ++++++++++++++++++-
+ src/lib389/lib389/lint.py                     | 15 ++++
+ src/lib389/lib389/plugins.py                  | 37 +++++++-
+ 3 files changed, 137 insertions(+), 4 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/healthcheck/health_config_test.py b/dirsrvtests/tests/suites/healthcheck/health_config_test.py
+index 6d3d08bfa..747699486 100644
+--- a/dirsrvtests/tests/suites/healthcheck/health_config_test.py
++++ b/dirsrvtests/tests/suites/healthcheck/health_config_test.py
+@@ -212,6 +212,7 @@ def test_healthcheck_RI_plugin_missing_indexes(topology_st):
+     MEMBER_DN = 'cn=member,cn=index,cn=userroot,cn=ldbm database,cn=plugins,cn=config'
+ 
+     standalone = topology_st.standalone
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
+ 
+     log.info('Enable RI plugin')
+     plugin = ReferentialIntegrityPlugin(standalone)
+@@ -233,7 +234,7 @@ def test_healthcheck_RI_plugin_missing_indexes(topology_st):
+ 
+ 
+ def test_healthcheck_MO_plugin_missing_indexes(topology_st):
+-    """Check if HealthCheck returns DSMOLE0002 code
++    """Check if HealthCheck returns DSMOLE0001 code
+ 
+     :id: 236b0ec2-13da-48fb-b65a-db7406d56d5d
+     :setup: Standalone instance
+@@ -248,8 +249,8 @@ def test_healthcheck_MO_plugin_missing_indexes(topology_st):
+     :expectedresults:
+         1. Success
+         2. Success
+-        3. Healthcheck reports DSMOLE0002 code and related details
+-        4. Healthcheck reports DSMOLE0002 code and related details
++        3. Healthcheck reports DSMOLE0001 code and related details
++        4. Healthcheck reports DSMOLE0001 code and related details
+         5. Success
+         6. Healthcheck reports no issue found
+         7. Healthcheck reports no issue found
+@@ -259,6 +260,7 @@ def test_healthcheck_MO_plugin_missing_indexes(topology_st):
+     MO_GROUP_ATTR = 'creatorsname'
+ 
+     standalone = topology_st.standalone
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
+ 
+     log.info('Enable MO plugin')
+     plugin = MemberOfPlugin(standalone)
+@@ -279,6 +281,87 @@ def test_healthcheck_MO_plugin_missing_indexes(topology_st):
+     run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=JSON_OUTPUT)
+ 
+ 
++def test_healthcheck_MO_plugin_substring_index(topology_st):
++    """Check if HealthCheck returns DSMOLE0002 code when the
++    member, uniquemember attribute contains a substring index type
++
++    :id: 10954811-24ac-4886-8183-e30892f8e02d
++    :setup: Standalone instance
++    :steps:
++        1. Create DS instance
++        2. Configure the instance with MO Plugin
++        3. Change index type to substring for member attribute
++        4. Use HealthCheck without --json option
++        5. Use HealthCheck with --json option
++        6. Change index type back to equality for member attribute
++        7. Use HealthCheck without --json option
++        8. Use HealthCheck with --json option
++        9. Change index type to substring for uniquemember attribute
++        10. Use HealthCheck without --json option
++        11. Use HealthCheck with --json option
++        12. Change index type back to equality for uniquemember attribute
++        13. Use HealthCheck without --json option
++        14. Use HealthCheck with --json option
++
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Healthcheck reports DSMOLE0002 code and related details
++        5. Healthcheck reports DSMOLE0002 code and related details
++        6. Success
++        7. Healthcheck reports no issue found
++        8. Healthcheck reports no issue found
++        9. Success
++        10. Healthcheck reports DSMOLE0002 code and related details
++        11. Healthcheck reports DSMOLE0002 code and related details
++        12. Success
++        13. Healthcheck reports no issue found
++        14. Healthcheck reports no issue found
++    """
++
++    RET_CODE = 'DSMOLE0002'
++    MEMBER_DN = 'cn=member,cn=index,cn=userroot,cn=ldbm database,cn=plugins,cn=config'
++    UNIQUE_MEMBER_DN = 'cn=uniquemember,cn=index,cn=userroot,cn=ldbm database,cn=plugins,cn=config'
++
++    standalone = topology_st.standalone
++    standalone.config.set("nsslapd-accesslog-logbuffering", "on")
++
++    log.info('Enable MO plugin')
++    plugin = MemberOfPlugin(standalone)
++    plugin.disable()
++    plugin.enable()
++
++    log.info('Change the index type of the member attribute index to substring')
++    index = Index(topology_st.standalone, MEMBER_DN)
++    index.replace('nsIndexType', 'sub')
++
++    run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=RET_CODE)
++    run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=RET_CODE)
++
++    log.info('Set the index type of the member attribute index back to eq')
++    index.replace('nsIndexType', 'eq')
++
++    run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=CMD_OUTPUT)
++    run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=JSON_OUTPUT)
++
++    log.info('Change the index type of the uniquemember attribute index to substring')
++    index = Index(topology_st.standalone, UNIQUE_MEMBER_DN)
++    index.replace('nsIndexType', 'sub')
++
++    run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=RET_CODE)
++    run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=RET_CODE)
++
++    log.info('Set the index type of the uniquemember attribute index back to eq')
++    index.replace('nsIndexType', 'eq')
++
++    run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=CMD_OUTPUT)
++    run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=JSON_OUTPUT)
++
++    # Restart the instance after changing the plugin to avoid breaking the other tests
++    standalone.restart()
++
++
+ @pytest.mark.ds50873
+ @pytest.mark.bz1685160
+ @pytest.mark.xfail(ds_is_older("1.4.1"), reason="Not implemented")
+diff --git a/src/lib389/lib389/lint.py b/src/lib389/lib389/lint.py
+index 4d9cbb666..3d3c79ea3 100644
+--- a/src/lib389/lib389/lint.py
++++ b/src/lib389/lib389/lint.py
+@@ -231,6 +231,21 @@ database after adding the missing index type. Here is an example using dsconf:
+ """
+ }
+ 
++DSMOLE0002 = {
++    'dsle': 'DSMOLE0002',
++    'severity': 'LOW',
++    'description': 'Removal of a member can be slow ',
++    'items': ['cn=memberof plugin,cn=plugins,cn=config', ],
++    'detail': """If the substring index is configured for a membership attribute. The removal of a member
++from the large group can be slow.
++
++""",
++    'fix': """If not required, you can remove the substring index type using dsconf:
++
++    # dsconf slapd-YOUR_INSTANCE backend index set --attr=ATTR BACKEND --del-type=sub
++"""
++}
++
+ # Disk Space check.  Note - PARTITION is replaced by the calling function
+ DSDSLE0001 = {
+     'dsle': 'DSDSLE0001',
+diff --git a/src/lib389/lib389/plugins.py b/src/lib389/lib389/plugins.py
+index 6bf1843ad..185398e5b 100644
+--- a/src/lib389/lib389/plugins.py
++++ b/src/lib389/lib389/plugins.py
+@@ -12,7 +12,7 @@ import copy
+ import os.path
+ from lib389 import tasks
+ from lib389._mapped_object import DSLdapObjects, DSLdapObject
+-from lib389.lint import DSRILE0001, DSRILE0002, DSMOLE0001
++from lib389.lint import DSRILE0001, DSRILE0002, DSMOLE0001, DSMOLE0002
+ from lib389.utils import ensure_str, ensure_list_bytes
+ from lib389.schema import Schema
+ from lib389._constants import (
+@@ -827,6 +827,41 @@ class MemberOfPlugin(Plugin):
+                         report['check'] = f'memberof:attr_indexes'
+                         yield report
+ 
++    def _lint_member_substring_index(self):
++        if self.status():
++            from lib389.backend import Backends
++            backends = Backends(self._instance).list()
++            membership_attrs = ['member', 'uniquemember']
++            container = self.get_attr_val_utf8_l("nsslapd-plugincontainerscope")
++            for backend in backends:
++                suffix = backend.get_attr_val_utf8_l('nsslapd-suffix')
++                if suffix == "cn=changelog":
++                    # Always skip retro changelog
++                    continue
++                if container is not None:
++                    # Check if this backend is in the scope
++                    if not container.endswith(suffix):
++                        # skip this backend that is not in the scope
++                        continue
++                indexes = backend.get_indexes()
++                for attr in membership_attrs:
++                    report = copy.deepcopy(DSMOLE0002)
++                    try:
++                        index = indexes.get(attr)
++                        types = index.get_attr_vals_utf8_l("nsIndexType")
++                        if "sub" in types:
++                            report['detail'] = report['detail'].replace('ATTR', attr)
++                            report['detail'] = report['detail'].replace('BACKEND', suffix)
++                            report['fix'] = report['fix'].replace('ATTR', attr)
++                            report['fix'] = report['fix'].replace('BACKEND', suffix)
++                            report['fix'] = report['fix'].replace('YOUR_INSTANCE', self._instance.serverid)
++                            report['items'].append(suffix)
++                            report['items'].append(attr)
++                            report['check'] = f'attr:substring_index'
++                            yield report
++                    except KeyError:
++                        continue
++
+     def get_attr(self):
+         """Get memberofattr attribute"""
+ 
+-- 
+2.48.1
+

@@ -1,0 +1,230 @@
+From bd2829d04491556c35a0b36b591c09a69baf6546 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Mon, 11 Dec 2023 11:58:40 +0100
+Subject: [PATCH] Issue 6004 - idletimeout may be ignored (#6005)
+
+* Issue 6004 - idletimeout may be ignored
+
+Problem: idletimeout is still not handled when binding as non root (unless there are some activity
+on another connection)
+Fix:
+Add a slapi_eq_repeat_rel handler that walks all active connection every seconds and check if the timeout is expired.
+Note about CI test:
+Notice that idletimeout is never enforced for connections bound as root (i.e cn=directory manager).
+
+Issue #6004
+
+Reviewed by: @droideck, @tbordaz (Thanks!)
+
+(cherry picked from commit 86b5969acbe124eec8c89bcf1ab2156b2b140c17)
+(cherry picked from commit bdb0a72b4953678e5418406b3c202dfa2c7469a2)
+(cherry picked from commit 61cebc191cd4090072dda691b9956dbde4cf7c48)
+---
+ .../tests/suites/config/regression_test.py    | 82 ++++++++++++++++++-
+ ldap/servers/slapd/daemon.c                   | 52 +++++++++++-
+ 2 files changed, 128 insertions(+), 6 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/config/regression_test.py b/dirsrvtests/tests/suites/config/regression_test.py
+index 0000dd82d..8dbba8cd2 100644
+--- a/dirsrvtests/tests/suites/config/regression_test.py
++++ b/dirsrvtests/tests/suites/config/regression_test.py
+@@ -6,20 +6,49 @@
+ # See LICENSE for details.
+ # --- END COPYRIGHT BLOCK ---
+ #
++import os
+ import logging
+ import pytest
++import time
+ from lib389.utils import *
+ from lib389.dseldif import DSEldif
+-from lib389.config import LDBMConfig
++from lib389.config import BDB_LDBMConfig, LDBMConfig, Config
+ from lib389.backend import Backends
+ from lib389.topologies import topology_st as topo
++from lib389.idm.user import UserAccounts, TEST_USER_PROPERTIES
++from lib389._constants import DEFAULT_SUFFIX, PASSWORD, DN_DM
+ 
+ pytestmark = pytest.mark.tier0
+ 
+ logging.getLogger(__name__).setLevel(logging.INFO)
+ log = logging.getLogger(__name__)
+ 
++DEBUGGING = os.getenv("DEBUGGING", default=False)
+ CUSTOM_MEM = '9100100100'
++IDLETIMEOUT = 5
++DN_TEST_USER = f'uid={TEST_USER_PROPERTIES["uid"]},ou=People,{DEFAULT_SUFFIX}'
++
++
++@pytest.fixture(scope="module")
++def idletimeout_topo(topo, request):
++    """Create an instance with a test user and set idletimeout"""
++    inst = topo.standalone
++    config = Config(inst)
++
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    user = users.create(properties={
++        **TEST_USER_PROPERTIES,
++        'userpassword' : PASSWORD,
++    })
++    config.replace('nsslapd-idletimeout', str(IDLETIMEOUT))
++
++    def fin():
++        if not DEBUGGING:
++            config.reset('nsslapd-idletimeout')
++            user.delete()
++
++    request.addfinalizer(fin)
++    return topo
+ 
+ 
+ # Function to return value of available memory in kb
+@@ -79,7 +108,7 @@ def test_maxbersize_repl(topo):
+     nsslapd-errorlog-logmaxdiskspace are set in certain order
+ 
+     :id: 743e912c-2be4-4f5f-9c2a-93dcb18f51a0
+-    :setup: MMR with two suppliers
++    :setup: Standalone Instance
+     :steps:
+         1. Stop the instance
+         2. Set nsslapd-errorlog-maxlogsize before/after
+@@ -112,3 +141,52 @@ def test_maxbersize_repl(topo):
+     log.info("Assert no init_dse_file errors in the error log")
+     assert not inst.ds_error_log.match('.*ERR - init_dse_file.*')
+ 
++
++def test_bdb_config(topo):
++    """Check that bdb config entry exists
++
++    :id: edbc6f54-7c98-11ee-b1c0-482ae39447e5
++    :setup: standalone
++    :steps:
++        1. Check that bdb config instance exists.
++    :expectedresults:
++        1. Success
++    """
++
++    inst = topo.standalone
++    assert BDB_LDBMConfig(inst).exists()
++
++
++@pytest.mark.parametrize("dn,expected_result", [(DN_TEST_USER, True), (DN_DM, False)])
++def test_idletimeout(idletimeout_topo, dn, expected_result):
++    """Check that bdb config entry exists
++
++    :id: b20f2826-942a-11ee-827b-482ae39447e5
++    :parametrized: yes
++    :setup: Standalone Instance with test user and idletimeout
++    :steps:
++        1. Open new ldap connection
++        2. Bind with the provided dn
++        3. Wait longer than idletimeout
++        4. Try to bind again the provided dn and check if
++           connection is closed or not.
++        5. Check if result is the expected one.
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Success
++        5. Success
++    """
++
++    inst = idletimeout_topo.standalone
++
++    l = ldap.initialize(f'ldap://localhost:{inst.port}')
++    l.bind_s(dn, PASSWORD)
++    time.sleep(IDLETIMEOUT+1)
++    try:
++        l.bind_s(dn, PASSWORD)
++        result = False
++    except ldap.SERVER_DOWN:
++        result = True
++    assert expected_result == result
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 57e07e5f5..6df109760 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -68,6 +68,8 @@
+ #define SLAPD_ACCEPT_WAKEUP_TIMER 250
+ #endif
+ 
++#define MILLISECONDS_PER_SECOND 1000
++
+ int slapd_wakeup_timer = SLAPD_WAKEUP_TIMER; /* time in ms to wakeup */
+ int slapd_accept_wakeup_timer = SLAPD_ACCEPT_WAKEUP_TIMER; /* time in ms to wakeup */
+ #ifdef notdef                                /* GGOODREPL */
+@@ -1045,6 +1047,48 @@ slapd_sockets_ports_free(daemon_ports_t *ports_info)
+ #endif
+ }
+ 
++/*
++ * Tells if idle timeout has expired
++ */
++static inline int __attribute__((always_inline))
++has_idletimeout_expired(Connection *c, time_t curtime)
++{
++    return (c->c_state != CONN_STATE_FREE && !c->c_gettingber &&
++            c->c_idletimeout > 0 && NULL == c->c_ops &&
++            curtime - c->c_idlesince >= c->c_idletimeout);
++}
++
++/*
++ * slapi_eq_repeat_rel callback that checks that idletimeout has not expired.
++ */
++void
++check_idletimeout(time_t when __attribute__((unused)), void *arg __attribute__((unused)) )
++{
++    Connection_Table *ct = the_connection_table;
++    time_t curtime = slapi_current_rel_time_t();
++    /* Walk all active connections of all connection listeners */
++    for (int list_num = 0; list_num < ct->list_num; list_num++) {
++        for (Connection *c = connection_table_get_first_active_connection(ct, list_num);
++             c != NULL; c = connection_table_get_next_active_connection(ct, c)) {
++            if (!has_idletimeout_expired(c, curtime)) {
++                continue;
++            }
++            /* Looks like idletimeout has expired, lets acquire the lock
++             * and double check.
++             */
++            if (pthread_mutex_trylock(&(c->c_mutex)) == EBUSY) {
++                continue;
++            }
++            if (has_idletimeout_expired(c, curtime)) {
++                /* idle timeout has expired */
++                disconnect_server_nomutex(c, c->c_connid, -1,
++                                          SLAPD_DISCONNECT_IDLE_TIMEOUT, ETIMEDOUT);
++            }
++            pthread_mutex_unlock(&(c->c_mutex));
++        }
++    }
++}
++
+ void
+ slapd_daemon(daemon_ports_t *ports)
+ {
+@@ -1258,7 +1302,9 @@ slapd_daemon(daemon_ports_t *ports)
+                   "MAINPID=%lu",
+                   (unsigned long)getpid());
+ #endif
+-
++    slapi_eq_repeat_rel(check_idletimeout, NULL,
++                        slapi_current_rel_time_t(),
++                        MILLISECONDS_PER_SECOND);
+     /* The meat of the operation is in a loop on a call to select */
+     while (!g_get_shutdown()) {
+         int select_return = 0;
+@@ -1734,9 +1780,7 @@ handle_pr_read_ready(Connection_Table *ct, PRIntn num_poll __attribute__((unused
+                         disconnect_server_nomutex(c, c->c_connid, -1,
+                                                   SLAPD_DISCONNECT_POLL, EPIPE);
+                     }
+-                } else if (c->c_idletimeout > 0 &&
+-                           (curtime - c->c_idlesince) >= c->c_idletimeout &&
+-                           NULL == c->c_ops) {
++                } else if (has_idletimeout_expired(c, curtime)) {
+                     /* idle timeout */
+                     disconnect_server_nomutex(c, c->c_connid, -1,
+                                               SLAPD_DISCONNECT_IDLE_TIMEOUT, ETIMEDOUT);
+-- 
+2.48.1
+

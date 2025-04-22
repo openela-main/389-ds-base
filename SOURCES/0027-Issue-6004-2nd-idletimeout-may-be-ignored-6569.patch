@@ -1,0 +1,69 @@
+From e9fe6e074130406328b8e932a5c2efa814d190a0 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Wed, 5 Feb 2025 09:41:30 +0100
+Subject: [PATCH] Issue 6004 - (2nd) idletimeout may be ignored (#6569)
+
+Problem:
+    multiple listener threads was implemented in 2.x and after
+    This is missing in 1.4.3 so the cherry pick should be adapted
+Fix:
+   skip the loop with listeners
+
+Issue #6004
+
+Reviewed by: Jamie Chapman (Thanks !)
+---
+ ldap/servers/slapd/daemon.c | 36 +++++++++++++++++-------------------
+ 1 file changed, 17 insertions(+), 19 deletions(-)
+
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index 6df109760..bef75e4a3 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -1066,26 +1066,24 @@ check_idletimeout(time_t when __attribute__((unused)), void *arg __attribute__((
+ {
+     Connection_Table *ct = the_connection_table;
+     time_t curtime = slapi_current_rel_time_t();
+-    /* Walk all active connections of all connection listeners */
+-    for (int list_num = 0; list_num < ct->list_num; list_num++) {
+-        for (Connection *c = connection_table_get_first_active_connection(ct, list_num);
+-             c != NULL; c = connection_table_get_next_active_connection(ct, c)) {
+-            if (!has_idletimeout_expired(c, curtime)) {
+-                continue;
+-            }
+-            /* Looks like idletimeout has expired, lets acquire the lock
+-             * and double check.
+-             */
+-            if (pthread_mutex_trylock(&(c->c_mutex)) == EBUSY) {
+-                continue;
+-            }
+-            if (has_idletimeout_expired(c, curtime)) {
+-                /* idle timeout has expired */
+-                disconnect_server_nomutex(c, c->c_connid, -1,
+-                                          SLAPD_DISCONNECT_IDLE_TIMEOUT, ETIMEDOUT);
+-            }
+-            pthread_mutex_unlock(&(c->c_mutex));
++    /* Walk all active connections */
++    for (Connection *c = connection_table_get_first_active_connection(ct);
++         c != NULL; c = connection_table_get_next_active_connection(ct, c)) {
++        if (!has_idletimeout_expired(c, curtime)) {
++            continue;
++        }
++        /* Looks like idletimeout has expired, lets acquire the lock
++         * and double check.
++         */
++        if (pthread_mutex_trylock(&(c->c_mutex)) == EBUSY) {
++            continue;
++        }
++        if (has_idletimeout_expired(c, curtime)) {
++            /* idle timeout has expired */
++            disconnect_server_nomutex(c, c->c_connid, -1,
++                                      SLAPD_DISCONNECT_IDLE_TIMEOUT, ETIMEDOUT);
+         }
++        pthread_mutex_unlock(&(c->c_mutex));
+     }
+ }
+ 
+-- 
+2.48.1
+

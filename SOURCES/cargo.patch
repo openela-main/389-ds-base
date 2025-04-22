@@ -1,0 +1,27 @@
+diff --git a/.cargo/config.in b/.cargo/config.in
+index d7d8ff4d4..d61993c54 100644
+--- a/.cargo/config.in
++++ b/.cargo/config.in
+@@ -2,5 +2,10 @@
+ registry = "https://github.com/rust-lang/crates.io-index"
+ @rust_vendor_sources@
+
++[source."git+https://github.com/389ds/concread?branch=unstable_name_collisions"]
++git = "https://github.com/389ds/concread"
++branch = "unstable_name_collisions"
++replace-with = "vendored-sources"
++
+ [source.vendored-sources]
+ directory = "./vendor"
+diff --git a/src/Cargo.toml b/src/Cargo.toml
+index 95c1ae3f5..4daf9cf7b 100644
+--- a/src/Cargo.toml
++++ b/src/Cargo.toml
+@@ -15,4 +15,6 @@ members = [
+ panic = "abort"
+ lto = true
+
++[patch.crates-io]
++concread = { git = "https://github.com/389ds/concread", branch = "unstable_name_collisions" }
+
+

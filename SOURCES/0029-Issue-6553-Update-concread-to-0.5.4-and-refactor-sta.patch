@@ -1,0 +1,894 @@
+From c243d7aa593046a7037188f0bf060caa1865a1f8 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Wed, 19 Feb 2025 18:56:34 -0800
+Subject: [PATCH] Issue 6553 - Update concread to 0.5.4 and refactor statistics
+ tracking (#6607)
+
+Description: Implement new cache statistics tracking with atomic counters
+and dedicated stats structs.
+Update concread dependency to 0.5.4 for improved cache performance.
+Add tests for cache statistics functionality.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6553
+
+Reviewed by: @firstyear
+---
+ ldap/servers/slapd/dn.c    |   4 +-
+ src/Cargo.lock             | 272 +++++++++++++-----------------
+ src/librslapd/Cargo.toml   |   5 +-
+ src/librslapd/src/cache.rs | 331 +++++++++++++++++++++++++++++++++----
+ 4 files changed, 418 insertions(+), 194 deletions(-)
+
+diff --git a/ldap/servers/slapd/dn.c b/ldap/servers/slapd/dn.c
+index 518e091d5..469ba6a71 100644
+--- a/ldap/servers/slapd/dn.c
++++ b/ldap/servers/slapd/dn.c
+@@ -101,7 +101,7 @@ struct ndn_cache {
+ 
+ /*
+  * This means we need 1 MB minimum per thread
+- * 
++ *
+  */
+ #define NDN_CACHE_MINIMUM_CAPACITY 1048576
+ /*
+@@ -3404,7 +3404,7 @@ ndn_cache_get_stats(uint64_t *hits, uint64_t *tries, uint64_t *size, uint64_t *m
+     uint64_t freq_evicts;
+     uint64_t recent_evicts;
+     uint64_t p_weight;
+-    cache_char_stats(cache, 
++    cache_char_stats(cache,
+         &reader_hits,
+         &reader_includes,
+         &write_hits,
+diff --git a/src/Cargo.lock b/src/Cargo.lock
+index 4667a17f1..908b5f639 100644
+--- a/src/Cargo.lock
++++ b/src/Cargo.lock
+@@ -19,23 +19,28 @@ checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
+ 
+ [[package]]
+ name = "ahash"
+-version = "0.7.7"
++version = "0.8.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5a824f2aa7e75a0c98c5a504fceb80649e9c35265d44525b5f94de4771a395cd"
++checksum = "e89da841a80418a9b391ebaea17f5c112ffaaa96f621d2c285b5174da76b9011"
+ dependencies = [
+- "getrandom",
++ "cfg-if",
++ "getrandom 0.2.15",
+  "once_cell",
+  "version_check",
++ "zerocopy",
+ ]
+ 
+ [[package]]
+-name = "ansi_term"
+-version = "0.12.1"
++name = "allocator-api2"
++version = "0.2.21"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d52a9bb7ec0cf484c551830a7ce27bd20d67eac647e1befb56b0be4ee39a55d2"
+-dependencies = [
+- "winapi",
+-]
++checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
++
++[[package]]
++name = "arc-swap"
++version = "1.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
+ 
+ [[package]]
+ name = "atty"
+@@ -143,51 +148,20 @@ dependencies = [
+ 
+ [[package]]
+ name = "concread"
+-version = "0.2.21"
++version = "0.5.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "dcc9816f5ac93ebd51c37f7f9a6bf2b40dfcd42978ad2aea5d542016e9244cf6"
++checksum = "0a06c26e76cd1d7a88a44324d0cf18b11589be552e97af09bee345f7e7334c6d"
+ dependencies = [
+  "ahash",
+- "crossbeam",
++ "arc-swap",
+  "crossbeam-epoch",
++ "crossbeam-queue",
+  "crossbeam-utils",
+  "lru",
+- "parking_lot",
+- "rand",
+  "smallvec",
++ "sptr",
+  "tokio",
+-]
+-
+-[[package]]
+-name = "crossbeam"
+-version = "0.8.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
+-dependencies = [
+- "crossbeam-channel",
+- "crossbeam-deque",
+- "crossbeam-epoch",
+- "crossbeam-queue",
+- "crossbeam-utils",
+-]
+-
+-[[package]]
+-name = "crossbeam-channel"
+-version = "0.5.11"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "176dc175b78f56c0f321911d9c8eb2b77a78a4860b9c19db83835fea1a46649b"
+-dependencies = [
+- "crossbeam-utils",
+-]
+-
+-[[package]]
+-name = "crossbeam-deque"
+-version = "0.8.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "613f8cc01fe9cf1a3eb3d7f488fd2fa8388403e97039e2f73692932e291a770d"
+-dependencies = [
+- "crossbeam-epoch",
+- "crossbeam-utils",
++ "tracing",
+ ]
+ 
+ [[package]]
+@@ -236,6 +210,12 @@ dependencies = [
+  "uuid",
+ ]
+ 
++[[package]]
++name = "equivalent"
++version = "1.0.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
++
+ [[package]]
+ name = "errno"
+ version = "0.3.8"
+@@ -265,6 +245,12 @@ dependencies = [
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "foldhash"
++version = "0.1.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a0d2fde1f7b3d48b8395d5f2de76c18a528bd6a9cdde438df747bfcba3e05d6f"
++
+ [[package]]
+ name = "foreign-types"
+ version = "0.3.2"
+@@ -302,8 +288,16 @@ name = "hashbrown"
+ version = "0.12.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
++
++[[package]]
++name = "hashbrown"
++version = "0.15.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
+ dependencies = [
+- "ahash",
++ "allocator-api2",
++ "equivalent",
++ "foldhash",
+ ]
+ 
+ [[package]]
+@@ -316,12 +310,13 @@ dependencies = [
+ ]
+ 
+ [[package]]
+-name = "instant"
+-version = "0.1.12"
++name = "indexmap"
++version = "1.9.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7a5bbe824c507c5da5956355e86a746d82e0e1464f65d862cc5e71da70e94b2c"
++checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
+ dependencies = [
+- "cfg-if",
++ "autocfg",
++ "hashbrown 0.12.3",
+ ]
+ 
+ [[package]]
+@@ -370,16 +365,6 @@ version = "0.4.12"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c4cd1a83af159aa67994778be9070f0ae1bd732942279cabb14f86f986a21456"
+ 
+-[[package]]
+-name = "lock_api"
+-version = "0.4.11"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3c168f8615b12bc01f9c17e2eb0cc07dcae1940121185446edc3744920e8ef45"
+-dependencies = [
+- "autocfg",
+- "scopeguard",
+-]
+-
+ [[package]]
+ name = "log"
+ version = "0.4.20"
+@@ -388,11 +373,11 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
+ 
+ [[package]]
+ name = "lru"
+-version = "0.7.8"
++version = "0.13.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e999beba7b6e8345721bd280141ed958096a2e4abdf74f67ff4ce49b4b54e47a"
++checksum = "227748d55f2f0ab4735d87fd623798cb6b664512fe979705f829c9f81c934465"
+ dependencies = [
+- "hashbrown",
++ "hashbrown 0.15.2",
+ ]
+ 
+ [[package]]
+@@ -464,29 +449,10 @@ dependencies = [
+ ]
+ 
+ [[package]]
+-name = "parking_lot"
+-version = "0.11.2"
++name = "os_str_bytes"
++version = "6.6.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7d17b78036a60663b797adeaee46f5c9dfebb86948d1255007a1d6be0271ff99"
+-dependencies = [
+- "instant",
+- "lock_api",
+- "parking_lot_core",
+-]
+-
+-[[package]]
+-name = "parking_lot_core"
+-version = "0.8.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "60a2cfe6f0ad2bfc16aefa463b497d5c7a5ecd44a23efa72aa342d90177356dc"
+-dependencies = [
+- "cfg-if",
+- "instant",
+- "libc",
+- "redox_syscall 0.2.16",
+- "smallvec",
+- "winapi",
+-]
++checksum = "e2355d85b9a3786f481747ced0e0ff2ba35213a1f9bd406ed906554d7af805a1"
+ 
+ [[package]]
+ name = "paste"
+@@ -519,12 +485,6 @@ version = "0.3.28"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "69d3587f8a9e599cc7ec2c00e331f71c4e69a5f9a4b8a6efd5b07466b9736f9a"
+ 
+-[[package]]
+-name = "ppv-lite86"
+-version = "0.2.17"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de"
+-
+ [[package]]
+ name = "proc-macro-hack"
+ version = "0.5.20+deprecated"
+@@ -562,54 +522,6 @@ dependencies = [
+  "proc-macro2",
+ ]
+ 
+-[[package]]
+-name = "rand"
+-version = "0.8.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+-dependencies = [
+- "libc",
+- "rand_chacha",
+- "rand_core",
+-]
+-
+-[[package]]
+-name = "rand_chacha"
+-version = "0.3.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+-dependencies = [
+- "ppv-lite86",
+- "rand_core",
+-]
+-
+-[[package]]
+-name = "rand_core"
+-version = "0.6.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+-dependencies = [
+- "getrandom",
+-]
+-
+-[[package]]
+-name = "redox_syscall"
+-version = "0.2.16"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fb5a58c1855b4b6819d59012155603f0b22ad30cad752600aadfcb695265519a"
+-dependencies = [
+- "bitflags 1.3.2",
+-]
+-
+-[[package]]
+-name = "redox_syscall"
+-version = "0.4.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4722d768eff46b75989dd134e5c353f0d6296e5aaa3132e776cbdb56be7731aa"
+-dependencies = [
+- "bitflags 1.3.2",
+-]
+-
+ [[package]]
+ name = "rsds"
+ version = "0.1.0"
+@@ -639,12 +551,6 @@ version = "1.0.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f98d2aa92eebf49b69786be48e4477826b256916e84a57ff2a4f21923b48eb4c"
+ 
+-[[package]]
+-name = "scopeguard"
+-version = "1.2.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+-
+ [[package]]
+ name = "serde"
+ version = "1.0.195"
+@@ -698,6 +604,12 @@ version = "1.12.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2593d31f82ead8df961d8bd23a64c2ccf2eb5dd34b0a34bfb4dd54011c72009e"
+ 
++[[package]]
++name = "sptr"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3b9b39299b249ad65f3b7e96443bad61c02ca5cd3589f46cb6d610a0fd6c0d6a"
++
+ [[package]]
+ name = "strsim"
+ version = "0.8.0"
+@@ -756,27 +668,46 @@ checksum = "c89b4efa943be685f629b149f53829423f8f5531ea21249408e8e2f8671ec104"
+ dependencies = [
+  "backtrace",
+  "pin-project-lite",
+- "tokio-macros",
+ ]
+ 
+ [[package]]
+-name = "tokio-macros"
+-version = "2.2.0"
++name = "toml"
++version = "0.5.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5b8a1e28f2deaa14e508979454cb3a223b10b938b45af148bc0986de36f1923b"
++checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
++dependencies = [
++ "serde",
++]
++
++[[package]]
++name = "tracing"
++version = "0.1.41"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "784e0ac535deb450455cbfa28a6f0df145ea1bb7ae51b821cf5e7927fdcfbdd0"
++dependencies = [
++ "pin-project-lite",
++ "tracing-attributes",
++ "tracing-core",
++]
++
++[[package]]
++name = "tracing-attributes"
++version = "0.1.28"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "395ae124c09f9e6918a2310af6038fba074bcf474ac352496d5910dd59a2226d"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+- "syn 2.0.48",
++ "syn 2.0.98",
+ ]
+ 
+ [[package]]
+-name = "toml"
+-version = "0.5.11"
++name = "tracing-core"
++version = "0.1.33"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
++checksum = "e672c95779cf947c5311f83787af4fa8fffd12fb27e4993211a84bdfd9610f9c"
+ dependencies = [
+- "serde",
++ "once_cell",
+ ]
+ 
+ [[package]]
+@@ -910,7 +841,36 @@ checksum = "1a657e1e9d3f514745a572a6846d3c7aa7dbe1658c056ed9c3344c4109a6949e"
+ name = "windows_x86_64_msvc"
+ version = "0.52.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "dff9641d1cd4be8d1a070daf9e3773c5f67e78b4d9d42263020c057706765c04"
++checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
++
++[[package]]
++name = "wit-bindgen-rt"
++version = "0.33.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3268f3d866458b787f390cf61f4bbb563b922d091359f9608842999eaee3943c"
++dependencies = [
++ "bitflags 2.8.0",
++]
++
++[[package]]
++name = "zerocopy"
++version = "0.7.35"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1b9b4fd18abc82b8136838da5d50bae7bdea537c574d8dc1a34ed098d6c166f0"
++dependencies = [
++ "zerocopy-derive",
++]
++
++[[package]]
++name = "zerocopy-derive"
++version = "0.7.35"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.98",
++]
+ 
+ [[package]]
+ name = "zeroize"
+diff --git a/src/librslapd/Cargo.toml b/src/librslapd/Cargo.toml
+index fb445c251..6d9b621fc 100644
+--- a/src/librslapd/Cargo.toml
++++ b/src/librslapd/Cargo.toml
+@@ -16,8 +16,7 @@ crate-type = ["staticlib", "lib"]
+ [dependencies]
+ slapd = { path = "../slapd" }
+ libc = "0.2"
+-concread =  "^0.2.20"
++concread = "0.5.4"
+ 
+ [build-dependencies]
+-cbindgen = "0.9"
+-
++cbindgen = "0.26"
+diff --git a/src/librslapd/src/cache.rs b/src/librslapd/src/cache.rs
+index b025c830a..e3c692865 100644
+--- a/src/librslapd/src/cache.rs
++++ b/src/librslapd/src/cache.rs
+@@ -1,38 +1,171 @@
+ // This exposes C-FFI capable bindings for the concread concurrently readable cache.
++use concread::arcache::stats::{ARCacheWriteStat, ReadCountStat};
+ use concread::arcache::{ARCache, ARCacheBuilder, ARCacheReadTxn, ARCacheWriteTxn};
+-use std::convert::TryInto;
++use concread::cowcell::CowCell;
+ use std::ffi::{CStr, CString};
+ use std::os::raw::c_char;
+ 
++#[derive(Clone, Debug, Default)]
++struct CacheStats {
++    reader_hits: u64,      // Hits from read transactions (main + local)
++    reader_includes: u64,  // Number of includes from read transactions
++    write_hits: u64,       // Hits from write transactions
++    write_inc_or_mod: u64, // Number of includes/modifications from write transactions
++    freq_evicts: u64,      // Number of evictions from frequent set
++    recent_evicts: u64,    // Number of evictions from recent set
++    p_weight: u64,         // Current cache weight between recent and frequent.
++    shared_max: u64,       // Maximum number of items in the shared cache.
++    freq: u64,             // Number of items in the frequent set at this point in time.
++    recent: u64,           // Number of items in the recent set at this point in time.
++    all_seen_keys: u64,    // Number of total keys seen through the cache's lifetime.
++}
++
++impl CacheStats {
++    fn new() -> Self {
++        CacheStats::default()
++    }
++
++    fn update_from_read_stat(&mut self, stat: ReadCountStat) {
++        self.reader_hits += stat.main_hit + stat.local_hit;
++        self.reader_includes += stat.include + stat.local_include;
++    }
++
++    fn update_from_write_stat(&mut self, stat: &FFIWriteStat) {
++        self.write_hits += stat.read_hits;
++        self.write_inc_or_mod += stat.includes + stat.modifications;
++        self.freq_evicts += stat.freq_evictions;
++        self.recent_evicts += stat.recent_evictions;
++        self.p_weight = stat.p_weight;
++        self.shared_max = stat.shared_max;
++        self.freq = stat.freq;
++        self.recent = stat.recent;
++        self.all_seen_keys = stat.all_seen_keys;
++    }
++}
++
++#[derive(Debug, Default)]
++pub struct FFIWriteStat {
++    pub read_ops: u64,
++    pub read_hits: u64,
++    pub p_weight: u64,
++    pub shared_max: u64,
++    pub freq: u64,
++    pub recent: u64,
++    pub all_seen_keys: u64,
++    pub includes: u64,
++    pub modifications: u64,
++    pub freq_evictions: u64,
++    pub recent_evictions: u64,
++    pub ghost_freq_revives: u64,
++    pub ghost_rec_revives: u64,
++    pub haunted_includes: u64,
++}
++
++impl<K> ARCacheWriteStat<K> for FFIWriteStat {
++    fn cache_clear(&mut self) {
++        self.read_ops = 0;
++        self.read_hits = 0;
++    }
++
++    fn cache_read(&mut self) {
++        self.read_ops += 1;
++    }
++
++    fn cache_hit(&mut self) {
++        self.read_hits += 1;
++    }
++
++    fn p_weight(&mut self, p: u64) {
++        self.p_weight = p;
++    }
++
++    fn shared_max(&mut self, i: u64) {
++        self.shared_max = i;
++    }
++
++    fn freq(&mut self, i: u64) {
++        self.freq = i;
++    }
++
++    fn recent(&mut self, i: u64) {
++        self.recent = i;
++    }
++
++    fn all_seen_keys(&mut self, i: u64) {
++        self.all_seen_keys = i;
++    }
++
++    fn include(&mut self, _k: &K) {
++        self.includes += 1;
++    }
++
++    fn include_haunted(&mut self, _k: &K) {
++        self.haunted_includes += 1;
++    }
++
++    fn modify(&mut self, _k: &K) {
++        self.modifications += 1;
++    }
++
++    fn ghost_frequent_revive(&mut self, _k: &K) {
++        self.ghost_freq_revives += 1;
++    }
++
++    fn ghost_recent_revive(&mut self, _k: &K) {
++        self.ghost_rec_revives += 1;
++    }
++
++    fn evict_from_recent(&mut self, _k: &K) {
++        self.recent_evictions += 1;
++    }
++
++    fn evict_from_frequent(&mut self, _k: &K) {
++        self.freq_evictions += 1;
++    }
++}
++
+ pub struct ARCacheChar {
+     inner: ARCache<CString, CString>,
++    stats: CowCell<CacheStats>,
+ }
+ 
+ pub struct ARCacheCharRead<'a> {
+-    inner: ARCacheReadTxn<'a, CString, CString>,
++    inner: ARCacheReadTxn<'a, CString, CString, ReadCountStat>,
++    cache: &'a ARCacheChar,
+ }
+ 
+ pub struct ARCacheCharWrite<'a> {
+-    inner: ARCacheWriteTxn<'a, CString, CString>,
++    inner: ARCacheWriteTxn<'a, CString, CString, FFIWriteStat>,
++    cache: &'a ARCacheChar,
++}
++
++impl ARCacheChar {
++    fn new(max: usize, read_max: usize) -> Option<Self> {
++        ARCacheBuilder::new()
++            .set_size(max, read_max)
++            .set_reader_quiesce(false)
++            .build()
++            .map(|inner| Self {
++                inner,
++                stats: CowCell::new(CacheStats::new()),
++            })
++    }
+ }
+ 
+ #[no_mangle]
+ pub extern "C" fn cache_char_create(max: usize, read_max: usize) -> *mut ARCacheChar {
+-    let inner = if let Some(cache) = ARCacheBuilder::new().set_size(max, read_max).build() {
+-        cache
++    if let Some(cache) = ARCacheChar::new(max, read_max) {
++        Box::into_raw(Box::new(cache))
+     } else {
+-        return std::ptr::null_mut();
+-    };
+-    let cache: Box<ARCacheChar> = Box::new(ARCacheChar { inner });
+-    Box::into_raw(cache)
++        std::ptr::null_mut()
++    }
+ }
+ 
+ #[no_mangle]
+ pub extern "C" fn cache_char_free(cache: *mut ARCacheChar) {
+-    // Should we be responsible to drain and free everything?
+     debug_assert!(!cache.is_null());
+     unsafe {
+-        let _drop = Box::from_raw(cache);
++        drop(Box::from_raw(cache));
+     }
+ }
+ 
+@@ -53,22 +186,22 @@ pub extern "C" fn cache_char_stats(
+ ) {
+     let cache_ref = unsafe {
+         debug_assert!(!cache.is_null());
+-        &(*cache) as &ARCacheChar
++        &(*cache)
+     };
+-    let stats = cache_ref.inner.view_stats();
+-    *reader_hits = stats.reader_hits.try_into().unwrap();
+-    *reader_includes = stats.reader_includes.try_into().unwrap();
+-    *write_hits = stats.write_hits.try_into().unwrap();
+-    *write_inc_or_mod = (stats.write_includes + stats.write_modifies)
+-        .try_into()
+-        .unwrap();
+-    *shared_max = stats.shared_max.try_into().unwrap();
+-    *freq = stats.freq.try_into().unwrap();
+-    *recent = stats.recent.try_into().unwrap();
+-    *freq_evicts = stats.freq_evicts.try_into().unwrap();
+-    *recent_evicts = stats.recent_evicts.try_into().unwrap();
+-    *p_weight = stats.p_weight.try_into().unwrap();
+-    *all_seen_keys = stats.all_seen_keys.try_into().unwrap();
++
++    // Get stats snapshot
++    let stats_read = cache_ref.stats.read();
++    *reader_hits = stats_read.reader_hits;
++    *reader_includes = stats_read.reader_includes;
++    *write_hits = stats_read.write_hits;
++    *write_inc_or_mod = stats_read.write_inc_or_mod;
++    *freq_evicts = stats_read.freq_evicts;
++    *recent_evicts = stats_read.recent_evicts;
++    *p_weight = stats_read.p_weight;
++    *shared_max = stats_read.shared_max;
++    *freq = stats_read.freq;
++    *recent = stats_read.recent;
++    *all_seen_keys = stats_read.all_seen_keys;
+ }
+ 
+ // start read
+@@ -79,7 +212,8 @@ pub extern "C" fn cache_char_read_begin(cache: *mut ARCacheChar) -> *mut ARCache
+         &(*cache) as &ARCacheChar
+     };
+     let read_txn = Box::new(ARCacheCharRead {
+-        inner: cache_ref.inner.read(),
++        inner: cache_ref.inner.read_stats(ReadCountStat::default()),
++        cache: cache_ref,
+     });
+     Box::into_raw(read_txn)
+ }
+@@ -87,8 +221,20 @@ pub extern "C" fn cache_char_read_begin(cache: *mut ARCacheChar) -> *mut ARCache
+ #[no_mangle]
+ pub extern "C" fn cache_char_read_complete(read_txn: *mut ARCacheCharRead) {
+     debug_assert!(!read_txn.is_null());
++
+     unsafe {
+-        let _drop = Box::from_raw(read_txn);
++        let read_txn_box = Box::from_raw(read_txn);
++        let read_stats = read_txn_box.inner.finish();
++        let write_stats = read_txn_box
++            .cache
++            .inner
++            .try_quiesce_stats(FFIWriteStat::default());
++
++        // Update stats
++        let mut stats_write = read_txn_box.cache.stats.write();
++        stats_write.update_from_read_stat(read_stats);
++        stats_write.update_from_write_stat(&write_stats);
++        stats_write.commit();
+     }
+ }
+ 
+@@ -141,7 +287,8 @@ pub extern "C" fn cache_char_write_begin(
+         &(*cache) as &ARCacheChar
+     };
+     let write_txn = Box::new(ARCacheCharWrite {
+-        inner: cache_ref.inner.write(),
++        inner: cache_ref.inner.write_stats(FFIWriteStat::default()),
++        cache: cache_ref,
+     });
+     Box::into_raw(write_txn)
+ }
+@@ -149,15 +296,21 @@ pub extern "C" fn cache_char_write_begin(
+ #[no_mangle]
+ pub extern "C" fn cache_char_write_commit(write_txn: *mut ARCacheCharWrite) {
+     debug_assert!(!write_txn.is_null());
+-    let wr = unsafe { Box::from_raw(write_txn) };
+-    (*wr).inner.commit();
++    unsafe {
++        let write_txn_box = Box::from_raw(write_txn);
++        let current_stats = write_txn_box.inner.commit();
++
++        let mut stats_write = write_txn_box.cache.stats.write();
++        stats_write.update_from_write_stat(&current_stats);
++        stats_write.commit();
++    }
+ }
+ 
+ #[no_mangle]
+ pub extern "C" fn cache_char_write_rollback(write_txn: *mut ARCacheCharWrite) {
+     debug_assert!(!write_txn.is_null());
+     unsafe {
+-        let _drop = Box::from_raw(write_txn);
++        drop(Box::from_raw(write_txn));
+     }
+ }
+ 
+@@ -182,7 +335,7 @@ pub extern "C" fn cache_char_write_include(
+ 
+ #[cfg(test)]
+ mod tests {
+-    use crate::cache::*;
++    use super::*;
+ 
+     #[test]
+     fn test_cache_basic() {
+@@ -199,4 +352,116 @@ mod tests {
+         cache_char_read_complete(read_txn);
+         cache_char_free(cache_ptr);
+     }
++
++    #[test]
++    fn test_cache_stats() {
++        let cache = cache_char_create(100, 8);
++
++        // Variables to store stats
++        let mut reader_hits = 0;
++        let mut reader_includes = 0;
++        let mut write_hits = 0;
++        let mut write_inc_or_mod = 0;
++        let mut shared_max = 0;
++        let mut freq = 0;
++        let mut recent = 0;
++        let mut freq_evicts = 0;
++        let mut recent_evicts = 0;
++        let mut p_weight = 0;
++        let mut all_seen_keys = 0;
++
++        // Do some operations
++        let key = CString::new("stats_test").unwrap();
++        let value = CString::new("value").unwrap();
++
++        let write_txn = cache_char_write_begin(cache);
++        cache_char_write_include(write_txn, key.as_ptr(), value.as_ptr());
++        cache_char_write_commit(write_txn);
++
++        let read_txn = cache_char_read_begin(cache);
++        let _ = cache_char_read_get(read_txn, key.as_ptr());
++        cache_char_read_complete(read_txn);
++
++        // Get stats
++        cache_char_stats(
++            cache,
++            &mut reader_hits,
++            &mut reader_includes,
++            &mut write_hits,
++            &mut write_inc_or_mod,
++            &mut shared_max,
++            &mut freq,
++            &mut recent,
++            &mut freq_evicts,
++            &mut recent_evicts,
++            &mut p_weight,
++            &mut all_seen_keys,
++        );
++
++        // Verify that stats were updated
++        assert!(write_inc_or_mod > 0);
++        assert!(all_seen_keys > 0);
++
++        cache_char_free(cache);
++    }
++
++    #[test]
++    fn test_cache_read_write_operations() {
++        let cache = cache_char_create(100, 8);
++
++        // Create test data
++        let key = CString::new("test_key").unwrap();
++        let value = CString::new("test_value").unwrap();
++
++        // Test write operation
++        let write_txn = cache_char_write_begin(cache);
++        cache_char_write_include(write_txn, key.as_ptr(), value.as_ptr());
++        cache_char_write_commit(write_txn);
++
++        // Test read operation
++        let read_txn = cache_char_read_begin(cache);
++        let result = cache_char_read_get(read_txn, key.as_ptr());
++        assert!(!result.is_null());
++
++        // Verify the value
++        let retrieved_value = unsafe { CStr::from_ptr(result) };
++        assert_eq!(retrieved_value.to_bytes(), value.as_bytes());
++
++        cache_char_read_complete(read_txn);
++        cache_char_free(cache);
++    }
++
++    #[test]
++    fn test_cache_miss() {
++        let cache = cache_char_create(100, 8);
++        let read_txn = cache_char_read_begin(cache);
++
++        let missing_key = CString::new("nonexistent").unwrap();
++        let result = cache_char_read_get(read_txn, missing_key.as_ptr());
++        assert!(result.is_null());
++
++        cache_char_read_complete(read_txn);
++        cache_char_free(cache);
++    }
++
++    #[test]
++    fn test_write_rollback() {
++        let cache = cache_char_create(100, 8);
++
++        let key = CString::new("rollback_test").unwrap();
++        let value = CString::new("value").unwrap();
++
++        // Start write transaction and rollback
++        let write_txn = cache_char_write_begin(cache);
++        cache_char_write_include(write_txn, key.as_ptr(), value.as_ptr());
++        cache_char_write_rollback(write_txn);
++
++        // Verify key doesn't exist
++        let read_txn = cache_char_read_begin(cache);
++        let result = cache_char_read_get(read_txn, key.as_ptr());
++        assert!(result.is_null());
++
++        cache_char_read_complete(read_txn);
++        cache_char_free(cache);
++    }
+ }
+-- 
+2.48.1
+

@@ -1,0 +1,38 @@
+From 679262c0c292413851d2d004b588ecfd7d91c85a Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Tue, 11 Feb 2025 18:06:34 +0000
+Subject: [PATCH] Issue 5841 - dsconf incorrectly setting up Pass-Through
+ Authentication (#6601)
+
+Bug description:
+During init, PAMPassThroughAuthConfigs defines an "objectclass=nsslapdplugin"
+plugin object. During filter creation, dsconf fails as objectclass=nsslapdplugin
+is not present in the PAM PT config entry. This objectclass has been removed in
+all other branches, branch 1.4.3 was skipped as there are cherry pick conflicts.
+
+Fix description:
+Remove nsslapdplugin from the plugin objecti, objectclass list.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/5841
+
+Reviewed by: @progier389 (Thank you)
+---
+ src/lib389/lib389/plugins.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/lib389/lib389/plugins.py b/src/lib389/lib389/plugins.py
+index 185398e5b..25b49dae4 100644
+--- a/src/lib389/lib389/plugins.py
++++ b/src/lib389/lib389/plugins.py
+@@ -1579,7 +1579,7 @@ class PAMPassThroughAuthConfigs(DSLdapObjects):
+ 
+     def __init__(self, instance, basedn="cn=PAM Pass Through Auth,cn=plugins,cn=config"):
+         super(PAMPassThroughAuthConfigs, self).__init__(instance)
+-        self._objectclasses = ['top', 'extensibleObject', 'nsslapdplugin', 'pamConfig']
++        self._objectclasses = ['top', 'extensibleObject', 'pamConfig']
+         self._filterattrs = ['cn']
+         self._scope = ldap.SCOPE_ONELEVEL
+         self._childobject = PAMPassThroughAuthConfig
+-- 
+2.48.1
+

@@ -1,0 +1,52 @@
+From ee03e8443a108cff0cc4c7a03962fdc3a1fbf94d Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Wed, 16 Oct 2024 19:24:55 -0700
+Subject: [PATCH] Issue 6067 - Update dsidm to prioritize basedn from .dsrc
+ over interactive input (#6362)
+
+Description: Modifies dsidm CLI tool to check for the basedn in the .dsrc configuration file
+when the -b option is not provided.
+Previously, users were required to always specify the basedn interactively if -b was omitted,
+even if it was available in .dsrc.
+Now, the basedn is determined by first checking the -b option, then the .dsrc file, and finally
+prompting the user if neither is set.
+
+Related: https://github.com/389ds/389-ds-base/issues/6067
+
+Reviewed by: @Firstyear (Thanks!)
+---
+ src/lib389/cli/dsidm                  | 2 +-
+ src/lib389/lib389/cli_idm/__init__.py | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/lib389/cli/dsidm b/src/lib389/cli/dsidm
+index 970973f4f..d318664bc 100755
+--- a/src/lib389/cli/dsidm
++++ b/src/lib389/cli/dsidm
+@@ -128,7 +128,7 @@ if __name__ == '__main__':
+     result = False
+     try:
+         inst = connect_instance(dsrc_inst=dsrc_inst, verbose=args.verbose, args=args)
+-        basedn = _get_basedn_arg(inst, args, log, msg="Enter basedn")
++        basedn = _get_basedn_arg(inst, args,  dsrc_inst['basedn'], log, msg="Enter basedn")
+         if basedn is None:
+             errmsg = "Must provide a basedn!"
+             if args.json:
+diff --git a/src/lib389/lib389/cli_idm/__init__.py b/src/lib389/lib389/cli_idm/__init__.py
+index e3622246d..1f3e2dc86 100644
+--- a/src/lib389/lib389/cli_idm/__init__.py
++++ b/src/lib389/lib389/cli_idm/__init__.py
+@@ -52,8 +52,8 @@ def _get_args(args, kws):
+     return kwargs
+ 
+ 
+-def _get_basedn_arg(inst, args, log, msg=None):
+-    basedn_arg = _get_dn_arg(args.basedn, msg="Enter basedn")
++def _get_basedn_arg(inst, args, basedn, log, msg=None):
++    basedn_arg = _get_dn_arg(basedn, msg="Enter basedn")
+     if not DSLdapObject(inst, basedn_arg).exists():
+         raise ValueError(f'The base DN "{basedn_arg}" does not exist.')
+ 
+-- 
+2.48.1
+

@@ -1,0 +1,319 @@
+From 7d534efdcd96b13524dae587c3c5994ed01924ab Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Fri, 16 Feb 2024 13:52:36 -0800
+Subject: [PATCH] Issue 6067 - Improve dsidm CLI No Such Entry handling (#6079)
+
+Description: Add additional error processing to dsidm CLI tool for when basedn
+or OU subentries are absent.
+
+Related: https://github.com/389ds/389-ds-base/issues/6067
+
+Reviewed by: @vashirov (Thanks!)
+---
+ src/lib389/cli/dsidm                  | 21 ++++++++-------
+ src/lib389/lib389/cli_idm/__init__.py | 38 ++++++++++++++++++++++++++-
+ src/lib389/lib389/cli_idm/account.py  |  4 +--
+ src/lib389/lib389/cli_idm/service.py  |  4 ++-
+ src/lib389/lib389/idm/group.py        | 10 ++++---
+ src/lib389/lib389/idm/posixgroup.py   |  5 ++--
+ src/lib389/lib389/idm/services.py     |  5 ++--
+ src/lib389/lib389/idm/user.py         |  5 ++--
+ 8 files changed, 67 insertions(+), 25 deletions(-)
+
+diff --git a/src/lib389/cli/dsidm b/src/lib389/cli/dsidm
+index 1b739b103..970973f4f 100755
+--- a/src/lib389/cli/dsidm
++++ b/src/lib389/cli/dsidm
+@@ -2,7 +2,7 @@
+ 
+ # --- BEGIN COPYRIGHT BLOCK ---
+ # Copyright (C) 2016, William Brown <william at blackhats.net.au>
+-# Copyright (C) 2023 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -19,6 +19,7 @@ import argparse
+ import argcomplete
+ from lib389.utils import get_instance_list, instance_choices
+ from lib389._constants import DSRC_HOME
++from lib389.cli_idm import _get_basedn_arg
+ from lib389.cli_idm import account as cli_account
+ from lib389.cli_idm import initialise as cli_init
+ from lib389.cli_idm import organizationalunit as cli_ou
+@@ -117,14 +118,6 @@ if __name__ == '__main__':
+             parser.print_help()
+         sys.exit(1)
+ 
+-    if dsrc_inst['basedn'] is None:
+-        errmsg = "Must provide a basedn!"
+-        if args.json:
+-            sys.stderr.write('{"desc": "%s"}\n' % errmsg)
+-        else:
+-            log.error(errmsg)
+-        sys.exit(1)
+-
+     if not args.verbose:
+         signal.signal(signal.SIGINT, signal_handler)
+ 
+@@ -135,7 +128,15 @@ if __name__ == '__main__':
+     result = False
+     try:
+         inst = connect_instance(dsrc_inst=dsrc_inst, verbose=args.verbose, args=args)
+-        result = args.func(inst, dsrc_inst['basedn'], log, args)
++        basedn = _get_basedn_arg(inst, args, log, msg="Enter basedn")
++        if basedn is None:
++            errmsg = "Must provide a basedn!"
++            if args.json:
++                sys.stderr.write('{"desc": "%s"}\n' % errmsg)
++            else:
++                log.error(errmsg)
++            sys.exit(1)
++        result = args.func(inst, basedn, log, args)
+         if args.verbose:
+             log.info("Command successful.")
+     except Exception as e:
+diff --git a/src/lib389/lib389/cli_idm/__init__.py b/src/lib389/lib389/cli_idm/__init__.py
+index 0dab54847..e3622246d 100644
+--- a/src/lib389/lib389/cli_idm/__init__.py
++++ b/src/lib389/lib389/cli_idm/__init__.py
+@@ -1,15 +1,30 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+ # Copyright (C) 2016, William Brown <william at blackhats.net.au>
+-# Copyright (C) 2023 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+ # See LICENSE for details.
+ # --- END COPYRIGHT BLOCK ---
+ 
++import sys
+ import ldap
+ from getpass import getpass
+ import json
++from lib389._mapped_object import DSLdapObject
++from lib389.cli_base import _get_dn_arg
++from lib389.idm.user import DEFAULT_BASEDN_RDN as DEFAULT_BASEDN_RDN_USER
++from lib389.idm.group import DEFAULT_BASEDN_RDN as DEFAULT_BASEDN_RDN_GROUP
++from lib389.idm.posixgroup import DEFAULT_BASEDN_RDN as DEFAULT_BASEDN_RDN_POSIXGROUP
++from lib389.idm.services import DEFAULT_BASEDN_RDN as DEFAULT_BASEDN_RDN_SERVICES
++
++# The key is module name, the value is default RDN
++BASEDN_RDNS = {
++    'user': DEFAULT_BASEDN_RDN_USER,
++    'group': DEFAULT_BASEDN_RDN_GROUP,
++    'posixgroup': DEFAULT_BASEDN_RDN_POSIXGROUP,
++    'service': DEFAULT_BASEDN_RDN_SERVICES,
++}
+ 
+ 
+ def _get_arg(args, msg=None):
+@@ -37,6 +52,27 @@ def _get_args(args, kws):
+     return kwargs
+ 
+ 
++def _get_basedn_arg(inst, args, log, msg=None):
++    basedn_arg = _get_dn_arg(args.basedn, msg="Enter basedn")
++    if not DSLdapObject(inst, basedn_arg).exists():
++        raise ValueError(f'The base DN "{basedn_arg}" does not exist.')
++
++    # Get the RDN based on the last part of the module name if applicable
++    # (lib389.cli_idm.user -> user)
++    try:
++        command_name = args.func.__module__.split('.')[-1]
++        object_rdn = BASEDN_RDNS[command_name]
++        # Check if the DN for our command exists
++        command_basedn = f'{object_rdn},{basedn_arg}'
++        if not DSLdapObject(inst, command_basedn).exists():
++            errmsg = f'The DN "{command_basedn}" does not exist.'
++            errmsg += f' It is required for "{command_name}" subcommand. Please create it first.'
++            raise ValueError(errmsg)
++    except KeyError:
++        pass
++    return basedn_arg
++
++
+ # This is really similar to get_args, but generates from an array
+ def _get_attributes(args, attrs):
+     kwargs = {}
+diff --git a/src/lib389/lib389/cli_idm/account.py b/src/lib389/lib389/cli_idm/account.py
+index 5d7b9cc77..15f766588 100644
+--- a/src/lib389/lib389/cli_idm/account.py
++++ b/src/lib389/lib389/cli_idm/account.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2023, Red Hat inc,
++# Copyright (C) 2024, Red Hat inc,
+ # Copyright (C) 2018, William Brown <william@blackhats.net.au>
+ # All rights reserved.
+ #
+@@ -91,7 +91,6 @@ def entry_status(inst, basedn, log, args):
+ 
+ 
+ def subtree_status(inst, basedn, log, args):
+-    basedn = _get_dn_arg(args.basedn, msg="Enter basedn to check")
+     filter = ""
+     scope = ldap.SCOPE_SUBTREE
+     epoch_inactive_time = None
+@@ -121,7 +120,6 @@ def subtree_status(inst, basedn, log, args):
+ 
+ 
+ def bulk_update(inst, basedn, log, args):
+-    basedn = _get_dn_arg(args.basedn, msg="Enter basedn to search")
+     search_filter = "(objectclass=*)"
+     scope = ldap.SCOPE_SUBTREE
+     scope_str = "sub"
+diff --git a/src/lib389/lib389/cli_idm/service.py b/src/lib389/lib389/cli_idm/service.py
+index c62fc12d1..c2b2c8c84 100644
+--- a/src/lib389/lib389/cli_idm/service.py
++++ b/src/lib389/lib389/cli_idm/service.py
+@@ -57,7 +57,9 @@ def rename(inst, basedn, log, args, warn=True):
+     _generic_rename(inst, basedn, log.getChild('_generic_rename'), MANY, rdn, args)
+ 
+ def create_parser(subparsers):
+-    service_parser = subparsers.add_parser('service', help='Manage service accounts', formatter_class=CustomHelpFormatter)
++    service_parser = subparsers.add_parser('service',
++                                           help='Manage service accounts. The organizationalUnit (by default "ou=Services") '
++                                                'needs to exist prior to managing service accounts.', formatter_class=CustomHelpFormatter)
+ 
+     subcommands = service_parser.add_subparsers(help='action')
+ 
+diff --git a/src/lib389/lib389/idm/group.py b/src/lib389/lib389/idm/group.py
+index 1b60a1f51..2cf2c7b23 100644
+--- a/src/lib389/lib389/idm/group.py
++++ b/src/lib389/lib389/idm/group.py
+@@ -1,6 +1,6 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+ # Copyright (C) 2016, William Brown <william at blackhats.net.au>
+-# Copyright (C) 2023 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -16,6 +16,8 @@ MUST_ATTRIBUTES = [
+     'cn',
+ ]
+ RDN = 'cn'
++DEFAULT_BASEDN_RDN = 'ou=Groups'
++DEFAULT_BASEDN_RDN_ADMIN_GROUPS = 'ou=People'
+ 
+ 
+ class Group(DSLdapObject):
+@@ -93,7 +95,7 @@ class Groups(DSLdapObjects):
+     :type basedn: str
+     """
+ 
+-    def __init__(self, instance, basedn, rdn='ou=Groups'):
++    def __init__(self, instance, basedn, rdn=DEFAULT_BASEDN_RDN):
+         super(Groups, self).__init__(instance)
+         self._objectclasses = [
+             'groupOfNames',
+@@ -140,7 +142,7 @@ class UniqueGroup(DSLdapObject):
+ class UniqueGroups(DSLdapObjects):
+     # WARNING!!!
+     # Use group, not unique group!!!
+-    def __init__(self, instance, basedn, rdn='ou=Groups'):
++    def __init__(self, instance, basedn, rdn=DEFAULT_BASEDN_RDN):
+         super(UniqueGroups, self).__init__(instance)
+         self._objectclasses = [
+             'groupOfUniqueNames',
+@@ -203,7 +205,7 @@ class nsAdminGroups(DSLdapObjects):
+     :type rdn: str
+     """
+ 
+-    def __init__(self, instance, basedn, rdn='ou=People'):
++    def __init__(self, instance, basedn, rdn=DEFAULT_BASEDN_RDN_ADMIN_GROUPS):
+         super(nsAdminGroups, self).__init__(instance)
+         self._objectclasses = [
+             'nsAdminGroup'
+diff --git a/src/lib389/lib389/idm/posixgroup.py b/src/lib389/lib389/idm/posixgroup.py
+index d1debcf12..45735c579 100644
+--- a/src/lib389/lib389/idm/posixgroup.py
++++ b/src/lib389/lib389/idm/posixgroup.py
+@@ -1,6 +1,6 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+ # Copyright (C) 2016, William Brown <william at blackhats.net.au>
+-# Copyright (C) 2023 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -17,6 +17,7 @@ MUST_ATTRIBUTES = [
+     'gidNumber',
+ ]
+ RDN = 'cn'
++DEFAULT_BASEDN_RDN = 'ou=Groups'
+ 
+ 
+ class PosixGroup(DSLdapObject):
+@@ -72,7 +73,7 @@ class PosixGroups(DSLdapObjects):
+     :type basedn: str
+     """
+ 
+-    def __init__(self, instance, basedn, rdn='ou=Groups'):
++    def __init__(self, instance, basedn, rdn=DEFAULT_BASEDN_RDN):
+         super(PosixGroups, self).__init__(instance)
+         self._objectclasses = [
+             'groupOfNames',
+diff --git a/src/lib389/lib389/idm/services.py b/src/lib389/lib389/idm/services.py
+index d1e5b4693..e750a32c4 100644
+--- a/src/lib389/lib389/idm/services.py
++++ b/src/lib389/lib389/idm/services.py
+@@ -1,6 +1,6 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+ # Copyright (C) 2016, William Brown <william at blackhats.net.au>
+-# Copyright (C) 2021 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -16,6 +16,7 @@ RDN = 'cn'
+ MUST_ATTRIBUTES = [
+     'cn',
+ ]
++DEFAULT_BASEDN_RDN = 'ou=Services'
+ 
+ class ServiceAccount(Account):
+     """A single instance of Service entry
+@@ -59,7 +60,7 @@ class ServiceAccounts(DSLdapObjects):
+     :type basedn: str
+     """
+ 
+-    def __init__(self, instance, basedn, rdn='ou=Services'):
++    def __init__(self, instance, basedn, rdn=DEFAULT_BASEDN_RDN):
+         super(ServiceAccounts, self).__init__(instance)
+         self._objectclasses = [
+             'applicationProcess',
+diff --git a/src/lib389/lib389/idm/user.py b/src/lib389/lib389/idm/user.py
+index 1206a6e08..3b21ccf1c 100644
+--- a/src/lib389/lib389/idm/user.py
++++ b/src/lib389/lib389/idm/user.py
+@@ -1,6 +1,6 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+ # Copyright (C) 2016, William Brown <william at blackhats.net.au>
+-# Copyright (C) 2023 Red Hat, Inc.
++# Copyright (C) 2024 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -23,6 +23,7 @@ MUST_ATTRIBUTES = [
+     'homeDirectory',
+ ]
+ RDN = 'uid'
++DEFAULT_BASEDN_RDN = 'ou=People'
+ 
+ TEST_USER_PROPERTIES = {
+     'uid': 'testuser',
+@@ -201,7 +202,7 @@ class UserAccounts(DSLdapObjects):
+     :type rdn: str
+     """
+ 
+-    def __init__(self, instance, basedn, rdn='ou=People'):
++    def __init__(self, instance, basedn, rdn=DEFAULT_BASEDN_RDN):
+         super(UserAccounts, self).__init__(instance)
+         self._objectclasses = [
+             'account',
+-- 
+2.48.1
+
