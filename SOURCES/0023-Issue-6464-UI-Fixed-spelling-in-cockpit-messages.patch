@@ -1,0 +1,701 @@
+From 626fa9af91b28a39d662678c94c5475a46a2280b Mon Sep 17 00:00:00 2001
+From: Mike Weinberg <5876158+mikeweinberg@users.noreply.github.com>
+Date: Tue, 24 Dec 2024 21:41:59 -0500
+Subject: [PATCH] Issue 6464 - UI - Fixed spelling in cockpit messages
+
+Description:
+I used typos-cli to assist in correcting more spelling errors in cockpit 389-console.
+I focused only on messages displayed to users in the cockpit project.
+I also attempted to fix the Japanese translation file so it wouldn't break.
+
+Relates: https://github.com/389ds/389-ds-base/issues/6464
+
+Reviewed by: @droideck
+---
+ src/cockpit/389-console/po/ja.po              | 52 +++++++++----------
+ src/cockpit/389-console/src/database.jsx      |  2 +-
+ src/cockpit/389-console/src/dsModals.jsx      |  4 +-
+ .../src/lib/database/databaseConfig.jsx       |  2 +-
+ .../src/lib/database/databaseModal.jsx        |  2 +-
+ .../src/lib/database/globalPwp.jsx            |  2 +-
+ .../389-console/src/lib/database/indexes.jsx  |  4 +-
+ .../389-console/src/lib/database/localPwp.jsx |  4 +-
+ .../ldap_editor/wizards/operations/aciNew.jsx |  2 +-
+ .../wizards/operations/addCosDefinition.jsx   |  4 +-
+ .../src/lib/monitor/monitorModals.jsx         |  2 +-
+ .../src/lib/monitor/replMonitor.jsx           |  2 +-
+ .../389-console/src/lib/plugins/memberOf.jsx  |  2 +-
+ .../src/lib/plugins/pamPassThru.jsx           | 10 ++--
+ .../lib/plugins/passthroughAuthentication.jsx |  6 +--
+ .../389-console/src/lib/plugins/usn.jsx       |  2 +-
+ .../src/lib/replication/replConfig.jsx        |  2 +-
+ .../src/lib/replication/replModals.jsx        |  4 +-
+ .../src/lib/replication/replTasks.jsx         |  6 +--
+ .../lib/security/certificateManagement.jsx    |  8 +--
+ .../src/lib/security/securityModals.jsx       |  4 +-
+ src/cockpit/389-console/src/schema.jsx        |  6 +--
+ 22 files changed, 66 insertions(+), 66 deletions(-)
+
+diff --git a/src/cockpit/389-console/po/ja.po b/src/cockpit/389-console/po/ja.po
+index 444857f55..b4085518a 100644
+--- a/src/cockpit/389-console/po/ja.po
++++ b/src/cockpit/389-console/po/ja.po
+@@ -285,7 +285,7 @@ msgstr "接続名"
+ 
+ #: src/lib/monitor/monitorModals.jsx:634
+ msgid ""
+-"Bind password for the specified instance.  You can also speciy a password "
++"Bind password for the specified instance.  You can also specify a password "
+ "file but the filename needs to be inside of brackets [/PATH/FILE]"
+ msgstr ""
+ "指定されたインスタンスのバインドパスワードを入力してください。または、パス"
+@@ -1813,9 +1813,9 @@ msgstr "レプリカDSRC情報を読み込んでいます ..."
+ 
+ #: src/lib/monitor/replMonitor.jsx:1501
+ msgid ""
+-"Only one monitor configuraton can be saved in the server's '~/.dsrc' file.  "
++"Only one monitor configuration can be saved in the server's '~/.dsrc' file.  "
+ "There is already an existing monitor configuration, and if you proceed it "
+-"will be completely overwritten with the new configuraton."
++"will be completely overwritten with the new configuration."
+ msgstr ""
+ "サーバの '~/.dsrc' ファイルに保存できる監視設定は1つだけです。すでに既存"
+ "の監視設定がありますが、このまま進むと新しい設定で完全に上書きされます。"
+@@ -3361,7 +3361,7 @@ msgid "Suffix is required."
+ msgstr "サフィックスが必要です。"
+ 
+ #: src/lib/plugins/usn.jsx:221
+-msgid "Cleanup USN Tombstones task was successfull"
++msgid "Cleanup USN Tombstones task was successful"
+ msgstr "USN Tombstonesのクリーンアップタスクが正常に終了しました"
+ 
+ #: src/lib/plugins/usn.jsx:232
+@@ -3584,7 +3584,7 @@ msgid "Fixup DN is required."
+ msgstr "修正DNは必須です。"
+ 
+ #: src/lib/plugins/memberOf.jsx:624
+-msgid "Fixup task for $0 was successfull"
++msgid "Fixup task for $0 was successful"
+ msgstr "$0 の修正タスクが成功しました"
+ 
+ #: src/lib/plugins/memberOf.jsx:780
+@@ -4320,7 +4320,7 @@ msgid "Error during the pamConfig entry $0 operation - $1"
+ msgstr "pamConfigエントリの$0に失敗しました - $1"
+ 
+ #: src/lib/plugins/pamPassThru.jsx:651
+-msgid "$0 PAM Passthough Auth Config Entry"
++msgid "$0 PAM Passthrough Auth Config Entry"
+ msgstr "PAMパススルー認証の設定を$0"
+ 
+ #: src/lib/plugins/pamPassThru.jsx:702
+@@ -4708,7 +4708,7 @@ msgstr "サフィックスの作成"
+ #: src/lib/database/databaseModal.jsx:286
+ msgid ""
+ "Database suffix, like 'dc=example,dc=com'.  The suffix must be a valid LDAP "
+-"Distiguished Name (DN)"
++"Distinguished Name (DN)"
+ msgstr ""
+ "データベースのサフィックスは 'dc=example,dc=com' のようなものです。サフィック"
+ "スは有効なLDAPの識別名(DN)でなければなりません。"
+@@ -5466,7 +5466,7 @@ msgstr "パスワードの有効期限を設定する"
+ #: src/lib/database/localPwp.jsx:349 src/lib/database/localPwp.jsx:2732
+ #: src/lib/database/globalPwp.jsx:1176
+ msgid ""
+-"The maxiumum age of a password in seconds before it expires (passwordMaxAge)."
++"The maximum age of a password in seconds before it expires (passwordMaxAge)."
+ msgstr "パスワードの有効期限の最大値を秒単位で指定します。(passwordMaxAge)"
+ 
+ #: src/lib/database/localPwp.jsx:353 src/lib/database/localPwp.jsx:2734
+@@ -6821,7 +6821,7 @@ msgid "Index Types"
+ msgstr "インデックスタイプ"
+ 
+ #: src/lib/database/indexes.jsx:875 src/lib/database/indexes.jsx:1015
+-msgid "Equailty Indexing"
++msgid "Equality Indexing"
+ msgstr "等価性インデックス化"
+ 
+ #: src/lib/database/indexes.jsx:887 src/lib/database/indexes.jsx:1025
+@@ -7689,7 +7689,7 @@ msgstr "バインドDNグループ"
+ 
+ #: src/lib/replication/replConfig.jsx:630
+ msgid ""
+-"The interval to check for any changes in the group memebrship specified in "
++"The interval to check for any changes in the group membership specified in "
+ "the Bind DN Group and automatically rebuilds the list for the replication "
+ "managers accordingly.  (nsds5replicabinddngroupcheckinterval)."
+ msgstr ""
+@@ -7853,7 +7853,7 @@ msgid "Local RUV"
+ msgstr "ローカルRUV"
+ 
+ #: src/lib/replication/replTasks.jsx:365
+-msgid "RRefresh the RUV for this suffixs"
++msgid "Refresh the RUV for this suffix"
+ msgstr "このサフィックスのRUVを更新します"
+ 
+ #: src/lib/replication/replTasks.jsx:375 src/lib/replication/replTables.jsx:290
+@@ -7861,7 +7861,7 @@ msgid "Remote RUV's"
+ msgstr "リモートRUV"
+ 
+ #: src/lib/replication/replTasks.jsx:379
+-msgid "Refresh the remote RUVs for this suffixs"
++msgid "Refresh the remote RUVs for this suffix"
+ msgstr "このサフィックスのリモートRUVを更新します"
+ 
+ #: src/lib/replication/replTasks.jsx:394
+@@ -8330,7 +8330,7 @@ msgstr "スケジュール"
+ #: src/lib/replication/replModals.jsx:1402
+ msgid ""
+ "By default replication updates are sent to the replica as soon as possible, "
+-"but if there is a need for replication updates to only be sent on certains "
++"but if there is a need for replication updates to only be sent on certain "
+ "days and within certain windows of time then you can setup a custom "
+ "replication schedule."
+ msgstr ""
+@@ -9823,7 +9823,7 @@ msgid "User DN Aliases (userdn)"
+ msgstr "ユーザDNエイリアス"
+ 
+ #: src/lib/ldap_editor/wizards/operations/aciNew.jsx:1470
+-msgid "Special bind rules for user DN catagories"
++msgid "Special bind rules for user DN categories"
+ msgstr "ユーザDNカテゴリに特別なバインドルールを設定"
+ 
+ #: src/lib/ldap_editor/wizards/operations/aciNew.jsx:1473
+@@ -10114,15 +10114,15 @@ msgid "Choose The New CoS Template Parent DN"
+ msgstr "新しいCoSテンプレートの親DNを選択してください"
+ 
+ #: src/lib/ldap_editor/wizards/operations/addCosDefinition.jsx:992
+-msgid "Leaving CoS Definiton Creation Wizard"
++msgid "Leaving CoS Definition Creation Wizard"
+ msgstr "CoS定義作成ウィザードを終了します"
+ 
+ #: src/lib/ldap_editor/wizards/operations/addCosDefinition.jsx:1004
+ msgid ""
+-"You are about to leave CoS Definiton creation wizard. After you click "
++"You are about to leave CoS Definition creation wizard. After you click "
+ "'Confirm', you'll appear in CoS Template creation wizard and you won't able "
+ "to return from there until the process is finished. Then you'll be able to "
+-"use the created entry in the CoS definiton creation. It'll be preselected "
++"use the created entry in the CoS definition creation. It'll be preselected "
+ "for you automatically."
+ msgstr ""
+ "CoS定義作成ウィザードを終了し、CoSテンプレート作成ウィザードに移動します。移"
+@@ -11644,11 +11644,11 @@ msgid "Upload PEM File"
+ msgstr "PEMファイルをアップロード"
+ 
+ #: src/lib/security/securityModals.jsx:290
+-msgid "Choose a cerificate from the server's certificate directory"
++msgid "Choose a certificate from the server's certificate directory"
+ msgstr "サーバの証明書ディレクトリから証明書を選択してください"
+ 
+ #: src/lib/security/securityModals.jsx:294
+-msgid "Choose Cerificate From Server"
++msgid "Choose Certificate From Server"
+ msgstr "サーバから証明書を選択"
+ 
+ #: src/lib/security/securityModals.jsx:313
+@@ -12004,7 +12004,7 @@ msgid "Loading Certificates ..."
+ msgstr "証明書を読み込んでいます..."
+ 
+ #: src/lib/security/certificateManagement.jsx:1245
+-msgid "Trusted Certificate Authorites"
++msgid "Trusted Certificate Authorities"
+ msgstr "信頼された認証局"
+ 
+ #: src/lib/security/certificateManagement.jsx:1261
+@@ -12075,7 +12075,7 @@ msgstr "警告 - CA証明書のプロパティを変更しています"
+ 
+ #: src/lib/security/certificateManagement.jsx:1466
+ msgid ""
+-"Removing the 'C' or 'T' flags from the SSL trust catagory could break all "
++"Removing the 'C' or 'T' flags from the SSL trust category could break all "
+ "TLS connectivity to and from the server, are you sure you want to proceed?"
+ msgstr ""
+ "SSL信頼カテゴリから 'C' または 'T' フラグを削除すると、サーバとのすべてのTLS"
+@@ -14119,7 +14119,7 @@ msgstr "サフィックスDN"
+ #: src/database.jsx:1431
+ msgid ""
+ "Database suffix, like 'dc=example,dc=com'.  The suffix must be a valid LDAP "
+-"Distiguished Name (DN)."
++"Distinguished Name (DN)."
+ msgstr ""
+ "'dc=example,dc=com'のようなデータベースサフィックスを設定します。サフィックス"
+ "には有効なLDAP識別名(DN)を設定してください。"
+@@ -14406,7 +14406,7 @@ msgstr "データベースを作成する"
+ #: src/dsModals.jsx:559
+ msgid ""
+ "Database suffix, like 'dc=example,dc=com'. The suffix must be a valid LDAP "
+-"Distiguished Name (DN)"
++"Distinguished Name (DN)"
+ msgstr ""
+ "'dc=example,dc=com'のようなデータベースサフィックスを設定します。サフィックス"
+ "には有効なLDAP識別名(DN)を設定してください。"
+@@ -14807,7 +14807,7 @@ msgid "ObjectClass Name is required."
+ msgstr "オブジェクトクラス名は必須です。"
+ 
+ #: src/schema.jsx:764
+-msgid "ObjectClass $0 - $1 operation was successfull"
++msgid "ObjectClass $0 - $1 operation was successful"
+ msgstr "オブジェクトクラス $0 の $1 を行いました"
+ 
+ #: src/schema.jsx:779
+@@ -14823,7 +14823,7 @@ msgid "Error during Attribute removal operation - $0"
+ msgstr "属性の削除に失敗しました - $0"
+ 
+ #: src/schema.jsx:1081
+-msgid "Attribute $0 - add operation was successfull"
++msgid "Attribute $0 - add operation was successful"
+ msgstr "属性 $0 を追加しました"
+ 
+ #: src/schema.jsx:1096
+@@ -14831,7 +14831,7 @@ msgid "Error during the Attribute add operation - $0"
+ msgstr "属性の追加に失敗しました - $0"
+ 
+ #: src/schema.jsx:1192
+-msgid "Attribute $0 - replace operation was successfull"
++msgid "Attribute $0 - replace operation was successful"
+ msgstr "属性 $0 を置き換えました"
+ 
+ #: src/schema.jsx:1207
+diff --git a/src/cockpit/389-console/src/database.jsx b/src/cockpit/389-console/src/database.jsx
+index 509f7105c..c0c4be414 100644
+--- a/src/cockpit/389-console/src/database.jsx
++++ b/src/cockpit/389-console/src/database.jsx
+@@ -1487,7 +1487,7 @@ class CreateSuffixModal extends React.Component {
+                     <FormGroup
+                         label={_("Suffix DN")}
+                         fieldId="createSuffix"
+-                        title={_("Database suffix, like 'dc=example,dc=com'.  The suffix must be a valid LDAP Distiguished Name (DN).")}
++                        title={_("Database suffix, like 'dc=example,dc=com'.  The suffix must be a valid LDAP Distinguished Name (DN).")}
+                     >
+                         <TextInput
+                             isRequired
+diff --git a/src/cockpit/389-console/src/dsModals.jsx b/src/cockpit/389-console/src/dsModals.jsx
+index bf19ce144..367cf4759 100644
+--- a/src/cockpit/389-console/src/dsModals.jsx
++++ b/src/cockpit/389-console/src/dsModals.jsx
+@@ -324,7 +324,7 @@ export class CreateInstanceModal extends React.Component {
+                                                                 })
+                                                                 .done(() => {
+                                                                     // Success!!!  Now set Root DN pw, and cleanup everything up...
+-                                                                    log_cmd("handleCreateInstance", "Instance creation compelete, remove INF file...", rm_cmd);
++                                                                    log_cmd("handleCreateInstance", "Instance creation complete, remove INF file...", rm_cmd);
+                                                                     cockpit.spawn(rm_cmd, { superuser: true });
+ 
+                                                                     const dm_pw_cmd = ['dsconf', '-j', 'ldapi://%2fvar%2frun%2fslapd-' + newServerId + '.socket',
+@@ -585,7 +585,7 @@ export class CreateInstanceModal extends React.Component {
+                             />
+                         </Grid>
+                         <div className={createDBCheckbox ? "" : "ds-hidden"}>
+-                            <Grid title={_("Database suffix, like 'dc=example,dc=com'. The suffix must be a valid LDAP Distiguished Name (DN)")}>
++                            <Grid title={_("Database suffix, like 'dc=example,dc=com'. The suffix must be a valid LDAP Distinguished Name (DN)")}>
+                                 <GridItem className="ds-label" offset={1} span={3}>
+                                     {_("Database Suffix")}
+                                 </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/database/databaseConfig.jsx b/src/cockpit/389-console/src/lib/database/databaseConfig.jsx
+index 52a2cf2df..4c7fce706 100644
+--- a/src/cockpit/389-console/src/lib/database/databaseConfig.jsx
++++ b/src/cockpit/389-console/src/lib/database/databaseConfig.jsx
+@@ -1692,7 +1692,7 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                         </GridItem>
+                                     </Grid>
+                                     <Grid
+-                                        title={_("The maximun number of read transactions that can be opened simultaneously. A value of 0 means this value is computed by the server (nsslapd-mdb-max-readers).")}
++                                        title={_("The maximum number of read transactions that can be opened simultaneously. A value of 0 means this value is computed by the server (nsslapd-mdb-max-readers).")}
+                                         className="ds-margin-top-xlg"
+                                     >
+                                         <GridItem className="ds-label" span={4}>
+diff --git a/src/cockpit/389-console/src/lib/database/databaseModal.jsx b/src/cockpit/389-console/src/lib/database/databaseModal.jsx
+index 8d668494e..2edf42b4b 100644
+--- a/src/cockpit/389-console/src/lib/database/databaseModal.jsx
++++ b/src/cockpit/389-console/src/lib/database/databaseModal.jsx
+@@ -284,7 +284,7 @@ class CreateSubSuffixModal extends React.Component {
+                 ]}
+             >
+                 <Form isHorizontal autoComplete="off">
+-                    <Grid className="ds-margin-top" title={_("Database suffix, like 'dc=example,dc=com'.  The suffix must be a valid LDAP Distiguished Name (DN)")}>
++                    <Grid className="ds-margin-top" title={_("Database suffix, like 'dc=example,dc=com'.  The suffix must be a valid LDAP Distinguished Name (DN)")}>
+                         <GridItem className="ds-label" span={3}>
+                             {_("Sub-Suffix DN")}
+                         </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/database/globalPwp.jsx b/src/cockpit/389-console/src/lib/database/globalPwp.jsx
+index 67a0358ad..17a34bbf4 100644
+--- a/src/cockpit/389-console/src/lib/database/globalPwp.jsx
++++ b/src/cockpit/389-console/src/lib/database/globalPwp.jsx
+@@ -1334,7 +1334,7 @@ export class GlobalPwPolicy extends React.Component {
+         if (this.state.passwordexp) {
+             pwExpirationRows = (
+                 <div className="ds-margin-left">
+-                    <Grid className="ds-margin-top" title={_("The maxiumum age of a password in seconds before it expires (passwordMaxAge).")}>
++                    <Grid className="ds-margin-top" title={_("The maximum age of a password in seconds before it expires (passwordMaxAge).")}>
+                         <GridItem className="ds-label" span={5}>
+                             {_("Password Expiration Time")}
+                         </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/database/indexes.jsx b/src/cockpit/389-console/src/lib/database/indexes.jsx
+index 9af43722d..0d3492c22 100644
+--- a/src/cockpit/389-console/src/lib/database/indexes.jsx
++++ b/src/cockpit/389-console/src/lib/database/indexes.jsx
+@@ -872,7 +872,7 @@ class AddIndexModal extends React.Component {
+                                     onChange={(e, checked) => {
+                                         handleChange(e);
+                                     }}
+-                                    label={_("Equailty Indexing")}
++                                    label={_("Equality Indexing")}
+                                 />
+                             </GridItem>
+                         </Grid>
+@@ -1013,7 +1013,7 @@ class EditIndexModal extends React.Component {
+                 onChange={(e, checked) => {
+                     handleChange(e);
+                 }}
+-                label={_("Equailty Indexing")}
++                label={_("Equality Indexing")}
+                 />
+             </div>
+         );
+diff --git a/src/cockpit/389-console/src/lib/database/localPwp.jsx b/src/cockpit/389-console/src/lib/database/localPwp.jsx
+index 8586ba932..cb84be906 100644
+--- a/src/cockpit/389-console/src/lib/database/localPwp.jsx
++++ b/src/cockpit/389-console/src/lib/database/localPwp.jsx
+@@ -344,7 +344,7 @@ class CreatePolicy extends React.Component {
+                             </Grid>
+                             <div className="ds-left-indent">
+                                 <Grid
+-                                    title={_("The maxiumum age of a password in seconds before it expires (passwordMaxAge).")}
++                                    title={_("The maximum age of a password in seconds before it expires (passwordMaxAge).")}
+                                     className="ds-margin-top"
+                                 >
+                                     <GridItem className="ds-label" span={4}>
+@@ -2743,7 +2743,7 @@ export class LocalPwPolicy extends React.Component {
+         if (this.state.passwordexp) {
+             pwExpirationRows = (
+                 <div className="ds-margin-left">
+-                    <Grid className="ds-margin-top" title={_("The maxiumum age of a password in seconds before it expires (passwordMaxAge).")}>
++                    <Grid className="ds-margin-top" title={_("The maximum age of a password in seconds before it expires (passwordMaxAge).")}>
+                         <GridItem className="ds-label" span={5}>
+                             {_("Password Expiration Time")}
+                         </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx b/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx
+index 1ea66e809..eda2fe73e 100644
+--- a/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx
++++ b/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx
+@@ -1498,7 +1498,7 @@ class AddNewAci extends React.Component {
+                                         <FormSelectOption key="roledn" label={_("Role DN (roledn)")} value="roledn" title={_("Bind rules for Roles")} />
+                                     </>}
+                                 {!this.state.haveUserRules && !this.state.haveUserAttrRules &&
+-                                    <FormSelectOption key="special" label={_("User DN Aliases (userdn)")} value="User DN Aliases" title={_("Special bind rules for user DN catagories")} />}
++                                    <FormSelectOption key="special" label={_("User DN Aliases (userdn)")} value="User DN Aliases" title={_("Special bind rules for user DN categories")} />}
+                                 {!this.state.haveUserRules && !this.state.haveUserAttrRules &&
+                                     <FormSelectOption key="userattr" label={_("User Attribute (userattr)")} value="userattr" title={_("Bind rule to specify which attribute must match between the entry used to bind to the directory and the targeted entry")} />}
+                                 <FormSelectOption key="authmethod" label={_("Authentication Method (authmethod)")} value="authmethod" title={_("Specify the authentication methods to restrict")} />
+diff --git a/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/addCosDefinition.jsx b/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/addCosDefinition.jsx
+index 961f5030e..a08a4a468 100644
+--- a/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/addCosDefinition.jsx
++++ b/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/addCosDefinition.jsx
+@@ -999,7 +999,7 @@ class AddCosDefinition extends React.Component {
+                         </Modal>
+                         <Modal
+                             variant={ModalVariant.small}
+-                            title={_("Leaving CoS Definiton Creation Wizard")}
++                            title={_("Leaving CoS Definition Creation Wizard")}
+                             isOpen={this.state.isConfirmModalOpen}
+                             onClose={this.handleConfirmModalToggle}
+                             actions={[
+@@ -1011,7 +1011,7 @@ class AddCosDefinition extends React.Component {
+                                 </Button>
+                             ]}
+                         >
+-                            {_("You are about to leave CoS Definiton creation wizard. After you click 'Confirm', you'll appear in CoS Template creation wizard and you won't able to return from there until the process is finished. Then you'll be able to use the created entry in the CoS definiton creation. It'll be preselected for you automatically.")}
++                            {_("You are about to leave CoS Definition creation wizard. After you click 'Confirm', you'll appear in CoS Template creation wizard and you won't able to return from there until the process is finished. Then you'll be able to use the created entry in the CoS definition creation. It'll be preselected for you automatically.")}
+                         </Modal>
+                         <Modal
+                             variant={ModalVariant.medium}
+diff --git a/src/cockpit/389-console/src/lib/monitor/monitorModals.jsx b/src/cockpit/389-console/src/lib/monitor/monitorModals.jsx
+index 0e32a2193..7a65a9872 100644
+--- a/src/cockpit/389-console/src/lib/monitor/monitorModals.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/monitorModals.jsx
+@@ -630,7 +630,7 @@ class ReportConnectionModal extends React.Component {
+                                     />
+                                 </GridItem>
+                             </Grid>
+-                            <Grid title={_("Bind password for the specified instance.  You can also speciy a password file but the filename needs to be inside of brackets [/PATH/FILE]")}>
++                            <Grid title={_("Bind password for the specified instance.  You can also specify a password file but the filename needs to be inside of brackets [/PATH/FILE]")}>
+                                 <GridItem className="ds-label" span={3}>
+                                     {_("Password")}
+                                 </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/monitor/replMonitor.jsx b/src/cockpit/389-console/src/lib/monitor/replMonitor.jsx
+index c6d338b61..8fe4fe1d8 100644
+--- a/src/cockpit/389-console/src/lib/monitor/replMonitor.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/replMonitor.jsx
+@@ -1503,7 +1503,7 @@ export class ReplMonitor extends React.Component {
+         }
+ 
+         let overwriteWarning = (
+-            _("Only one monitor configuraton can be saved in the server's '~/.dsrc' file.  There is already an existing monitor configuration, and if you proceed it will be completely overwritten with the new configuraton."));
++            _("Only one monitor configuration can be saved in the server's '~/.dsrc' file.  There is already an existing monitor configuration, and if you proceed it will be completely overwritten with the new configuration."));
+         if (this.state.credRows.length === 0 && this.state.aliasRows.length === 0) {
+             overwriteWarning = (
+                 _("This will save the current credentials and aliases to the server's '~/.dsrc' file so it can be reused in the future."));
+diff --git a/src/cockpit/389-console/src/lib/plugins/memberOf.jsx b/src/cockpit/389-console/src/lib/plugins/memberOf.jsx
+index 704d6d0b1..00a334621 100644
+--- a/src/cockpit/389-console/src/lib/plugins/memberOf.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/memberOf.jsx
+@@ -648,7 +648,7 @@ class MemberOf extends React.Component {
+                     .done(content => {
+                         this.props.addNotification(
+                             "success",
+-                            cockpit.format(_("Fixup task for $0 was successfull"), this.state.fixupDN)
++                            cockpit.format(_("Fixup task for $0 was successful"), this.state.fixupDN)
+                         );
+                         this.props.toggleLoadingHandler();
+                         this.setState({
+diff --git a/src/cockpit/389-console/src/lib/plugins/pamPassThru.jsx b/src/cockpit/389-console/src/lib/plugins/pamPassThru.jsx
+index 9908694a9..288b4b533 100644
+--- a/src/cockpit/389-console/src/lib/plugins/pamPassThru.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/pamPassThru.jsx
+@@ -285,7 +285,7 @@ class PAMPassthroughAuthentication extends React.Component {
+             "list",
+         ];
+         this.props.toggleLoadingHandler();
+-        log_cmd("loadPAMConfigs", "Get PAM Passthough Authentication Plugin Configs", cmd);
++        log_cmd("loadPAMConfigs", "Get PAM Passthrough Authentication Plugin Configs", cmd);
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+@@ -348,7 +348,7 @@ class PAMPassthroughAuthentication extends React.Component {
+             this.props.toggleLoadingHandler();
+             log_cmd(
+                 "openModal",
+-                "Fetch the PAM Passthough Authentication Plugin pamConfig entry",
++                "Fetch the PAM Passthrough Authentication Plugin pamConfig entry",
+                 cmd
+             );
+             cockpit
+@@ -485,7 +485,7 @@ class PAMPassthroughAuthentication extends React.Component {
+         this.props.toggleLoadingHandler();
+         log_cmd(
+             "deletePAMConfig",
+-            "Delete the PAM Passthough Authentication Plugin pamConfig entry",
++            "Delete the PAM Passthrough Authentication Plugin pamConfig entry",
+             cmd
+         );
+         cockpit
+@@ -595,7 +595,7 @@ class PAMPassthroughAuthentication extends React.Component {
+         });
+         log_cmd(
+             "pamPassthroughAuthOperation",
+-            `Do the ${action} operation on the PAM Passthough Authentication Plugin`,
++            `Do the ${action} operation on the PAM Passthrough Authentication Plugin`,
+             cmd
+         );
+         cockpit
+@@ -649,7 +649,7 @@ class PAMPassthroughAuthentication extends React.Component {
+             extraPrimaryProps.spinnerAriaValueText = _("Saving");
+         }
+ 
+-        const title = cockpit.format(_("$0 PAM Passthough Auth Config Entry"), (newPAMConfigEntry ? _("Add") : _("Edit")));
++        const title = cockpit.format(_("$0 PAM Passthrough Auth Config Entry"), (newPAMConfigEntry ? _("Add") : _("Edit")));
+ 
+         return (
+             <div className={savingPAM ? "ds-disabled" : ""}>
+diff --git a/src/cockpit/389-console/src/lib/plugins/passthroughAuthentication.jsx b/src/cockpit/389-console/src/lib/plugins/passthroughAuthentication.jsx
+index 530039c1e..28e8c9ad0 100644
+--- a/src/cockpit/389-console/src/lib/plugins/passthroughAuthentication.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/passthroughAuthentication.jsx
+@@ -210,7 +210,7 @@ class PassthroughAuthentication extends React.Component {
+             "list"
+         ];
+         this.props.toggleLoadingHandler();
+-        log_cmd("loadURLs", "Get Passthough Authentication Plugin Configs", cmd);
++        log_cmd("loadURLs", "Get Passthrough Authentication Plugin Configs", cmd);
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+@@ -299,7 +299,7 @@ class PassthroughAuthentication extends React.Component {
+             modalSpinning: true
+         });
+ 
+-        log_cmd("deleteURL", "Delete the Passthough Authentication Plugin URL entry", cmd);
++        log_cmd("deleteURL", "Delete the Passthrough Authentication Plugin URL entry", cmd);
+         cockpit
+                 .spawn(cmd, {
+                     superuser: true,
+@@ -367,7 +367,7 @@ class PassthroughAuthentication extends React.Component {
+         });
+         log_cmd(
+             "PassthroughAuthOperation",
+-            `Do the ${action} operation on the Passthough Authentication Plugin`,
++            `Do the ${action} operation on the Passthrough Authentication Plugin`,
+             cmd
+         );
+         cockpit
+diff --git a/src/cockpit/389-console/src/lib/plugins/usn.jsx b/src/cockpit/389-console/src/lib/plugins/usn.jsx
+index b21bf126c..a7ade0675 100644
+--- a/src/cockpit/389-console/src/lib/plugins/usn.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/usn.jsx
+@@ -218,7 +218,7 @@ class USNPlugin extends React.Component {
+                     .done(content => {
+                         this.props.addNotification(
+                             "success",
+-                            _("Cleanup USN Tombstones task was successfull")
++                            _("Cleanup USN Tombstones task was successful")
+                         );
+                         this.props.toggleLoadingHandler();
+                         this.setState({
+diff --git a/src/cockpit/389-console/src/lib/replication/replConfig.jsx b/src/cockpit/389-console/src/lib/replication/replConfig.jsx
+index cc96cf530..902be1485 100644
+--- a/src/cockpit/389-console/src/lib/replication/replConfig.jsx
++++ b/src/cockpit/389-console/src/lib/replication/replConfig.jsx
+@@ -660,7 +660,7 @@ export class ReplConfig extends React.Component {
+                                     </GridItem>
+                                 </Grid>
+                                 <Grid
+-                                    title={_("The interval to check for any changes in the group memebrship specified in the Bind DN Group and automatically rebuilds the list for the replication managers accordingly.  (nsds5replicabinddngroupcheckinterval).")}
++                                    title={_("The interval to check for any changes in the group membership specified in the Bind DN Group and automatically rebuilds the list for the replication managers accordingly.  (nsds5replicabinddngroupcheckinterval).")}
+                                     className="ds-margin-top"
+                                 >
+                                     <GridItem className="ds-label" span={3}>
+diff --git a/src/cockpit/389-console/src/lib/replication/replModals.jsx b/src/cockpit/389-console/src/lib/replication/replModals.jsx
+index f6c623041..41ce1fbfb 100644
+--- a/src/cockpit/389-console/src/lib/replication/replModals.jsx
++++ b/src/cockpit/389-console/src/lib/replication/replModals.jsx
+@@ -661,7 +661,7 @@ export class WinsyncAgmtModal extends React.Component {
+                                     <GridItem span={12}>
+                                         <TextContent>
+                                             <Text component={TextVariants.h5}>
+-                                                {_("By default replication updates are sent to the replica as soon as possible, but if there is a need for replication updates to only be sent on certains days and within certain windows of time then you can setup a custom replication schedule.")}
++                                                {_("By default replication updates are sent to the replica as soon as possible, but if there is a need for replication updates to only be sent on certain days and within certain windows of time then you can setup a custom replication schedule.")}
+                                             </Text>
+                                         </TextContent>
+                                     </GridItem>
+@@ -1406,7 +1406,7 @@ export class ReplAgmtModal extends React.Component {
+                                     <GridItem span={12}>
+                                         <TextContent>
+                                             <Text component={TextVariants.h5}>
+-                                                {_("By default replication updates are sent to the replica as soon as possible, but if there is a need for replication updates to only be sent on certains days and within certain windows of time then you can setup a custom replication schedule.")}
++                                                {_("By default replication updates are sent to the replica as soon as possible, but if there is a need for replication updates to only be sent on certain days and within certain windows of time then you can setup a custom replication schedule.")}
+                                             </Text>
+                                         </TextContent>
+                                     </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/replication/replTasks.jsx b/src/cockpit/389-console/src/lib/replication/replTasks.jsx
+index 99646ae3b..f0c902198 100644
+--- a/src/cockpit/389-console/src/lib/replication/replTasks.jsx
++++ b/src/cockpit/389-console/src/lib/replication/replTasks.jsx
+@@ -359,7 +359,7 @@ export class ReplRUV extends React.Component {
+                         {_("Local RUV")}
+                         <Button 
+                             variant="plain"
+-                            aria-label={_("Refresh the RUV for this suffixs")}
++                            aria-label={_("Refresh the RUV for this suffix")}
+                             onClick={() => {
+                                 this.props.reload(this.props.suffix);
+                             }}
+@@ -374,7 +374,7 @@ export class ReplRUV extends React.Component {
+                         {_("Remote RUV's")}
+                         <Button 
+                             variant="plain"
+-                            aria-label={_("Refresh the remote RUVs for this suffixs")}
++                            aria-label={_("Refresh the remote RUVs for this suffix")}
+                             onClick={() => {
+                                 this.props.reload(this.props.suffix);
+                             }}
+@@ -456,7 +456,7 @@ export class ReplRUV extends React.Component {
+                     checked={this.state.modalChecked}
+                     mTitle={_("Initialize Replication Changelog From LDIF")}
+                     mMsg={_("Are you sure you want to attempt to initialize the changelog from LDIF?  This will reject all operations during during the initialization.")}
+-                    mSpinningMsg={_("Initialzing Replication Change Log ...")}
++                    mSpinningMsg={_("Initializing Replication Change Log ...")}
+                     mBtnName={_("Import Changelog LDIF")}
+                 />
+                 <ExportCLModal
+diff --git a/src/cockpit/389-console/src/lib/security/certificateManagement.jsx b/src/cockpit/389-console/src/lib/security/certificateManagement.jsx
+index edcfb301f..a24120225 100644
+--- a/src/cockpit/389-console/src/lib/security/certificateManagement.jsx
++++ b/src/cockpit/389-console/src/lib/security/certificateManagement.jsx
+@@ -523,7 +523,7 @@ export class CertificateManagement extends React.Component {
+                         });
+                         this.props.addNotification(
+                             "error",
+-                            cockpit.format(_("Faield to create temporary certificate file: $0"), err)
++                            cockpit.format(_("Failed to create temporary certificate file: $0"), err)
+                         );
+                     });
+         } else {
+@@ -1242,7 +1242,7 @@ export class CertificateManagement extends React.Component {
+         } else {
+             certificatePage = (
+                 <Tabs isBox isSecondary className="ds-margin-top-xlg ds-left-indent" activeKey={this.state.activeTabKey} onSelect={this.handleNavSelect}>
+-                    <Tab eventKey={0} title={<TabTitleText>{_("Trusted Certificate Authorites")} <font size="2">({this.state.CACerts.length})</font></TabTitleText>}>
++                    <Tab eventKey={0} title={<TabTitleText>{_("Trusted Certificate Authorities")} <font size="2">({this.state.CACerts.length})</font></TabTitleText>}>
+                         <div className="ds-margin-top-lg ds-left-indent">
+                             <CertTable
+                                 certs={this.state.CACerts}
+@@ -1297,7 +1297,7 @@ export class CertificateManagement extends React.Component {
+                                     this.showAddCSRModal();
+                                 }}
+                             >
+-                                {_("Create Certificate Sigining Request")}
++                                {_("Create Certificate Signing Request")}
+                             </Button>
+                         </div>
+                     </Tab>
+@@ -1464,7 +1464,7 @@ export class CertificateManagement extends React.Component {
+                     item={this.state.certName}
+                     checked={this.state.modalChecked}
+                     mTitle={_("Warning - Altering CA Certificate Properties")}
+-                    mMsg={_("Removing the 'C' or 'T' flags from the SSL trust catagory could break all TLS connectivity to and from the server, are you sure you want to proceed?")}
++                    mMsg={_("Removing the 'C' or 'T' flags from the SSL trust category could break all TLS connectivity to and from the server, are you sure you want to proceed?")}
+                     mSpinningMsg={_("Editing CA Certificate ...")}
+                     mBtnName={_("Change Trust Flags")}
+                 />
+diff --git a/src/cockpit/389-console/src/lib/security/securityModals.jsx b/src/cockpit/389-console/src/lib/security/securityModals.jsx
+index fcb9184c6..9f17e05c2 100644
+--- a/src/cockpit/389-console/src/lib/security/securityModals.jsx
++++ b/src/cockpit/389-console/src/lib/security/securityModals.jsx
+@@ -288,11 +288,11 @@ export class SecurityAddCertModal extends React.Component {
+                                     browseButtonText={_("Upload PEM File")}
+                                 />
+                             </div>
+-                            <div title={_("Choose a cerificate from the server's certificate directory")}>
++                            <div title={_("Choose a certificate from the server's certificate directory")}>
+                                 <Radio
+                                     id="certRadioSelect"
+                                     className="ds-margin-top-lg"
+-                                    label={_("Choose Cerificate From Server")}
++                                    label={_("Choose Certificate From Server")}
+                                     name="certChoice"
+                                     isChecked={certRadioSelect}
+                                     onChange={handleRadioChange}
+diff --git a/src/cockpit/389-console/src/schema.jsx b/src/cockpit/389-console/src/schema.jsx
+index 19854e785..8b7a6cda9 100644
+--- a/src/cockpit/389-console/src/schema.jsx
++++ b/src/cockpit/389-console/src/schema.jsx
+@@ -766,7 +766,7 @@ export class Schema extends React.Component {
+                         console.info("cmdOperationObjectclass", "Result", content);
+                         this.props.addNotification(
+                             "success",
+-                            cockpit.format(_("ObjectClass $0 - $1 operation was successfull"), ocName, action)
++                            cockpit.format(_("ObjectClass $0 - $1 operation was successful"), ocName, action)
+                         );
+                         this.loadSchemaData();
+                         this.closeObjectclassModal();
+@@ -1083,7 +1083,7 @@ export class Schema extends React.Component {
+                     console.info("cmdOperationAttribute", "Result", content);
+                     this.props.addNotification(
+                         "success",
+-                        cockpit.format(_("Attribute $0 - add operation was successfull"), atName)
++                        cockpit.format(_("Attribute $0 - add operation was successful"), atName)
+                     );
+                     this.loadSchemaData();
+                     this.closeAttributeModal();
+@@ -1194,7 +1194,7 @@ export class Schema extends React.Component {
+                     console.info("cmdOperationAttribute", "Result", content);
+                     this.props.addNotification(
+                         "success",
+-                        cockpit.format(_("Attribute $0 - replace operation was successfull"), atName)
++                        cockpit.format(_("Attribute $0 - replace operation was successful"), atName)
+                     );
+                     this.loadSchemaData();
+                     this.closeAttributeModal();
+-- 
+2.48.1
+

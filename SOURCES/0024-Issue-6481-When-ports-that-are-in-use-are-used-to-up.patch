@@ -1,0 +1,38 @@
+From 6e4c0d5e3fef215a6ae52662222551c3e8e4f78a Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Fri, 4 Apr 2025 09:09:34 +0000
+Subject: [PATCH] Issue 6481 - When ports that are in use are used to update a
+ DS instance the error message is not helpful (#6723)
+
+Bug description: The initial fix for this issue used sudo lsof to determineif
+a server port was in use. lsof is not installed by default and using sudo can
+ask for a password.
+
+Fix description: Use ss -ntplu (which is installed by default) to detect if a
+port is taken.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6481
+
+Fix Author:  Viktor Ashirov <vashirov@redhat.com>
+
+Reviewed by: @progier389 (Thank you)
+---
+ src/cockpit/389-console/src/lib/tools.jsx | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/cockpit/389-console/src/lib/tools.jsx b/src/cockpit/389-console/src/lib/tools.jsx
+index ba43bdd6c..384ed7862 100644
+--- a/src/cockpit/389-console/src/lib/tools.jsx
++++ b/src/cockpit/389-console/src/lib/tools.jsx
+@@ -221,7 +221,7 @@ export function is_port_in_use(port) {
+             return;
+         }
+ 
+-        let cmd = ['bash', '-c', `sudo lsof -i :${port} || echo "free"`];
++        let cmd = ['bash', '-c', `ss -ntplu | grep -w :${port} || echo "free"`];
+         log_cmd("is_port_in_use", cmd);
+ 
+         cockpit
+-- 
+2.48.1
+
