@@ -1,4 +1,4 @@
-From 39138128783d3e3cd337a6d6b01b19abbc7bb6de Mon Sep 17 00:00:00 2001
+From b2511553590f0d9b41856d8baff5f3cd103dd46f Mon Sep 17 00:00:00 2001
 From: tbordaz <tbordaz@redhat.com>
 Date: Thu, 6 Feb 2025 18:25:36 +0100
 Subject: [PATCH] Issue 6554 - During import of entries without nsUniqueId, a
@@ -27,7 +27,7 @@ Reviewed by: Pierre Rogier
  2 files changed, 89 insertions(+), 1 deletion(-)
 
 diff --git a/dirsrvtests/tests/suites/import/import_test.py b/dirsrvtests/tests/suites/import/import_test.py
-index 832a27cf6..6b6630133 100644
+index b7cba32fd..18caec633 100644
 --- a/dirsrvtests/tests/suites/import/import_test.py
 +++ b/dirsrvtests/tests/suites/import/import_test.py
 @@ -14,11 +14,13 @@ import os
@@ -45,8 +45,8 @@ index 832a27cf6..6b6630133 100644
  from lib389.dbgen import dbgen_users
  from lib389.tasks import ImportTask
  from lib389.index import Indexes
-@@ -627,6 +629,81 @@ def test_crash_on_ldif2db_with_lmdb(topo, _import_clean):
-     __check_for_core(now)
+@@ -690,6 +692,81 @@ def test_online_import_under_load(topo):
+     assert import_task.get_exit_code() == 0
  
  
 +def test_duplicate_nsuniqueid(topo_m2, request):
@@ -128,10 +128,10 @@ index 832a27cf6..6b6630133 100644
      # Run isolated
      # -s for DEBUG mode
 diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
-index 65f564aff..716e3c0f3 100644
+index 707a110c5..0f445bb56 100644
 --- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
 +++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
-@@ -606,10 +606,20 @@ dbmdb_import_generate_uniqueid(ImportJob *job, Slapi_Entry *e)
+@@ -610,10 +610,20 @@ dbmdb_import_generate_uniqueid(ImportJob *job, Slapi_Entry *e)
  {
      const char *uniqueid = slapi_entry_get_uniqueid(e);
      int rc = UID_SUCCESS;
@@ -152,7 +152,7 @@ index 65f564aff..716e3c0f3 100644
          /* generate id based on dn */
          if (job->uuid_gen_type == SLAPI_UNIQUEID_GENERATE_NAME_BASED) {
              char *dn = slapi_entry_get_dn(e);
-@@ -620,6 +630,7 @@ dbmdb_import_generate_uniqueid(ImportJob *job, Slapi_Entry *e)
+@@ -624,6 +634,7 @@ dbmdb_import_generate_uniqueid(ImportJob *job, Slapi_Entry *e)
              /* time based */
              rc = slapi_uniqueIDGenerateString(&newuniqueid);
          }
@@ -161,5 +161,5 @@ index 65f564aff..716e3c0f3 100644
          if (rc == UID_SUCCESS) {
              slapi_entry_set_uniqueid(e, newuniqueid);
 -- 
-2.48.1
+2.48.0
 

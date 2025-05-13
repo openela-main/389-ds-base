@@ -1,4 +1,4 @@
-From 2e5a470ab5195b5e5f31fa8fb7b03d0c20b6a90f Mon Sep 17 00:00:00 2001
+From 769e71499880a0820424bf925c0f0fe793e11cc8 Mon Sep 17 00:00:00 2001
 From: progier389 <progier@redhat.com>
 Date: Fri, 28 Jun 2024 18:56:49 +0200
 Subject: [PATCH] Issue 6229 - After an initial failure, subsequent online
@@ -134,10 +134,10 @@ index 0460a42f6..6658cc80a 100644
      slapi_ch_free_string(&backup_config_dir);
      slapi_ch_free_string(&dse_file);
 diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
-index 457c5ed60..35f8173a7 100644
+index 70a289bdb..de4161b0c 100644
 --- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
 +++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
-@@ -982,6 +982,9 @@ dbmdb_backup(struct ldbminfo *li, char *dest_dir, Slapi_Task *task)
+@@ -983,6 +983,9 @@ dbmdb_backup(struct ldbminfo *li, char *dest_dir, Slapi_Task *task)
      if (ldbm_archive_config(dest_dir, task) != 0) {
          slapi_log_err(SLAPI_LOG_ERR, "dbmdb_backup",
                  "Backup of config files failed or is incomplete\n");
@@ -148,7 +148,7 @@ index 457c5ed60..35f8173a7 100644
  
      goto bail;
 diff --git a/src/lib389/lib389/__init__.py b/src/lib389/lib389/__init__.py
-index 4edea63b7..95926a5d6 100644
+index 368741a66..cb372c138 100644
 --- a/src/lib389/lib389/__init__.py
 +++ b/src/lib389/lib389/__init__.py
 @@ -69,7 +69,7 @@ from lib389.utils import (
@@ -160,7 +160,7 @@ index 4edea63b7..95926a5d6 100644
  from lib389.dseldif import DSEldif
  
  # mixin
-@@ -1420,7 +1420,7 @@ class DirSrv(SimpleLDAPObject, object):
+@@ -1424,7 +1424,7 @@ class DirSrv(SimpleLDAPObject, object):
                                         name, self.ds_paths.prefix)
  
          # create the archive
@@ -169,7 +169,7 @@ index 4edea63b7..95926a5d6 100644
          backup_file = os.path.join(backup_dir, name)
          tar = tarfile.open(backup_file, "w:gz")
          tar.extraction_filter = (lambda member, path: member)
-@@ -2806,7 +2806,7 @@ class DirSrv(SimpleLDAPObject, object):
+@@ -2810,7 +2810,7 @@ class DirSrv(SimpleLDAPObject, object):
          else:
              # No output file specified.  Use the default ldif location/name
              cmd.append('-a')
@@ -178,7 +178,7 @@ index 4edea63b7..95926a5d6 100644
              if bename:
                  ldifname = os.path.join(self.ds_paths.ldif_dir, "%s-%s-%s.ldif" % (self.serverid, bename, tnow))
              else:
-@@ -2877,7 +2877,7 @@ class DirSrv(SimpleLDAPObject, object):
+@@ -2881,7 +2881,7 @@ class DirSrv(SimpleLDAPObject, object):
  
          if archive_dir is None:
              # Use the instance name and date/time as the default backup name
@@ -187,7 +187,7 @@ index 4edea63b7..95926a5d6 100644
              archive_dir = os.path.join(self.ds_paths.backup_dir, "%s-%s" % (self.serverid, tnow))
          elif not archive_dir.startswith("/"):
              # Relative path, append it to the bak directory
-@@ -3499,7 +3499,7 @@ class DirSrv(SimpleLDAPObject, object):
+@@ -3506,7 +3506,7 @@ class DirSrv(SimpleLDAPObject, object):
  
          if archive is None:
              # Use the instance name and date/time as the default backup name
@@ -197,7 +197,7 @@ index 4edea63b7..95926a5d6 100644
                  backup_dir_name = "%s-%s" % (self.serverid, tnow)
              else:
 diff --git a/src/lib389/lib389/tasks.py b/src/lib389/lib389/tasks.py
-index 193805780..c1a2e7aaa 100644
+index 6c2adb5b2..6bf302862 100644
 --- a/src/lib389/lib389/tasks.py
 +++ b/src/lib389/lib389/tasks.py
 @@ -118,7 +118,7 @@ class Task(DSLdapObject):
@@ -562,5 +562,5 @@ index 193805780..c1a2e7aaa 100644
          dn = f'cn={self.cn},cn=reload ldapi mappings,cn=tasks,cn=config'
          super(LDAPIMappingReloadTask, self).__init__(instance, dn)
 -- 
-2.48.1
+2.48.0
 

@@ -1,4 +1,4 @@
-From a71c12881604b5e37d64093aedd158aa112b39cc Mon Sep 17 00:00:00 2001
+From 116b7cf21618ad7e717ae7f535709508a824f7d9 Mon Sep 17 00:00:00 2001
 From: Viktor Ashirov <vashirov@redhat.com>
 Date: Thu, 13 Feb 2025 16:37:43 +0100
 Subject: [PATCH] Issue 6561 - TLS 1.2 stickiness in FIPS mode
@@ -15,10 +15,10 @@ Reviewed by: @mreynolds389 (Thanks!)
  1 file changed, 8 deletions(-)
 
 diff --git a/ldap/servers/slapd/ssl.c b/ldap/servers/slapd/ssl.c
-index ef9e97fb9..329bd5c90 100644
+index 94259efe7..84a7fb004 100644
 --- a/ldap/servers/slapd/ssl.c
 +++ b/ldap/servers/slapd/ssl.c
-@@ -1914,14 +1914,6 @@ slapd_ssl_init2(PRFileDesc **fd, int startTLS)
+@@ -1929,14 +1929,6 @@ slapd_ssl_init2(PRFileDesc **fd, int startTLS)
       */
      sslStatus = SSL_VersionRangeGet(pr_sock, &slapdNSSVersions);
      if (sslStatus == SECSuccess) {

@@ -1,0 +1,894 @@
+From b53faa9e7289383bbc02fc260b1b34958a317fdd Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Fri, 6 Sep 2024 14:45:06 +0200
+Subject: [PATCH] Issue 6090 - Fix dbscan options and man pages (#6315)
+
+* Issue 6090 - Fix dbscan options and man pages
+
+dbscan -d option is dangerously confusing as it removes a database instance while in db_stat it identify the database
+(cf issue #5609 ).
+This fix implements long options in dbscan, rename -d in --remove, and requires a new --do-it option for action that change the database content.
+The fix should also align both the usage and the dbscan man page with the new set of options
+
+Issue: #6090
+
+Reviewed by: @tbordaz, @droideck (Thanks!)
+
+(cherry picked from commit 25e1d16887ebd299dfe0088080b9ee0deec1e41f)
+---
+ dirsrvtests/tests/suites/clu/dbscan_test.py   | 253 ++++++++++++++++++
+ .../tests/suites/clu/repl_monitor_test.py     |   4 +-
+ .../slapd/back-ldbm/db-bdb/bdb_layer.c        |  12 +-
+ ldap/servers/slapd/back-ldbm/dbimpl.c         |  50 +++-
+ ldap/servers/slapd/tools/dbscan.c             | 182 ++++++++++---
+ man/man1/dbscan.1                             |  74 +++--
+ src/lib389/lib389/__init__.py                 |   9 +-
+ src/lib389/lib389/cli_ctl/dblib.py            |  13 +-
+ 8 files changed, 531 insertions(+), 66 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/clu/dbscan_test.py
+
+diff --git a/dirsrvtests/tests/suites/clu/dbscan_test.py b/dirsrvtests/tests/suites/clu/dbscan_test.py
+new file mode 100644
+index 000000000..2c9a9651a
+--- /dev/null
++++ b/dirsrvtests/tests/suites/clu/dbscan_test.py
+@@ -0,0 +1,253 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2024 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++import pytest
++import re
++import subprocess
++import sys
++
++from lib389 import DirSrv
++from lib389._constants import DBSCAN
++from lib389.topologies import topology_m2 as topo_m2
++from difflib import context_diff
++
++pytestmark = pytest.mark.tier0
++
++logging.getLogger(__name__).setLevel(logging.DEBUG)
++log = logging.getLogger(__name__)
++
++DEBUGGING = os.getenv("DEBUGGING", default=False)
++
++
++class CalledProcessUnexpectedReturnCode(subprocess.CalledProcessError):
++    def __init__(self, result, expected_rc):
++        super().__init__(cmd=result.args, returncode=result.returncode, output=result.stdout, stderr=result.stderr)
++        self.expected_rc = expected_rc
++        self.result = result
++
++    def __str__(self):
++        return f'Command {self.result.args} returned {self.result.returncode} instead of {self.expected_rc}'
++
++
++class DbscanPaths:
++    @staticmethod
++    def list_instances(inst, dblib, dbhome):
++        # compute db instance pathnames
++        instances = dbscan(['-D', dblib, '-L', dbhome], inst=inst).stdout
++        dbis = []
++        if dblib == 'bdb':
++            pattern = r'^ (.*) $'
++            prefix = f'{dbhome}/'
++        else:
++            pattern = r'^ (.*) flags:'
++            prefix = f''
++        for match in re.finditer(pattern, instances, flags=re.MULTILINE):
++            dbis.append(prefix+match.group(1))
++        return dbis
++
++    @staticmethod
++    def list_options(inst):
++        # compute supported options
++        options = []
++        usage = dbscan(['-h'], inst=inst, expected_rc=None).stdout
++        pattern = r'^\s+(?:(-[^-,]+), +)?(--[^ ]+).*$'
++        for match in re.finditer(pattern, usage, flags=re.MULTILINE):
++            for idx in range(1,3):
++                if match.group(idx) is not None:
++                    options.append(match.group(idx))
++        return options
++
++    def __init__(self, inst):
++        dblib = inst.get_db_lib()
++        dbhome = inst.ds_paths.db_home_dir
++        self.inst = inst
++        self.dblib = dblib
++        self.dbhome = dbhome
++        self.options = DbscanPaths.list_options(inst)
++        self.dbis = DbscanPaths.list_instances(inst, dblib, dbhome)
++        self.ldif_dir = inst.ds_paths.ldif_dir
++
++    def get_dbi(self, attr, backend='userroot'):
++        for dbi in self.dbis:
++            if f'{backend}/{attr}.'.lower() in dbi.lower():
++                return dbi
++        raise KeyError(f'Unknown dbi {backend}/{attr}')
++
++    def __repr__(self):
++        attrs = ['inst', 'dblib', 'dbhome', 'ldif_dir', 'options', 'dbis' ]
++        res = ", ".join(map(lambda x: f'{x}={self.__dict__[x]}', attrs))
++        return f'DbscanPaths({res})'
++
++
++def dbscan(args, inst=None, expected_rc=0):
++    if inst is None:
++        prefix = os.environ.get('PREFIX', "")
++        prog = f'{prefix}/bin/dbscan'
++    else:
++        prog = os.path.join(inst.ds_paths.bin_dir, DBSCAN)
++    args.insert(0, prog)
++    output = subprocess.run(args, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
++    log.debug(f'{args} result is {output.returncode} output is {output.stdout}')
++    if expected_rc is not None and expected_rc != output.returncode:
++        raise CalledProcessUnexpectedReturnCode(output, expected_rc)
++    return output
++
++
++def log_export_file(filename):
++    with open(filename, 'r') as file:
++        log.debug(f'=========== Dump of {filename} ================')
++        for line in file:
++            log.debug(line.rstrip('\n'))
++        log.debug(f'=========== Enf of {filename} =================')
++
++
++@pytest.fixture(scope='module')
++def paths(topo_m2, request):
++    inst = topo_m2.ms["supplier1"]
++    if sys.version_info < (3,5):
++        pytest.skip('requires python version >= 3.5')
++    paths = DbscanPaths(inst)
++    if '--do-it' not in paths.options:
++       pytest.skip('Not supported with this dbscan version')
++    inst.stop()
++    return paths
++
++
++def test_dbscan_destructive_actions(paths, request):
++    """Test that dbscan remove/import actions
++
++    :id: f40b0c42-660a-11ef-9544-083a88554478
++    :setup: Stopped standalone instance
++    :steps:
++         1. Export cn instance with dbscan
++         2. Run dbscan --remove ...
++         3. Check the error message about missing --do-it
++         4. Check that cn instance is still present
++         5. Run dbscan -I import_file ...
++         6. Check it was properly imported
++         7. Check that cn instance is still present
++         8. Run dbscan --remove ... --doit
++         9. Check the error message about missing --do-it
++         10. Check that cn instance is still present
++         11. Run dbscan -I import_file ... --do-it
++         12. Check it was properly imported
++         13. Check that cn instance is still present
++         14. Export again the database
++         15. Check that content of export files are the same
++    :expectedresults:
++         1. Success
++         2. dbscan return code should be 1 (error)
++         3. Error message should be present
++         4. cn instance should be present
++         5. dbscan return code should be 1 (error)
++         6. Error message should be present
++         7. cn instance should be present
++         8. dbscan return code should be 0 (success)
++         9. Error message should not be present
++         10. cn instance should not be present
++         11. dbscan return code should be 0 (success)
++         12. Error message should not be present
++         13. cn instance should be present
++         14. Success
++         15. Export files content should be the same
++    """
++
++    # Export cn instance with dbscan
++    export_cn = f'{paths.ldif_dir}/dbscan_cn.data'
++    export_cn2 = f'{paths.ldif_dir}/dbscan_cn2.data'
++    cndbi = paths.get_dbi('replication_changelog')
++    inst = paths.inst
++    dblib = paths.dblib
++    exportok = False
++    def fin():
++        if os.path.exists(export_cn):
++            # Restore cn if it was exported successfully but does not exists any more
++            if exportok and cndbi not in DbscanPaths.list_instances(inst, dblib, paths.dbhome):
++                    dbscan(['-D', dblib, '-f', cndbi, '-I', export_cn, '--do-it'], inst=inst)
++            if not DEBUGGING:
++                os.remove(export_cn)
++        if os.path.exists(export_cn) and not DEBUGGING:
++            os.remove(export_cn2)
++
++    fin()
++    request.addfinalizer(fin)
++    dbscan(['-D', dblib,  '-f', cndbi, '-X', export_cn], inst=inst)
++    exportok = True
++
++    expected_msg = "without specifying '--do-it' parameter."
++
++    # Run dbscan --remove ...
++    result = dbscan(['-D', paths.dblib, '--remove', '-f', cndbi],
++                    inst=paths.inst, expected_rc=1)
++
++    # Check the error message about missing --do-it
++    assert expected_msg in result.stdout
++
++    # Check that cn instance is still present
++    curdbis = DbscanPaths.list_instances(paths.inst, paths.dblib, paths.dbhome)
++    assert cndbi in curdbis
++
++    # Run dbscan -I import_file ...
++    result = dbscan(['-D', paths.dblib, '-f', cndbi, '-I', export_cn],
++                    inst=paths.inst, expected_rc=1)
++
++    # Check the error message about missing --do-it
++    assert expected_msg in result.stdout
++
++    # Check that cn instance is still present
++    curdbis = DbscanPaths.list_instances(paths.inst, paths.dblib, paths.dbhome)
++    assert cndbi in curdbis
++
++    # Run dbscan --remove ... --doit
++    result = dbscan(['-D', paths.dblib, '--remove', '-f', cndbi, '--do-it'],
++                    inst=paths.inst, expected_rc=0)
++
++    # Check the error message about missing --do-it
++    assert expected_msg not in result.stdout
++
++    # Check that cn instance is still present
++    curdbis = DbscanPaths.list_instances(paths.inst, paths.dblib, paths.dbhome)
++    assert cndbi not in curdbis
++
++    # Run dbscan -I import_file ... --do-it
++    result = dbscan(['-D', paths.dblib, '-f', cndbi,
++                     '-I', export_cn, '--do-it'],
++                    inst=paths.inst, expected_rc=0)
++
++    # Check the error message about missing --do-it
++    assert expected_msg not in result.stdout
++
++    # Check that cn instance is still present
++    curdbis = DbscanPaths.list_instances(paths.inst, paths.dblib, paths.dbhome)
++    assert cndbi in curdbis
++
++    # Export again the database
++    dbscan(['-D', dblib,  '-f', cndbi, '-X', export_cn2], inst=inst)
++
++    # Check that content of export files are the same
++    with open(export_cn) as f1:
++        f1lines = f1.readlines()
++    with open(export_cn2) as f2:
++        f2lines = f2.readlines()
++    diffs = list(context_diff(f1lines, f2lines))
++    if len(diffs) > 0:
++        log.debug("Export file differences are:")
++        for d in diffs:
++            log.debug(d)
++        log_export_file(export_cn)
++        log_export_file(export_cn2)
++        assert diffs is None
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main("-s %s" % CURRENT_FILE)
+diff --git a/dirsrvtests/tests/suites/clu/repl_monitor_test.py b/dirsrvtests/tests/suites/clu/repl_monitor_test.py
+index d83416847..842dd96fd 100644
+--- a/dirsrvtests/tests/suites/clu/repl_monitor_test.py
++++ b/dirsrvtests/tests/suites/clu/repl_monitor_test.py
+@@ -77,13 +77,13 @@ def get_hostnames_from_log(port1, port2):
+     # search for Supplier :hostname:port 
+     # and use \D to insure there is no more number is after
+     # the matched port (i.e that 10 is not matching 101)
+-    regexp = '(Supplier: )([^:]*)(:' + str(port1) + '\D)'
++    regexp = '(Supplier: )([^:]*)(:' + str(port1) + r'\D)'
+     match=re.search(regexp, logtext)
+     host_m1 = 'localhost.localdomain'
+     if (match is not None):
+         host_m1 = match.group(2)
+     # Same for supplier 2 
+-    regexp = '(Supplier: )([^:]*)(:' + str(port2) + '\D)'
++    regexp = '(Supplier: )([^:]*)(:' + str(port2) + r'\D)'
+     match=re.search(regexp, logtext)
+     host_m2 = 'localhost.localdomain'
+     if (match is not None):
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+index de6be0f42..4b30e8e87 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+@@ -5820,8 +5820,16 @@ bdb_import_file_name(ldbm_instance *inst)
+ static char *
+ bdb_restore_file_name(struct ldbminfo *li)
+ {
+-    char *fname = slapi_ch_smprintf("%s/../.restore", li->li_directory);
+-
++    char *pt = strrchr(li->li_directory, '/');
++    char *fname =  NULL;
++    if (pt == NULL) {
++        fname = slapi_ch_strdup(".restore");
++    } else {
++        size_t len = pt-li->li_directory;
++        fname = slapi_ch_malloc(len+10);
++        strncpy(fname, li->li_directory, len);
++        strcpy(fname+len, "/.restore");
++    }
+     return fname;
+ }
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/dbimpl.c b/ldap/servers/slapd/back-ldbm/dbimpl.c
+index 42f4a0718..134d06480 100644
+--- a/ldap/servers/slapd/back-ldbm/dbimpl.c
++++ b/ldap/servers/slapd/back-ldbm/dbimpl.c
+@@ -397,7 +397,48 @@ const char *dblayer_op2str(dbi_op_t op)
+     return str[idx];
+ }
+ 
+-/* Open db env, db and db file privately */
++/* Get the li_directory directory from the database instance name -
++ * Caller should free the returned value
++ */
++static char *
++get_li_directory(const char *fname)
++{
++    /*
++     * li_directory is an existing directory.
++     * it can be fname or its parent or its greatparent
++     * in case of problem returns the provided name
++     */
++    char *lid = slapi_ch_strdup(fname);
++    struct stat sbuf = {0};
++    char *pt = NULL;
++    for (int count=0; count<3; count++) {
++        if (stat(lid, &sbuf) == 0) {
++            if (S_ISDIR(sbuf.st_mode)) {
++                return lid;
++            }
++            /* Non directory existing file could be regular
++             * at the first iteration otherwise it is an error.
++             */
++            if (count>0 || !S_ISREG(sbuf.st_mode)) {
++                break;
++            }
++        }
++        pt = strrchr(lid, '/');
++        if (pt == NULL) {
++            slapi_ch_free_string(&lid);
++            return slapi_ch_strdup(".");
++        }
++        *pt = '\0';
++    }
++    /*
++     * Error case. Returns a copy of the original string:
++     *  and let dblayer_private_open_fn fail to open the database
++     */
++    slapi_ch_free_string(&lid);
++    return slapi_ch_strdup(fname);
++}
++
++/* Open db env, db and db file privately (for dbscan) */
+ int dblayer_private_open(const char *plgname, const char *dbfilename, int rw, Slapi_Backend **be, dbi_env_t **env, dbi_db_t **db)
+ {
+     struct ldbminfo *li;
+@@ -412,7 +453,7 @@ int dblayer_private_open(const char *plgname, const char *dbfilename, int rw, Sl
+     li->li_plugin = (*be)->be_database;
+     li->li_plugin->plg_name = (char*) "back-ldbm-dbimpl";
+     li->li_plugin->plg_libpath = (char*) "libback-ldbm";
+-    li->li_directory = slapi_ch_strdup(dbfilename);
++    li->li_directory = get_li_directory(dbfilename);
+ 
+     /* Initialize database plugin */
+     rc = dbimpl_setup(li, plgname);
+@@ -439,7 +480,10 @@ int dblayer_private_close(Slapi_Backend **be, dbi_env_t **env, dbi_db_t **db)
+         }
+         slapi_ch_free((void**)&li->li_dblayer_private);
+         slapi_ch_free((void**)&li->li_dblayer_config);
+-        ldbm_config_destroy(li);
++        if (dblayer_is_lmdb(*be)) {
++            /* Generate use after free and double free in bdb case */
++            ldbm_config_destroy(li);
++        }
+         slapi_ch_free((void**)&(*be)->be_database);
+         slapi_ch_free((void**)&(*be)->be_instance_info);
+         slapi_ch_free((void**)be);
+diff --git a/ldap/servers/slapd/tools/dbscan.c b/ldap/servers/slapd/tools/dbscan.c
+index 2d28dd951..12edf7c5b 100644
+--- a/ldap/servers/slapd/tools/dbscan.c
++++ b/ldap/servers/slapd/tools/dbscan.c
+@@ -26,6 +26,7 @@
+ #include <string.h>
+ #include <ctype.h>
+ #include <errno.h>
++#include <getopt.h>
+ #include "../back-ldbm/dbimpl.h"
+ #include "../slapi-plugin.h"
+ #include "nspr.h"
+@@ -85,6 +86,8 @@
+ #define DB_BUFFER_SMALL ENOMEM
+ #endif
+ 
++#define COUNTOF(array)    ((sizeof(array))/sizeof(*(array)))
++
+ #if defined(linux)
+ #include <getopt.h>
+ #endif
+@@ -130,9 +133,43 @@ long ind_cnt = 0;
+ long allids_cnt = 0;
+ long other_cnt = 0;
+ char *dump_filename = NULL;
++int do_it = 0;
+ 
+ static Slapi_Backend *be = NULL; /* Pseudo backend used to interact with db */
+ 
++/* For Long options without shortcuts */
++enum {
++    OPT_FIRST = 0x1000,
++    OPT_DO_IT,
++    OPT_REMOVE,
++};
++
++static const struct option options[] = {
++    /* Options without shortcut */
++    { "do-it", no_argument, 0, OPT_DO_IT },
++    { "remove", no_argument, 0, OPT_REMOVE },
++    /* Options with shortcut */
++    { "import", required_argument, 0, 'I' },
++    { "export", required_argument, 0, 'X' },
++    { "db-type", required_argument, 0, 'D' },
++    { "dbi", required_argument, 0, 'f' },
++    { "ascii", no_argument, 0, 'A' },
++    { "raw", no_argument, 0, 'R' },
++    { "truncate-entry", required_argument, 0, 't' },
++    { "entry-id", required_argument, 0, 'K' },
++    { "key", required_argument, 0, 'k' },
++    { "list", required_argument, 0, 'L' },
++    { "stats", required_argument, 0, 'S' },
++    { "id-list-max-size", required_argument, 0, 'l' },
++    { "id-list-min-size", required_argument, 0, 'G' },
++    { "show-id-list-lenghts", no_argument, 0, 'n' },
++    { "show-id-list", no_argument, 0, 'r' },
++    { "summary", no_argument, 0, 's' },
++    { "help", no_argument, 0, 'h' },
++    { 0, 0, 0, 0 }
++};
++
++
+ /** db_printf - functioning same as printf but a place for manipluating output.
+ */
+ void
+@@ -899,7 +936,7 @@ is_changelog(char *filename)
+ }
+ 
+ static void
+-usage(char *argv0)
++usage(char *argv0, int error)
+ {
+     char *copy = strdup(argv0);
+     char *p0 = NULL, *p1 = NULL;
+@@ -922,42 +959,52 @@ usage(char *argv0)
+     }
+     printf("\n%s - scan a db file and dump the contents\n", p0);
+     printf("  common options:\n");
+-    printf("    -D <dbimpl>     specify db implementaion (may be: bdb or mdb)\n");
+-    printf("    -f <filename>   specify db file\n");
+-    printf("    -A              dump as ascii data\n");
+-    printf("    -R              dump as raw data\n");
+-    printf("    -t <size>       entry truncate size (bytes)\n");
++    printf("    -A, --ascii                    dump as ascii data\n");
++    printf("    -D, --db-type <dbimpl>         specify db implementaion (may be: bdb or mdb)\n");
++    printf("    -f, --dbi <filename>           specify db instance\n");
++    printf("    -R, --raw                      dump as raw data\n");
++    printf("    -t, --truncate-entry <size>    entry truncate size (bytes)\n");
++
+     printf("  entry file options:\n");
+-    printf("    -K <entry_id>   lookup only a specific entry id\n");
++    printf("    -K, --entry-id <entry_id>      lookup only a specific entry id\n");
++
+     printf("  index file options:\n");
+-    printf("    -k <key>        lookup only a specific key\n");
+-    printf("    -L <dbhome>     list all db files\n");
+-    printf("    -S <dbhome>     show statistics\n");
+-    printf("    -l <size>       max length of dumped id list\n");
+-    printf("                    (default %" PRIu32 "; 40 bytes <= size <= 1048576 bytes)\n", MAX_BUFFER);
+-    printf("    -G <n>          only display index entries with more than <n> ids\n");
+-    printf("    -n              display ID list lengths\n");
+-    printf("    -r              display the conents of ID list\n");
+-    printf("    -s              Summary of index counts\n");
+-    printf("    -I file         Import database content from file\n");
+-    printf("    -X file         Export database content in file\n");
++    printf("    -G, --id-list-min-size <n>     only display index entries with more than <n> ids\n");
++    printf("    -I, --import file              Import database instance from file.\n");
++    printf("    -k, --key <key>                lookup only a specific key\n");
++    printf("    -l, --id-list-max-size <size>  max length of dumped id list\n");
++    printf("                                  (default %" PRIu32 "; 40 bytes <= size <= 1048576 bytes)\n", MAX_BUFFER);
++    printf("    -n, --show-id-list-lenghts     display ID list lengths\n");
++    printf("    --remove                       remove database instance\n");
++    printf("    -r, --show-id-list             display the conents of ID list\n");
++    printf("    -S, --stats <dbhome>           show statistics\n");
++    printf("    -X, --export file              export database instance in file\n");
++
++    printf("  other options:\n");
++    printf("    -s, --summary                  summary of index counts\n");
++    printf("    -L, --list <dbhome>            list all db files\n");
++    printf("    --do-it                        confirmation flags for destructive actions like --remove or --import\n");
++    printf("    -h, --help                     display this usage\n");
++
+     printf("  sample usages:\n");
+-    printf("    # list the db files\n");
+-    printf("    %s -D mdb -L /var/lib/dirsrv/slapd-i/db/\n", p0);
+-    printf("    %s -f id2entry.db\n", p0);
++    printf("    # list the database instances\n");
++    printf("    %s -L /var/lib/dirsrv/slapd-supplier1/db/\n", p0);
+     printf("    # dump the entry file\n");
+     printf("    %s -f id2entry.db\n", p0);
+     printf("    # display index keys in cn.db4\n");
+     printf("    %s -f cn.db4\n", p0);
++    printf("    # display index keys in cn on lmdb\n");
++    printf("    %s -f /var/lib/dirsrv/slapd-supplier1/db/userroot/cn.db\n", p0);
++    printf("    (Note: Use 'dbscan -L db_home_dir' to get the db instance path)\n");
+     printf("    # display index keys and the count of entries having the key in mail.db4\n");
+     printf("    %s -r -f mail.db4\n", p0);
+     printf("    # display index keys and the IDs having more than 20 IDs in sn.db4\n");
+     printf("    %s -r -G 20 -f sn.db4\n", p0);
+     printf("    # display summary of objectclass.db4\n");
+-    printf("    %s -f objectclass.db4\n", p0);
++    printf("    %s -s -f objectclass.db4\n", p0);
+     printf("\n");
+     free(copy);
+-    exit(1);
++    exit(error?1:0);
+ }
+ 
+ void dump_ascii_val(const char *str, dbi_val_t *val)
+@@ -1126,13 +1173,12 @@ importdb(const char *dbimpl_name, const char *filename, const char *dump_name)
+     dblayer_init_pvt_txn();
+ 
+     if (!dump) {
+-        printf("Failed to open dump file %s. Error %d: %s\n", dump_name, errno, strerror(errno));
+-        fclose(dump);
++        printf("Error: Failed to open dump file %s. Error %d: %s\n", dump_name, errno, strerror(errno));
+         return 1;
+     }
+ 
+     if (dblayer_private_open(dbimpl_name, filename, 1, &be, &env, &db)) {
+-        printf("Can't initialize db plugin: %s\n", dbimpl_name);
++        printf("Error: Can't initialize db plugin: %s\n", dbimpl_name);
+         fclose(dump);
+         return 1;
+     }
+@@ -1142,11 +1188,16 @@ importdb(const char *dbimpl_name, const char *filename, const char *dump_name)
+            !_read_line(dump, &keyword, &data) && keyword == 'v') {
+         ret = dblayer_db_op(be, db, txn.txn, DBI_OP_PUT, &key, &data);
+     }
++    if (ret !=0) {
++        printf("Error: failed to write record in database. Error %d: %s\n", ret, dblayer_strerror(ret));
++        dump_ascii_val("Failing record key", &key);
++        dump_ascii_val("Failing record value", &data);
++    }
+     fclose(dump);
+     dblayer_value_free(be, &key);
+     dblayer_value_free(be, &data);
+     if (dblayer_private_close(&be, &env, &db)) {
+-        printf("Unable to shutdown the db plugin: %s\n", dblayer_strerror(1));
++        printf("Error: Unable to shutdown the db plugin: %s\n", dblayer_strerror(1));
+         return 1;
+     }
+     return ret;
+@@ -1243,6 +1294,7 @@ removedb(const char *dbimpl_name, const char *filename)
+         return 1;
+     }
+ 
++    db = NULL; /* Database is already closed by dblayer_db_remove */
+     if (dblayer_private_close(&be, &env, &db)) {
+         printf("Unable to shutdown the db plugin: %s\n", dblayer_strerror(1));
+         return 1;
+@@ -1250,7 +1302,6 @@ removedb(const char *dbimpl_name, const char *filename)
+     return 0;
+ }
+ 
+-
+ int
+ main(int argc, char **argv)
+ {
+@@ -1262,11 +1313,46 @@ main(int argc, char **argv)
+     int ret = 0;
+     char *find_key = NULL;
+     uint32_t entry_id = 0xffffffff;
+-    char *dbimpl_name = (char*) "bdb";
+-    int c;
++    char *defdbimpl = getenv("NSSLAPD_DB_LIB");
++    char *dbimpl_name = (char*) "mdb";
++    int longopt_idx = 0;
++    int c = 0;
++    char optstring[2*COUNTOF(options)+1] = {0};
++
++    if (defdbimpl) {
++        if (strcasecmp(defdbimpl, "bdb") == 0) {
++            dbimpl_name = (char*) "bdb";
++        }
++        if (strcasecmp(defdbimpl, "mdb") == 0) {
++            dbimpl_name = (char*) "mdb";
++        }
++    }
++
++    /* Compute getopt short option string */
++    {
++        char *pt = optstring;
++        for (const struct option *opt = options; opt->name; opt++) {
++            if (opt->val>0 && opt->val<OPT_FIRST) {
++                *pt++ = (char)(opt->val);
++                if (opt->has_arg == required_argument) {
++                    *pt++ = ':';
++                }
++            }
++        }
++        *pt = '\0';
++    }
+ 
+-    while ((c = getopt(argc, argv, "Af:RL:S:l:nG:srk:K:hvt:D:X:I:d")) != EOF) {
++    while ((c = getopt_long(argc, argv, optstring, options, &longopt_idx)) != EOF) {
++        if (c == 0) {
++            c = longopt_idx;
++        }
+         switch (c) {
++        case OPT_DO_IT:
++            do_it = 1;
++            break;
++        case OPT_REMOVE:
++            display_mode |= REMOVE;
++            break;
+         case 'A':
+             display_mode |= ASCIIDATA;
+             break;
+@@ -1332,32 +1418,48 @@ main(int argc, char **argv)
+             display_mode |= IMPORT;
+             dump_filename = optarg;
+             break;
+-        case 'd':
+-            display_mode |= REMOVE;
+-            break;
+         case 'h':
+         default:
+-            usage(argv[0]);
++            usage(argv[0], 1);
+         }
+     }
+ 
++    if (filename == NULL) {
++        fprintf(stderr, "PARAMETER ERROR! 'filename' parameter is missing.\n");
++        usage(argv[0], 1);
++    }
++
+     if (display_mode & EXPORT) {
+         return exportdb(dbimpl_name, filename, dump_filename);
+     }
+ 
+     if (display_mode & IMPORT) {
++        if (!strstr(filename, "/id2entry") && !strstr(filename, "/replication_changelog")) {
++            /* schema is unknown in dbscan ==> duplicate keys sort order is unknown
++             *  ==> cannot create dbi with duplicate keys
++             * ==> only id2entry and repl changelog is importable.
++             */
++            fprintf(stderr, "ERROR: The only database instances that may be imported with dbscan are id2entry and replication_changelog.\n");
++            exit(1);
++        }
++
++        if (do_it == 0) {
++            fprintf(stderr, "PARAMETER ERROR! Trying to perform a destructive action (import)\n"
++                            " without specifying '--do-it' parameter.\n");
++            exit(1);
++        }
+         return importdb(dbimpl_name, filename, dump_filename);
+     }
+ 
+     if (display_mode & REMOVE) {
++        if (do_it == 0) {
++            fprintf(stderr, "PARAMETER ERROR! Trying to perform a destructive action (remove)\n"
++                            " without specifying '--do-it' parameter.\n");
++            exit(1);
++        }
+         return removedb(dbimpl_name, filename);
+     }
+ 
+-    if (filename == NULL) {
+-        fprintf(stderr, "PARAMETER ERROR! 'filename' parameter is missing.\n");
+-        usage(argv[0]);
+-    }
+-
+     if (display_mode & LISTDBS) {
+         dbi_dbslist_t *dbs = dblayer_list_dbs(dbimpl_name, filename);
+         if (dbs) {
+diff --git a/man/man1/dbscan.1 b/man/man1/dbscan.1
+index 810608371..dfb6e8351 100644
+--- a/man/man1/dbscan.1
++++ b/man/man1/dbscan.1
+@@ -31,50 +31,94 @@ Scans a Directory Server database index file and dumps the contents.
+ .\" respectively.
+ .SH OPTIONS
+ A summary of options is included below:
++.IP
++common options:
++.TP
++.B \fB\-A, \-\-ascii\fR
++dump as ascii data
++.TP
++.B \fB\-D, \-\-db\-type\fR <filename>
++specify db type: bdb or mdb
+ .TP
+-.B \fB\-f\fR <filename>
+-specify db file
++.B \fB\-f, \-\-dbi\fR <filename>
++specify db instance
+ .TP
+-.B \fB\-R\fR
++.B \fB\-R, \-\-raw\fR
+ dump as raw data
+ .TP
+-.B \fB\-t\fR <size>
++.B \fB\-t, \-\-truncate\-entry\fR <size>
+ entry truncate size (bytes)
+ .IP
+ entry file options:
+ .TP
+-.B \fB\-K\fR <entry_id>
++.B \fB\-K, \-\-entry\-id\fR <entry_id>
+ lookup only a specific entry id
++.IP
+ index file options:
+ .TP
+-.B \fB\-k\fR <key>
++.B \fB\-G, \-\-id\-list\-min\-size\fR <n>
++only display index entries with more than <n> ids
++.TP
++.B \fB\-I, \-\-import\fR <file>
++Import database instance from file. Requires \-\-do\-it parameter
++WARNING! Only the id2entry and replication_changelog database instances
++may be imported by dbscan.
++.TP
++.B \fB\-k, \-\-key\fR <key>
+ lookup only a specific key
+ .TP
+-.B \fB\-l\fR <size>
++.B \fB\-l, \-\-id\-list\-max\-size\fR <size>
+ max length of dumped id list
+ (default 4096; 40 bytes <= size <= 1048576 bytes)
+ .TP
+-.B \fB\-G\fR <n>
+-only display index entries with more than <n> ids
+-.TP
+-.B \fB\-n\fR
++.B \fB\-n, \-\-show\-id\-list\-lenghts\fR
+ display ID list lengths
+ .TP
+-.B \fB\-r\fR
++.B \fB\-\-remove\fR
++remove a db instance. Requires \-\-do\-it parameter
++.TP
++.B \fB\-r, \-\-show\-id\-list\fR
+ display the contents of ID list
+ .TP
+-.B \fB\-s\fR
++.B \fB\-S, \-\-stats\fR
++display statistics
++.TP
++.B \fB\-X, \-\-export\fR <file>
++Export database instance to file
++.IP
++other options:
++.TP
++.B \fB\-s, \-\-summary\fR
+ Summary of index counts
++.TP
++.B \fB\-L, \-\-list\fR
++List od database instances
++.TP
++.B \fB\-\-do\-it\fR
++confirmation required for actions that change the database contents
++.TP
++.B \fB\-h, \-\-help\-it\fR
++display the usage
+ .IP
+ .SH USAGE
+ Sample usages:
+ .TP
++List the database instances
++.B
++dbscan -L /var/lib/dirsrv/slapd-supplier1/db
++.TP
+ Dump the entry file:
+ .B
+ dbscan \fB\-f\fR id2entry.db4
+ .TP
+ Display index keys in cn.db4:
+-.B dbscan \fB\-f\fR cn.db4
++.B
++dbscan \fB\-f\fR cn.db4
++.TP
++Display index keys in cn on lmdb:
++.B
++dbscan \fB\-f\fR /var/lib/dirsrv/slapd\-supplier1/db/userroot/cn.db
++ (Note: Use \fBdbscan \-L db_home_dir\R to get the db instance path)
+ .TP
+ Display index keys and the count of entries having the key in mail.db4:
+ .B
+@@ -86,7 +130,7 @@ dbscan \fB\-r\fR \fB\-G\fR 20 \fB\-f\fR sn.db4
+ .TP
+ Display summary of objectclass.db4:
+ .B
+-dbscan \fB\-f\fR objectclass.db4
++dbscan \fB\-s \-f\fR objectclass.db4
+ .br
+ .SH AUTHOR
+ dbscan was written by the 389 Project.
+diff --git a/src/lib389/lib389/__init__.py b/src/lib389/lib389/__init__.py
+index e87582d9e..368741a66 100644
+--- a/src/lib389/lib389/__init__.py
++++ b/src/lib389/lib389/__init__.py
+@@ -3039,14 +3039,17 @@ class DirSrv(SimpleLDAPObject, object):
+             return self._dbisupport
+         # check if -D and -L options are supported
+         try:
+-            cmd = ["%s/dbscan" % self.get_bin_dir(), "--help"]
++            cmd = ["%s/dbscan" % self.get_bin_dir(), "-h"]
+             self.log.debug("DEBUG: checking dbscan supported options %s" % cmd)
+             p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+         except subprocess.CalledProcessError:
+             pass
+         output, stderr = p.communicate()
+-        self.log.debug("is_dbi_supported output " + output.decode())
+-        if "-D <dbimpl>" in output.decode() and "-L <dbhome>" in output.decode():
++        output = output.decode()
++        self.log.debug("is_dbi_supported output " + output)
++        if "-D <dbimpl>" in output and "-L <dbhome>" in output:
++            self._dbisupport = True
++        elif "--db-type" in output and "--list" in output:
+             self._dbisupport = True
+         else:
+             self._dbisupport = False
+diff --git a/src/lib389/lib389/cli_ctl/dblib.py b/src/lib389/lib389/cli_ctl/dblib.py
+index e9269e340..82f09c70c 100644
+--- a/src/lib389/lib389/cli_ctl/dblib.py
++++ b/src/lib389/lib389/cli_ctl/dblib.py
+@@ -158,6 +158,14 @@ def run_dbscan(args):
+     return output
+ 
+ 
++def does_dbscan_need_do_it():
++    prefix = os.environ.get('PREFIX', "")
++    prog = f'{prefix}/bin/dbscan'
++    args = [ prog, '-h' ]
++    output = subprocess.run(args, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
++    return '--do-it' in output.stdout
++
++
+ def export_changelog(be, dblib):
+     # Export backend changelog
+     try:
+@@ -172,7 +180,10 @@ def import_changelog(be, dblib):
+     # import backend changelog
+     try:
+         cl5dbname = be['eccl5dbname'] if dblib == "bdb" else be['cl5dbname']
+-        run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name']])
++        if does_dbscan_need_do_it():
++            run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name'], '--do-it'])
++        else:
++            run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name']])
+         return True
+     except subprocess.CalledProcessError as e:
+         return False
+-- 
+2.48.0
+

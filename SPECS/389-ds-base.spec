@@ -46,9 +46,9 @@ ExcludeArch: i686
 
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
-Version:          2.5.2
-Release:          9%{?dist}
-License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
+Version:          2.6.1
+Release:          6%{?dist}
+License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (CC-BY-4.0 AND MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR CC0-1.0) AND (MIT OR Unlicense) AND 0BSD AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT AND MIT AND ISC AND MPL-2.0 AND PSF-2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
 Conflicts:        freeipa-server < 4.0.3
@@ -60,83 +60,88 @@ Provides:         ldif2ldbm >= 0
 ##### Bundled cargo crates list - START #####
 Provides:  bundled(crate(addr2line)) = 0.24.2
 Provides:  bundled(crate(adler2)) = 2.0.0
-Provides:  bundled(crate(ahash)) = 0.8.11
-Provides:  bundled(crate(allocator-api2)) = 0.2.21
-Provides:  bundled(crate(arc-swap)) = 1.7.1
+Provides:  bundled(crate(ahash)) = 0.7.8
 Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.4.0
 Provides:  bundled(crate(backtrace)) = 0.3.74
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 2.9.0
+Provides:  bundled(crate(bitflags)) = 2.8.0
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.26.0
-Provides:  bundled(crate(cc)) = 1.2.19
+Provides:  bundled(crate(cc)) = 1.2.10
 Provides:  bundled(crate(cfg-if)) = 1.0.0
 Provides:  bundled(crate(clap)) = 3.2.25
 Provides:  bundled(crate(clap_lex)) = 0.2.4
-Provides:  bundled(crate(concread)) = 0.5.5
+Provides:  bundled(crate(concread)) = 0.2.21
+Provides:  bundled(crate(crossbeam)) = 0.8.4
+Provides:  bundled(crate(crossbeam-channel)) = 0.5.14
+Provides:  bundled(crate(crossbeam-deque)) = 0.8.6
 Provides:  bundled(crate(crossbeam-epoch)) = 0.9.18
 Provides:  bundled(crate(crossbeam-queue)) = 0.3.12
 Provides:  bundled(crate(crossbeam-utils)) = 0.8.21
-Provides:  bundled(crate(equivalent)) = 1.0.2
-Provides:  bundled(crate(errno)) = 0.3.11
+Provides:  bundled(crate(errno)) = 0.3.10
 Provides:  bundled(crate(fastrand)) = 2.3.0
 Provides:  bundled(crate(fernet)) = 0.1.4
-Provides:  bundled(crate(foldhash)) = 0.1.5
 Provides:  bundled(crate(foreign-types)) = 0.3.2
 Provides:  bundled(crate(foreign-types-shared)) = 0.1.1
-Provides:  bundled(crate(getrandom)) = 0.3.2
+Provides:  bundled(crate(getrandom)) = 0.2.15
 Provides:  bundled(crate(gimli)) = 0.31.1
-Provides:  bundled(crate(hashbrown)) = 0.15.2
+Provides:  bundled(crate(hashbrown)) = 0.12.3
 Provides:  bundled(crate(heck)) = 0.4.1
 Provides:  bundled(crate(hermit-abi)) = 0.1.19
 Provides:  bundled(crate(indexmap)) = 1.9.3
-Provides:  bundled(crate(itoa)) = 1.0.15
-Provides:  bundled(crate(jobserver)) = 0.1.33
-Provides:  bundled(crate(libc)) = 0.2.171
-Provides:  bundled(crate(linux-raw-sys)) = 0.9.4
-Provides:  bundled(crate(log)) = 0.4.27
-Provides:  bundled(crate(lru)) = 0.13.0
+Provides:  bundled(crate(instant)) = 0.1.13
+Provides:  bundled(crate(itoa)) = 1.0.14
+Provides:  bundled(crate(jobserver)) = 0.1.32
+Provides:  bundled(crate(libc)) = 0.2.169
+Provides:  bundled(crate(linux-raw-sys)) = 0.4.15
+Provides:  bundled(crate(lock_api)) = 0.4.12
+Provides:  bundled(crate(log)) = 0.4.25
+Provides:  bundled(crate(lru)) = 0.7.8
 Provides:  bundled(crate(memchr)) = 2.7.4
-Provides:  bundled(crate(miniz_oxide)) = 0.8.8
+Provides:  bundled(crate(miniz_oxide)) = 0.8.3
 Provides:  bundled(crate(object)) = 0.36.7
-Provides:  bundled(crate(once_cell)) = 1.21.3
-Provides:  bundled(crate(openssl)) = 0.10.72
+Provides:  bundled(crate(once_cell)) = 1.20.2
+Provides:  bundled(crate(openssl)) = 0.10.68
 Provides:  bundled(crate(openssl-macros)) = 0.1.1
-Provides:  bundled(crate(openssl-sys)) = 0.9.107
+Provides:  bundled(crate(openssl-sys)) = 0.9.104
 Provides:  bundled(crate(os_str_bytes)) = 6.6.1
+Provides:  bundled(crate(parking_lot)) = 0.11.2
+Provides:  bundled(crate(parking_lot_core)) = 0.8.6
 Provides:  bundled(crate(paste)) = 0.1.18
 Provides:  bundled(crate(paste-impl)) = 0.1.18
 Provides:  bundled(crate(pin-project-lite)) = 0.2.16
-Provides:  bundled(crate(pkg-config)) = 0.3.32
+Provides:  bundled(crate(pkg-config)) = 0.3.31
+Provides:  bundled(crate(ppv-lite86)) = 0.2.20
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
-Provides:  bundled(crate(proc-macro2)) = 1.0.94
-Provides:  bundled(crate(quote)) = 1.0.40
-Provides:  bundled(crate(r-efi)) = 5.2.0
+Provides:  bundled(crate(proc-macro2)) = 1.0.93
+Provides:  bundled(crate(quote)) = 1.0.38
+Provides:  bundled(crate(rand)) = 0.8.5
+Provides:  bundled(crate(rand_chacha)) = 0.3.1
+Provides:  bundled(crate(rand_core)) = 0.6.4
+Provides:  bundled(crate(redox_syscall)) = 0.2.16
 Provides:  bundled(crate(rustc-demangle)) = 0.1.24
-Provides:  bundled(crate(rustix)) = 1.0.5
-Provides:  bundled(crate(ryu)) = 1.0.20
-Provides:  bundled(crate(serde)) = 1.0.219
-Provides:  bundled(crate(serde_derive)) = 1.0.219
-Provides:  bundled(crate(serde_json)) = 1.0.140
+Provides:  bundled(crate(rustix)) = 0.38.44
+Provides:  bundled(crate(ryu)) = 1.0.18
+Provides:  bundled(crate(scopeguard)) = 1.2.0
+Provides:  bundled(crate(serde)) = 1.0.217
+Provides:  bundled(crate(serde_derive)) = 1.0.217
+Provides:  bundled(crate(serde_json)) = 1.0.137
 Provides:  bundled(crate(shlex)) = 1.3.0
-Provides:  bundled(crate(smallvec)) = 1.15.0
-Provides:  bundled(crate(sptr)) = 0.3.2
+Provides:  bundled(crate(smallvec)) = 1.13.2
 Provides:  bundled(crate(strsim)) = 0.10.0
-Provides:  bundled(crate(syn)) = 2.0.100
-Provides:  bundled(crate(tempfile)) = 3.19.1
+Provides:  bundled(crate(syn)) = 2.0.96
+Provides:  bundled(crate(tempfile)) = 3.15.0
 Provides:  bundled(crate(termcolor)) = 1.4.1
-Provides:  bundled(crate(textwrap)) = 0.16.2
-Provides:  bundled(crate(tokio)) = 1.44.2
+Provides:  bundled(crate(textwrap)) = 0.16.1
+Provides:  bundled(crate(tokio)) = 1.43.0
+Provides:  bundled(crate(tokio-macros)) = 2.5.0
 Provides:  bundled(crate(toml)) = 0.5.11
-Provides:  bundled(crate(tracing)) = 0.1.41
-Provides:  bundled(crate(tracing-attributes)) = 0.1.28
-Provides:  bundled(crate(tracing-core)) = 0.1.33
-Provides:  bundled(crate(unicode-ident)) = 1.0.18
+Provides:  bundled(crate(unicode-ident)) = 1.0.15
 Provides:  bundled(crate(uuid)) = 0.8.2
 Provides:  bundled(crate(vcpkg)) = 0.2.15
 Provides:  bundled(crate(version_check)) = 0.9.5
-Provides:  bundled(crate(wasi)) = 0.14.2+wasi_0.2.4
+Provides:  bundled(crate(wasi)) = 0.11.0+wasi_snapshot_preview1
 Provides:  bundled(crate(winapi)) = 0.3.9
 Provides:  bundled(crate(winapi-i686-pc-windows-gnu)) = 0.4.0
 Provides:  bundled(crate(winapi-util)) = 0.1.9
@@ -151,11 +156,190 @@ Provides:  bundled(crate(windows_i686_msvc)) = 0.52.6
 Provides:  bundled(crate(windows_x86_64_gnu)) = 0.52.6
 Provides:  bundled(crate(windows_x86_64_gnullvm)) = 0.52.6
 Provides:  bundled(crate(windows_x86_64_msvc)) = 0.52.6
-Provides:  bundled(crate(wit-bindgen-rt)) = 0.39.0
 Provides:  bundled(crate(zerocopy)) = 0.7.35
 Provides:  bundled(crate(zerocopy-derive)) = 0.7.35
 Provides:  bundled(crate(zeroize)) = 1.8.1
 Provides:  bundled(crate(zeroize_derive)) = 1.4.2
+Provides:  bundled(npm(@aashutoshrathi/word-wrap)) = 1.2.6
+Provides:  bundled(npm(@eslint-community/eslint-utils)) = 4.4.0
+Provides:  bundled(npm(@eslint-community/regexpp)) = 4.5.1
+Provides:  bundled(npm(@eslint/eslintrc)) = 2.0.3
+Provides:  bundled(npm(@eslint/js)) = 8.42.0
+Provides:  bundled(npm(@fortawesome/fontawesome-common-types)) = 0.2.36
+Provides:  bundled(npm(@fortawesome/fontawesome-svg-core)) = 1.2.36
+Provides:  bundled(npm(@fortawesome/free-solid-svg-icons)) = 5.15.4
+Provides:  bundled(npm(@fortawesome/react-fontawesome)) = 0.1.19
+Provides:  bundled(npm(@humanwhocodes/config-array)) = 0.11.10
+Provides:  bundled(npm(@humanwhocodes/module-importer)) = 1.0.1
+Provides:  bundled(npm(@humanwhocodes/object-schema)) = 1.2.1
+Provides:  bundled(npm(@nodelib/fs.scandir)) = 2.1.5
+Provides:  bundled(npm(@nodelib/fs.stat)) = 2.0.5
+Provides:  bundled(npm(@nodelib/fs.walk)) = 1.2.8
+Provides:  bundled(npm(@patternfly/patternfly)) = 4.224.2
+Provides:  bundled(npm(@patternfly/react-charts)) = 6.94.19
+Provides:  bundled(npm(@patternfly/react-core)) = 4.276.8
+Provides:  bundled(npm(@patternfly/react-icons)) = 4.93.6
+Provides:  bundled(npm(@patternfly/react-styles)) = 4.92.6
+Provides:  bundled(npm(@patternfly/react-table)) = 4.113.0
+Provides:  bundled(npm(@patternfly/react-tokens)) = 4.94.6
+Provides:  bundled(npm(@types/d3-array)) = 3.0.5
+Provides:  bundled(npm(@types/d3-color)) = 3.1.0
+Provides:  bundled(npm(@types/d3-ease)) = 3.0.0
+Provides:  bundled(npm(@types/d3-interpolate)) = 3.0.1
+Provides:  bundled(npm(@types/d3-path)) = 3.0.0
+Provides:  bundled(npm(@types/d3-scale)) = 4.0.3
+Provides:  bundled(npm(@types/d3-shape)) = 3.1.1
+Provides:  bundled(npm(@types/d3-time)) = 3.0.0
+Provides:  bundled(npm(@types/d3-timer)) = 3.0.0
+Provides:  bundled(npm(acorn)) = 8.8.2
+Provides:  bundled(npm(acorn-jsx)) = 5.3.2
+Provides:  bundled(npm(ajv)) = 6.12.6
+Provides:  bundled(npm(ansi-regex)) = 5.0.1
+Provides:  bundled(npm(ansi-styles)) = 4.3.0
+Provides:  bundled(npm(argparse)) = 2.0.1
+Provides:  bundled(npm(attr-accept)) = 1.1.3
+Provides:  bundled(npm(balanced-match)) = 1.0.2
+Provides:  bundled(npm(brace-expansion)) = 1.1.11
+Provides:  bundled(npm(callsites)) = 3.1.0
+Provides:  bundled(npm(chalk)) = 4.1.2
+Provides:  bundled(npm(color-convert)) = 2.0.1
+Provides:  bundled(npm(color-name)) = 1.1.4
+Provides:  bundled(npm(concat-map)) = 0.0.1
+Provides:  bundled(npm(core-js)) = 2.6.12
+Provides:  bundled(npm(cross-spawn)) = 7.0.6
+Provides:  bundled(npm(d3-array)) = 3.2.4
+Provides:  bundled(npm(d3-color)) = 3.1.0
+Provides:  bundled(npm(d3-ease)) = 3.0.1
+Provides:  bundled(npm(d3-format)) = 3.1.0
+Provides:  bundled(npm(d3-interpolate)) = 3.0.1
+Provides:  bundled(npm(d3-path)) = 3.1.0
+Provides:  bundled(npm(d3-scale)) = 4.0.2
+Provides:  bundled(npm(d3-shape)) = 3.2.0
+Provides:  bundled(npm(d3-time)) = 3.1.0
+Provides:  bundled(npm(d3-time-format)) = 4.1.0
+Provides:  bundled(npm(d3-timer)) = 3.0.1
+Provides:  bundled(npm(debug)) = 4.3.4
+Provides:  bundled(npm(deep-is)) = 0.1.4
+Provides:  bundled(npm(delaunator)) = 4.0.1
+Provides:  bundled(npm(delaunay-find)) = 0.0.6
+Provides:  bundled(npm(doctrine)) = 3.0.0
+Provides:  bundled(npm(encoding)) = 0.1.13
+Provides:  bundled(npm(escape-string-regexp)) = 4.0.0
+Provides:  bundled(npm(eslint)) = 8.42.0
+Provides:  bundled(npm(eslint-plugin-react-hooks)) = 4.6.0
+Provides:  bundled(npm(eslint-scope)) = 7.2.0
+Provides:  bundled(npm(eslint-visitor-keys)) = 3.4.1
+Provides:  bundled(npm(espree)) = 9.5.2
+Provides:  bundled(npm(esquery)) = 1.5.0
+Provides:  bundled(npm(esrecurse)) = 4.3.0
+Provides:  bundled(npm(estraverse)) = 5.3.0
+Provides:  bundled(npm(esutils)) = 2.0.3
+Provides:  bundled(npm(fast-deep-equal)) = 3.1.3
+Provides:  bundled(npm(fast-json-stable-stringify)) = 2.1.0
+Provides:  bundled(npm(fast-levenshtein)) = 2.0.6
+Provides:  bundled(npm(fastq)) = 1.15.0
+Provides:  bundled(npm(file-entry-cache)) = 6.0.1
+Provides:  bundled(npm(file-selector)) = 0.1.19
+Provides:  bundled(npm(find-up)) = 5.0.0
+Provides:  bundled(npm(flat-cache)) = 3.0.4
+Provides:  bundled(npm(flatted)) = 3.2.7
+Provides:  bundled(npm(focus-trap)) = 6.9.2
+Provides:  bundled(npm(fs.realpath)) = 1.0.0
+Provides:  bundled(npm(gettext-parser)) = 2.0.0
+Provides:  bundled(npm(glob)) = 7.2.3
+Provides:  bundled(npm(glob-parent)) = 6.0.2
+Provides:  bundled(npm(globals)) = 13.20.0
+Provides:  bundled(npm(graphemer)) = 1.4.0
+Provides:  bundled(npm(has-flag)) = 4.0.0
+Provides:  bundled(npm(hoist-non-react-statics)) = 3.3.2
+Provides:  bundled(npm(iconv-lite)) = 0.6.3
+Provides:  bundled(npm(ignore)) = 5.2.4
+Provides:  bundled(npm(import-fresh)) = 3.3.0
+Provides:  bundled(npm(imurmurhash)) = 0.1.4
+Provides:  bundled(npm(inflight)) = 1.0.6
+Provides:  bundled(npm(inherits)) = 2.0.4
+Provides:  bundled(npm(internmap)) = 2.0.3
+Provides:  bundled(npm(is-extglob)) = 2.1.1
+Provides:  bundled(npm(is-glob)) = 4.0.3
+Provides:  bundled(npm(is-path-inside)) = 3.0.3
+Provides:  bundled(npm(isexe)) = 2.0.0
+Provides:  bundled(npm(js-tokens)) = 4.0.0
+Provides:  bundled(npm(js-yaml)) = 4.1.0
+Provides:  bundled(npm(json-schema-traverse)) = 0.4.1
+Provides:  bundled(npm(json-stable-stringify-without-jsonify)) = 1.0.1
+Provides:  bundled(npm(json-stringify-safe)) = 5.0.1
+Provides:  bundled(npm(levn)) = 0.4.1
+Provides:  bundled(npm(locate-path)) = 6.0.0
+Provides:  bundled(npm(lodash)) = 4.17.21
+Provides:  bundled(npm(lodash.merge)) = 4.6.2
+Provides:  bundled(npm(loose-envify)) = 1.4.0
+Provides:  bundled(npm(minimatch)) = 3.1.2
+Provides:  bundled(npm(ms)) = 2.1.2
+Provides:  bundled(npm(natural-compare)) = 1.4.0
+Provides:  bundled(npm(object-assign)) = 4.1.1
+Provides:  bundled(npm(once)) = 1.4.0
+Provides:  bundled(npm(optionator)) = 0.9.3
+Provides:  bundled(npm(p-limit)) = 3.1.0
+Provides:  bundled(npm(p-locate)) = 5.0.0
+Provides:  bundled(npm(parent-module)) = 1.0.1
+Provides:  bundled(npm(path-exists)) = 4.0.0
+Provides:  bundled(npm(path-is-absolute)) = 1.0.1
+Provides:  bundled(npm(path-key)) = 3.1.1
+Provides:  bundled(npm(popper.js)) = 1.16.1
+Provides:  bundled(npm(prelude-ls)) = 1.2.1
+Provides:  bundled(npm(prop-types)) = 15.8.1
+Provides:  bundled(npm(prop-types-extra)) = 1.1.1
+Provides:  bundled(npm(punycode)) = 2.3.0
+Provides:  bundled(npm(queue-microtask)) = 1.2.3
+Provides:  bundled(npm(react)) = 17.0.2
+Provides:  bundled(npm(react-dom)) = 17.0.2
+Provides:  bundled(npm(react-dropzone)) = 9.0.0
+Provides:  bundled(npm(react-fast-compare)) = 3.2.2
+Provides:  bundled(npm(react-is)) = 16.13.1
+Provides:  bundled(npm(resolve-from)) = 4.0.0
+Provides:  bundled(npm(reusify)) = 1.0.4
+Provides:  bundled(npm(rimraf)) = 3.0.2
+Provides:  bundled(npm(run-parallel)) = 1.2.0
+Provides:  bundled(npm(safe-buffer)) = 5.2.1
+Provides:  bundled(npm(safer-buffer)) = 2.1.2
+Provides:  bundled(npm(scheduler)) = 0.20.2
+Provides:  bundled(npm(shebang-command)) = 2.0.0
+Provides:  bundled(npm(shebang-regex)) = 3.0.0
+Provides:  bundled(npm(strip-ansi)) = 6.0.1
+Provides:  bundled(npm(strip-json-comments)) = 3.1.1
+Provides:  bundled(npm(supports-color)) = 7.2.0
+Provides:  bundled(npm(tabbable)) = 5.3.3
+Provides:  bundled(npm(text-table)) = 0.2.0
+Provides:  bundled(npm(tippy.js)) = 5.1.2
+Provides:  bundled(npm(tslib)) = 2.5.3
+Provides:  bundled(npm(type-check)) = 0.4.0
+Provides:  bundled(npm(type-fest)) = 0.20.2
+Provides:  bundled(npm(uri-js)) = 4.4.1
+Provides:  bundled(npm(victory-area)) = 36.6.10
+Provides:  bundled(npm(victory-axis)) = 36.6.10
+Provides:  bundled(npm(victory-bar)) = 36.6.10
+Provides:  bundled(npm(victory-brush-container)) = 36.6.10
+Provides:  bundled(npm(victory-chart)) = 36.6.10
+Provides:  bundled(npm(victory-core)) = 36.6.10
+Provides:  bundled(npm(victory-create-container)) = 36.6.10
+Provides:  bundled(npm(victory-cursor-container)) = 36.6.10
+Provides:  bundled(npm(victory-group)) = 36.6.10
+Provides:  bundled(npm(victory-legend)) = 36.6.10
+Provides:  bundled(npm(victory-line)) = 36.6.10
+Provides:  bundled(npm(victory-pie)) = 36.6.10
+Provides:  bundled(npm(victory-polar-axis)) = 36.6.10
+Provides:  bundled(npm(victory-scatter)) = 36.6.10
+Provides:  bundled(npm(victory-selection-container)) = 36.6.10
+Provides:  bundled(npm(victory-shared-events)) = 36.6.10
+Provides:  bundled(npm(victory-stack)) = 36.6.10
+Provides:  bundled(npm(victory-tooltip)) = 36.6.10
+Provides:  bundled(npm(victory-vendor)) = 36.6.10
+Provides:  bundled(npm(victory-voronoi-container)) = 36.6.10
+Provides:  bundled(npm(victory-zoom-container)) = 36.6.10
+Provides:  bundled(npm(warning)) = 4.0.3
+Provides:  bundled(npm(which)) = 2.0.2
+Provides:  bundled(npm(wrappy)) = 1.0.2
+Provides:  bundled(npm(yocto-queue)) = 0.1.0
 ##### Bundled cargo crates list - END #####
 
 BuildRequires:    nspr-devel >= 4.32
@@ -285,41 +469,17 @@ Source2:          %{name}-devel.README
 Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download/%{jemalloc_ver}/%{jemalloc_name}-%{jemalloc_ver}.tar.bz2
 %endif
 Source4:          389-ds-base.sysusers
-Source5:          vendor-%{version}-1.tar.gz
-Source6:          Cargo-%{version}-1.lock
 
-Patch:            0001-Issue-6312-In-branch-2.5-healthcheck-report-an-inval.patch
-Patch:            0002-Issue-6316-lmdb-reindex-is-broken-if-index-type-is-s.patch
-Patch:            0003-Issue-6192-Test-failure-test_match_large_valueset.patch
-Patch:            0004-Issue-6307-Wrong-set-of-entries-returned-for-some-se.patch
-Patch:            0005-Issue-6381-CleanAllRUV-move-changelog-purging-to-the.patch
-Patch:            0006-Issue-6390-Adjust-cleanAllRUV-max-per-txn-and-interv.patch
-Patch:            0007-Issue-6284-BUG-freelist-ordering-causes-high-wtime-6.patch
-Patch:            0008-Issue-6296-basic_test.py-test_conn_limits-fails-in-m.patch
-Patch:            0009-Issue-5798-Fix-dsconf-config-multi-valued-attr-opera.patch
-Patch:            0010-Issue-6417-If-an-entry-RDN-is-identical-to-the-suffi.patch
-Patch:            0011-Issue-6417-2nd-If-an-entry-RDN-is-identical-to-the-s.patch
-Patch:            0012-Issue-6417-3rd-If-an-entry-RDN-is-identical-to-the-s.patch
-Patch:            0013-Issue-6432-Crash-during-bind-when-acct-policy-plugin.patch
-Patch:            0014-Issue-6386-backup-restore-broken-after-db-log-rotati.patch
-Patch:            0015-Issue-6446-on-replica-consumer-account-policy-plugin.patch
-Patch:            0016-Issue-6446-Fix-test_acct_policy_consumer-test-to-wai.patch
-Patch:            0017-Issue-6554-During-import-of-entries-without-nsUnique.patch
-Patch:            0018-Issue-6561-TLS-1.2-stickiness-in-FIPS-mode.patch
-Patch:            0019-Issue-6229-After-an-initial-failure-subsequent-onlin.patch
-Patch:            0020-Issue-6372-Deadlock-while-doing-online-backup-6475.patch
-Patch:            0021-Issue-6509-Race-condition-with-Paged-Result-searches.patch
-Patch:            0022-Issue-6436-MOD-on-a-large-group-slow-if-substring-in.patch
-Patch:            0023-Issue-6494-Various-errors-when-using-extended-matchi.patch
-Patch:            0024-Issue-6485-Fix-double-free-in-USN-cleanup-task.patch
-Patch:            0025-Issue-6427-fix-various-memory-leaks.patch
-Patch:            0026-Issue-6442-Fix-latest-covscan-memory-leaks.patch
-Patch:            0027-Issue-6442-Fix-latest-covscan-memory-leaks-part-2.patch
-Patch:            0028-Issue-6553-Update-concread-to-0.5.4-and-refactor-sta.patch
-Patch:            0029-Security-fix-for-CVE-2025-2487.patch
-Patch:            0030-Issue-6470-Some-replication-status-data-are-reset-up.patch
-
-Patch:            cargo.patch
+Patch:            0001-Issue-6468-Fix-building-for-older-versions-of-Python.patch
+Patch:            0002-Issue-6489-After-log-rotation-refresh-the-FD-pointer.patch
+Patch:            0003-Issue-6374-nsslapd-mdb-max-dbs-autotuning-doesn-t-wo.patch
+Patch:            0004-Issue-6090-Fix-dbscan-options-and-man-pages-6315.patch
+Patch:            0005-Issue-6566-RI-plugin-failure-to-handle-a-modrdn-for-.patch
+Patch:            0006-Issue-6258-Mitigate-race-condition-in-paged_results_.patch
+Patch:            0007-Issue-6229-After-an-initial-failure-subsequent-onlin.patch
+Patch:            0008-Issue-6554-During-import-of-entries-without-nsUnique.patch
+Patch:            0009-Issue-6561-TLS-1.2-stickiness-in-FIPS-mode.patch
+Patch:            0010-Issue-6090-dbscan-use-bdb-by-default.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -422,9 +582,6 @@ A cockpit UI Plugin for configuring and administering the 389 Directory Server
 %prep
 
 %autosetup -p1 -n %{name}-%{version}
-rm -rf vendor
-tar xzf %{SOURCE5}
-cp %{SOURCE6} src/Cargo.lock
 %if %{bundle_jemalloc}
 %setup -q -n %{name}-%{version} -T -D -b 3
 %endif
@@ -765,42 +922,68 @@ exit 0
 %endif
 
 %changelog
-* Mon Apr 14 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-9
-- Resolves: RHEL-83874 - CVE-2025-2487 389-ds-base: null pointer dereference leads to denial of service [rhel-9.5.z]
-- Resolves: RHEL-80712 - Increased memory consumption caused by NDN cache [rhel-9.5.z]
-- Resolves: RHEL-87194 - Some replication status data are reset upon a restart. [rhel-9.5.z]
+* Fri Mar 14 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-6
+- Resolves: RHEL-82271 - ipa-restore is failing with "Failed to start Directory Service"
 
-* Wed Mar 05 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-8
-- Fix changelog
+* Fri Mar 14 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-5
+- Resolves: RHEL-82271 - ipa-restore is failing with "Failed to start Directory Service"
 
-* Tue Mar 04 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-6
-- Resolves: RHEL-69825 - "Duplicated DN detected" errors when creating indexes or importing entries. [rhel-9.5.z]
-- Resolves: RHEL-70126 - Crash in attrlist_find() when the Account Policy plugin is enabled. [rhel-9.5.z]
-- Resolves: RHEL-74152 - backup/restore broken [rhel-9.5.z]
-- Resolves: RHEL-74157 - If an entry RDN is identical to the suffix, then Entryrdn gets broken during a reindex [rhel-9.5.z]
-- Resolves: RHEL-74167 - On replica consumer, account policy plugin fails to manage the last login history [rhel-9.5.z]
-- Resolves: RHEL-78343 - During import of entries without nsUniqueId, a supplier generates duplicate nsUniqueId (LMDB only) [rhel-9.5.z]
-- Resolves: RHEL-79497 - Failed to set sslversionmax to TLS1.3  in FIPS mode with dsconf $INSTANCE security set --tls-protocol-max TLS1.3 [rhel-9.5.z]
-- Resolves: RHEL-81102 - After an initial failure, subsequent online backups will not work. [rhel-9.5.z]
-- Resolves: RHEL-81107 - Online backup hangs sporadically. [rhel-9.5.z]
-- Resolves: RHEL-81113 - IPA LDAP error code T3 when no exceeded time limit from a paged search result [rhel-9.5.z]
-- Resolves: RHEL-81139 - Healthcheck tool should warn admin about creating a substring index on membership attribute [rhel-9.5.z]
-- Resolves: RHEL-81146 - 389DirectoryServer Process Stops When Setting up Sorted VLV Index [rhel-9.5.z]
-- Resolves: RHEL-81157 - AddressSanitizer: double-free  [rhel-9.5.z]
-- Resolves: RHEL-81171 - leaked_storage: Variable "childelems" going out of scope leaks the storage it points to. [rhel-9.5.z]
+* Wed Feb 19 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-4
+- Resolves: RHEL-78722 - Failed to set sslversionmax to TLS1.3 in FIPS mode with dsconf $INSTANCE security set --tls-protocol-max TLS1.3
 
-* Fri Jan 24 2025 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-5
-- Resolves: RHEL-74350 - Some nsslapd-haproxy-trusted-ip values are discarded upon a restart. [rhel-9.5.z]
+* Wed Feb 12 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-3
+- Resolves: RHEL-18333 Can't rename users member of automember rule
+- Resolves: RHEL-61341 After an initial failure, subsequent online backups will not work.
+- Resolves: RHEL-63887 nsslapd-mdb-max-dbs autotuning doesn't work properly
+- Resolves: RHEL-63891 dbscan crashes when showing statistics for MDB
+- Resolves: RHEL-63998 dsconf should check for number of available named databases
+- Resolves: RHEL-78344 During import of entries without nsUniqueId, a supplier generates duplicate nsUniqueId (LMDB only) [rhel-9]
 
-* Mon Dec 09 2024 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-4
-- Resolves: RHEL-70257 - Freelist ordering causes high wtime [rhel-9.5.z]
+* Sat Feb 01 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-2
+- Resolves: RHEL-76748: ns-slapd crashes with data directory ≥ 2 days old
 
-* Thu Dec 05 2024 James Chapman <jachapma@redhat.com> - 2.5.2-3
-- Bump version to 2.5.2-3
-- Resolves: RHEL-65775 - Wrong set of entries returned for some search filters [rhel-9.5.z]
-- Resolves: RHEL-66138 - deadlock during cleanAllRuv [rhel-9.5.z]
-- Resolves: RHEL-67163 - cleanallruv consums CPU and is slow [rhel-9.5.z]
-- Resolves: RHEL-70257 - Freelist ordering causes high wtime [rhel-9.5.z]
+* Tue Jan 28 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-1
+- Update to 2.6.1
+- Resolves: RHEL-5151 - [RFE] defer memberof nested updates
+- Resolves: RHEL-54148 - leaked_storage: Variable "childelems" going out of scope leaks the storage it points to.
+- Resolves: RHEL-60135 - deadlock during cleanAllRuv
+- Resolves: RHEL-61341 - After an initial failure, subsequent online backups will not work.
+- Resolves: RHEL-61349 - Remove deprecated setting for HR time stamps in logs
+- Resolves: RHEL-62875 - Passwords are not being updated to use the configured storage scheme ( nsslapd-enable-upgrade-hash is enabled ).
+- Resolves: RHEL-64438 - VLV errors with RSNv3 and pruning enabled [rhel-9]
+- Resolves: RHEL-64854 - cleanallruv consums CPU and is slow
+- Resolves: RHEL-65506 - AddressSanitizer: double-free
+- Resolves: RHEL-65512 - AddressSanitizer: heap-use-after-free in import_abort_all
+- Resolves: RHEL-65561 - LeakSanitizer: detected memory leaks in dbmdb_public_db_op
+- Resolves: RHEL-65662 - Replication issue between masters using cert based authentication
+- Resolves: RHEL-65664 - LDAP unprotected search query during certificate based authentication
+- Resolves: RHEL-65665 - Ambiguous warning about SELinux in dscreate for non-root user
+- Resolves: RHEL-65741 - LeakSanitizer: memory leak in ldbm_entryrdn.c
+- Resolves: RHEL-65776 - Wrong set of entries returned for some search filters [rhel-9]
+- Resolves: RHEL-67004 - "dsconf config replace" should handle multivalued attributes.
+- Resolves: RHEL-67005 - Online backup hangs sporadically.
+- Resolves: RHEL-67008 - Some replication status data are reset upon a restart.
+- Resolves: RHEL-67020 - 389DirectoryServer Process Stops When Setting up Sorted VLV Index
+- Resolves: RHEL-67024 - Some nsslapd-haproxy-trusted-ip values are discarded upon a restart.
+- Resolves: RHEL-69806 - ipahealthcheck.ds.replication displays WARNING '1 conflict entries found under the replication suffix'
+- Resolves: RHEL-69826 - "Duplicated DN detected" errors when creating indexes or importing entries. [rhel-9]
+- Resolves: RHEL-70127 - Crash in attrlist_find() when the Account Policy plugin is enabled. [rhel-9]
+- Resolves: RHEL-70252 - Freelist ordering causes high wtime
+- Resolves: RHEL-71218 - Sub suffix causes "id2entry - Could not open id2entry err 0" error when the Directory Server starts [rhel-9]
+- Resolves: RHEL-74153 - backup/restore broken [rhel-9]
+- Resolves: RHEL-74158 - If an entry RDN is identical to the suffix, then Entryrdn gets broken during a reindex [rhel-9]
+- Resolves: RHEL-74163 - Crash during bind when acct policy plugin does not have "alwaysrecordlogin" set [rhel-9]
+- Resolves: RHEL-74168 - On replica consumer, account policy plugin fails to manage the last login history [rhel-9]
+- Resolves: RHEL-74174 - Replication broken after backup restore with freeipa configuration [rhel-9]
+- Resolves: RHEL-74353 - nsslapd-haproxy-trusted-ip is not in schema [rhel-9]
+- Resolves: RHEL-76019 - IPA LDAP error code T3 when no exceeded time limit from a paged search result [rhel-9]
+
+* Mon Dec 16 2024 Viktor Ashirov <vashirov@redhat.com> - 2.6.0-2
+- Fix License tag
+
+* Mon Dec 16 2024 Viktor Ashirov <vashirov@redhat.com> - 2.6.0-1
+- Update to 2.6.0
+- Resolves: RHEL-67195 - Rebase 389-ds-base to 2.6.0
 
 * Mon Sep 16 2024 Viktor Ashirov <vashirov@redhat.com> - 2.5.2-2
 - Bump version to 2.5.2-2
