@@ -1,0 +1,26 @@
+From 5b12463bfeb518f016acb14bc118b5f8ad3eef5e Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Thu, 15 May 2025 09:22:22 +0200
+Subject: [PATCH] Issue 6655 - fix merge conflict
+
+---
+ dirsrvtests/tests/suites/replication/acceptance_test.py | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/replication/acceptance_test.py b/dirsrvtests/tests/suites/replication/acceptance_test.py
+index 0f18edb44..6b5186127 100644
+--- a/dirsrvtests/tests/suites/replication/acceptance_test.py
++++ b/dirsrvtests/tests/suites/replication/acceptance_test.py
+@@ -1,9 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-<<<<<<< HEAD
+-# Copyright (C) 2021 Red Hat, Inc.
+-=======
+ # Copyright (C) 2025 Red Hat, Inc.
+->>>>>>> a623c3f90 (Issue 6655 - fix replication release replica decoding error)
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+-- 
+2.49.0
+

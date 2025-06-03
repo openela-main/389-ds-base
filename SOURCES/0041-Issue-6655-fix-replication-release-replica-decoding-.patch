@@ -1,0 +1,126 @@
+From ebe986c78c6cd4e1f10172d8a8a11faf814fbc22 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 6 Mar 2025 16:49:53 -0500
+Subject: [PATCH] Issue 6655 - fix replication release replica decoding error
+
+Description:
+
+When a start replication session extended op is received acquire and
+release exclusive access before returning the result to the client.
+Otherwise there is a race condition where a "end" replication extended
+op can arrive before the replica is released and that leads to a
+decoding error on the other replica.
+
+Relates: https://github.com/389ds/389-ds-base/issues/6655
+
+Reviewed by: spichugi, tbordaz, and vashirov(Thanks!!!)
+---
+ .../suites/replication/acceptance_test.py     | 12 ++++++++++
+ ldap/servers/plugins/replication/repl_extop.c | 24 ++++++++++++-------
+ 2 files changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/replication/acceptance_test.py b/dirsrvtests/tests/suites/replication/acceptance_test.py
+index fc8622051..0f18edb44 100644
+--- a/dirsrvtests/tests/suites/replication/acceptance_test.py
++++ b/dirsrvtests/tests/suites/replication/acceptance_test.py
+@@ -1,5 +1,9 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
++<<<<<<< HEAD
+ # Copyright (C) 2021 Red Hat, Inc.
++=======
++# Copyright (C) 2025 Red Hat, Inc.
++>>>>>>> a623c3f90 (Issue 6655 - fix replication release replica decoding error)
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -453,6 +457,13 @@ def test_multi_subsuffix_replication(topo_m4):
+                             f"User {user_dn} on supplier {user_obj._instance.serverid} "
+                             f"still has 'Description {j}'"
+                         )
++
++        # Check there are no decoding errors
++        assert not topo_m4.ms["supplier1"].ds_error_log.match('.*decoding failed.*')
++        assert not topo_m4.ms["supplier2"].ds_error_log.match('.*decoding failed.*')
++        assert not topo_m4.ms["supplier3"].ds_error_log.match('.*decoding failed.*')
++        assert not topo_m4.ms["supplier4"].ds_error_log.match('.*decoding failed.*')
++
+     finally:
+         for suffix, test_users in test_users_by_suffix.items():
+             for user in test_users:
+@@ -507,6 +518,7 @@ def test_new_suffix(topo_m4, new_suffix):
+     repl.remove_supplier(m1)
+     repl.remove_supplier(m2)
+ 
++
+ def test_many_attrs(topo_m4, create_entry):
+     """Check a replication with many attributes (add and delete)
+ 
+diff --git a/ldap/servers/plugins/replication/repl_extop.c b/ldap/servers/plugins/replication/repl_extop.c
+index 14b756df1..dacc611c0 100644
+--- a/ldap/servers/plugins/replication/repl_extop.c
++++ b/ldap/servers/plugins/replication/repl_extop.c
+@@ -1134,6 +1134,12 @@ send_response:
+         slapi_pblock_set(pb, SLAPI_EXT_OP_RET_OID, REPL_NSDS50_REPLICATION_RESPONSE_OID);
+     }
+ 
++    /* connext (release our hold on it at least) */
++    if (NULL != connext) {
++        /* don't free it, just let go of it */
++        consumer_connection_extension_relinquish_exclusive_access(conn, connid, opid, PR_FALSE);
++    }
++
+     slapi_pblock_set(pb, SLAPI_EXT_OP_RET_VALUE, resp_bval);
+     slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name,
+                   "multimaster_extop_StartNSDS50ReplicationRequest - "
+@@ -1251,12 +1257,6 @@ send_response:
+     if (NULL != ruv_bervals) {
+         ber_bvecfree(ruv_bervals);
+     }
+-    /* connext (our hold on it at least) */
+-    if (NULL != connext) {
+-        /* don't free it, just let go of it */
+-        consumer_connection_extension_relinquish_exclusive_access(conn, connid, opid, PR_FALSE);
+-        connext = NULL;
+-    }
+ 
+     return return_value;
+ }
+@@ -1389,6 +1389,13 @@ multimaster_extop_EndNSDS50ReplicationRequest(Slapi_PBlock *pb)
+         }
+     }
+ send_response:
++    /* connext (release our hold on it at least) */
++    if (NULL != connext) {
++        /* don't free it, just let go of it */
++        consumer_connection_extension_relinquish_exclusive_access(conn, connid, opid, PR_FALSE);
++        connext = NULL;
++    }
++
+     /* Send the response code */
+     if ((resp_bere = der_alloc()) == NULL) {
+         goto free_and_return;
+@@ -1419,11 +1426,10 @@ free_and_return:
+     if (NULL != resp_bval) {
+         ber_bvfree(resp_bval);
+     }
+-    /* connext (our hold on it at least) */
++    /* connext (release our hold on it if not already released) */
+     if (NULL != connext) {
+         /* don't free it, just let go of it */
+         consumer_connection_extension_relinquish_exclusive_access(conn, connid, opid, PR_FALSE);
+-        connext = NULL;
+     }
+ 
+     return return_value;
+@@ -1516,7 +1522,7 @@ multimaster_extop_abort_cleanruv(Slapi_PBlock *pb)
+                       rid);
+     }
+     /*
+-     *  Get the replica 
++     *  Get the replica
+      */
+     if ((r = replica_get_replica_from_root(repl_root)) == NULL) {
+         slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name, "multimaster_extop_abort_cleanruv - "
+-- 
+2.49.0
+

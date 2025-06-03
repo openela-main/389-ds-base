@@ -1,0 +1,72 @@
+From 52041811b200292af6670490c9ebc1f599439a22 Mon Sep 17 00:00:00 2001
+From: Masahiro Matsuya <mmatsuya@redhat.com>
+Date: Sat, 22 Mar 2025 01:25:25 +0900
+Subject: [PATCH] Issue 6494 - (4th) Various errors when using extended
+ matching rule on vlv sort filter
+
+test_vlv_with_mr uses vlv_setup_with_uid_mr fixture to setup backend
+and testusers. add_users function is called in beh.setup without any
+suffix for the created backend. As a result, testusers always are
+created in the DEFAULT_SUFFIX only by add_users function. Another test
+like test_vlv_recreation_reindex can create the same test user in
+DEFAULT_SUFFIX, and it caused the ALREADY_EXISTS failure in
+test_vlv_with_mr test.
+
+In main branch, add_users have suffix argument. Test users are created
+on the specific suffix, and the backend is cleaned up after the test.
+This PR is to follow the same implementation.
+
+Also, suppressing ldap.ALREADY_EXISTS makes the add_users func to be
+used easily.
+
+Related: https://github.com/389ds/389-ds-base/issues/6494
+---
+ dirsrvtests/tests/suites/vlv/regression_test.py | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/vlv/regression_test.py b/dirsrvtests/tests/suites/vlv/regression_test.py
+index d069fdbaf..e9408117b 100644
+--- a/dirsrvtests/tests/suites/vlv/regression_test.py
++++ b/dirsrvtests/tests/suites/vlv/regression_test.py
+@@ -21,6 +21,7 @@ from lib389.idm.organization import Organization
+ from lib389.idm.organizationalunit import OrganizationalUnits
+ from ldap.controls.vlv import VLVRequestControl
+ from ldap.controls.sss import SSSRequestControl
++from contextlib import suppress
+ 
+ pytestmark = pytest.mark.tier1
+ 
+@@ -68,8 +69,8 @@ def check_vlv_search(conn):
+         assert dn.lower() == expected_dn.lower()
+ 
+ 
+-def add_users(inst, users_num):
+-    users = UserAccounts(inst, DEFAULT_SUFFIX)
++def add_users(inst, users_num, suffix=DEFAULT_SUFFIX):
++    users = UserAccounts(inst, suffix)
+     log.info(f'Adding {users_num} users')
+     for i in range(0, users_num):
+         uid = 1000 + i
+@@ -81,8 +82,8 @@ def add_users(inst, users_num):
+             'gidNumber': str(uid),
+             'homeDirectory': f'/home/testuser{uid}'
+         }
+-        users.create(properties=user_properties)
+-
++        with suppress(ldap.ALREADY_EXISTS):
++            users.create(properties=user_properties)
+ 
+ 
+ def create_vlv_search_and_index(inst, basedn=DEFAULT_SUFFIX, bename='userRoot',
+@@ -173,7 +174,7 @@ class BackendHandler:
+                     'loginShell': '/bin/false',
+                     'userpassword': DEMO_PW })
+             # Add regular user
+-            add_users(self.inst, 10)
++            add_users(self.inst, 10, suffix=suffix)
+             # Removing ou2
+             ou2.delete()
+             # And export
+-- 
+2.49.0
+

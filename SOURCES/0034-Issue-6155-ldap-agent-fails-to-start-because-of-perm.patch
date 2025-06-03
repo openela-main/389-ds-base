@@ -1,0 +1,520 @@
+From b8c079c770d3eaa4de49e997d42e1501c28a153b Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Mon, 8 Jul 2024 11:19:09 +0200
+Subject: [PATCH] Issue 6155 - ldap-agent fails to start because of permission
+ error (#6179)
+
+Issue: dirsrv-snmp service fails to starts when SELinux is enforced because of AVC preventing to open some files
+One workaround is to use the dac_override capability but it is a bad practice.
+Fix: Setting proper permissions:
+
+Running ldap-agent with uid=root and gid=dirsrv to be able to access both snmp and dirsrv resources.
+Setting read permission on the group for the dse.ldif file
+Setting r/w permissions on the group for the snmp semaphore and mmap file
+For that one special care is needed because ns-slapd umask overrides the file creation permission
+as is better to avoid changing the umask (changing umask within the code is not thread safe,
+and the current 0022 umask value is correct for most of the files) so the safest way is to chmod the snmp file
+if the needed permission are not set.
+Issue: #6155
+
+Reviewed by: @droideck , @vashirov (Thanks ! )
+
+(cherry picked from commit eb7e57d77b557b63c65fdf38f9069893b021f049)
+---
+ .github/scripts/generate_matrix.py    |   4 +-
+ dirsrvtests/tests/suites/snmp/snmp.py | 214 ++++++++++++++++++++++++++
+ ldap/servers/slapd/agtmmap.c          |  72 ++++++++-
+ ldap/servers/slapd/agtmmap.h          |  13 ++
+ ldap/servers/slapd/dse.c              |   6 +-
+ ldap/servers/slapd/slap.h             |   6 +
+ ldap/servers/slapd/snmp_collator.c    |   4 +-
+ src/lib389/lib389/instance/setup.py   |   5 +
+ wrappers/systemd-snmp.service.in      |   1 +
+ 9 files changed, 313 insertions(+), 12 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/snmp/snmp.py
+
+diff --git a/.github/scripts/generate_matrix.py b/.github/scripts/generate_matrix.py
+index 584374597..8d67a1dc7 100644
+--- a/.github/scripts/generate_matrix.py
++++ b/.github/scripts/generate_matrix.py
+@@ -21,8 +21,8 @@ else:
+     # Use tests from the source
+     suites = next(os.walk('dirsrvtests/tests/suites/'))[1]
+ 
+-    # Filter out snmp as it is an empty directory:
+-    suites.remove('snmp')
++    # Filter out webui because of broken tests
++    suites.remove('webui')
+ 
+     # Run each replication test module separately to speed things up
+     suites.remove('replication')
+diff --git a/dirsrvtests/tests/suites/snmp/snmp.py b/dirsrvtests/tests/suites/snmp/snmp.py
+new file mode 100644
+index 000000000..0952deb40
+--- /dev/null
++++ b/dirsrvtests/tests/suites/snmp/snmp.py
+@@ -0,0 +1,214 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2024 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import os
++import pytest
++import logging
++import subprocess
++import ldap
++from datetime import datetime
++from shutil import copyfile
++from lib389.topologies import topology_m2 as topo_m2
++from lib389.utils import selinux_present
++
++
++DEBUGGING = os.getenv("DEBUGGING", default=False)
++if DEBUGGING:
++    logging.getLogger(__name__).setLevel(logging.DEBUG)
++else:
++    logging.getLogger(__name__).setLevel(logging.INFO)
++log = logging.getLogger(__name__)
++
++
++SNMP_USER = 'user_name'
++SNMP_PASSWORD = 'authentication_password'
++SNMP_PRIVATE = 'private_password'
++
++# LDAP OID in MIB
++LDAP_OID = '.1.3.6.1.4.1.2312.6.1.1'
++LDAPCONNECTIONS_OID = f'{LDAP_OID}.21'
++
++
++def run_cmd(cmd, check_returncode=True):
++    """Run a command"""
++
++    log.info(f'Run: {cmd}')
++    result = subprocess.run(cmd, capture_output=True, universal_newlines=True)
++    log.info(f'STDOUT of {cmd} is:\n{result.stdout}')
++    log.info(f'STDERR of {cmd} is:\n{result.stderr}')
++    if check_returncode:
++        result.check_returncode()
++    return result
++
++
++def add_lines(lines, filename):
++    """Add lines that are not already present at the end of a file"""
++
++    log.info(f'add_lines({lines}, {filename})')
++    try:
++        with open(filename, 'r') as fd:
++            for line in fd:
++                try:
++                    lines.remove(line.strip())
++                except ValueError:
++                    pass
++    except FileNotFoundError:
++        pass
++    if lines:
++        with open(filename, 'a') as fd:
++            for line in lines:
++                fd.write(f'{line}\n')
++
++
++def remove_lines(lines, filename):
++    """Remove lines in a file"""
++
++    log.info(f'remove_lines({lines}, {filename})')
++    file_lines = []
++    with open(filename, 'r') as fd:
++        for line in fd:
++            if not line.strip() in lines:
++                file_lines.append(line)
++    with open(filename, 'w') as fd:
++        for line in file_lines:
++            fd.write(line)
++
++
++@pytest.fixture(scope="module")
++def setup_snmp(topo_m2, request):
++    """Install snmp and configure it
++
++    Returns the time just before dirsrv-snmp get restarted
++    """
++
++    inst1 = topo_m2.ms["supplier1"]
++    inst2 = topo_m2.ms["supplier2"]
++
++    # Check for the test prerequisites
++    if os.getuid() != 0:
++        pytest.skip('This test should be run by root superuser')
++        return None
++    if not inst1.with_systemd_running():
++        pytest.skip('This test requires systemd')
++        return None
++    required_packages = {
++        '389-ds-base-snmp': os.path.join(inst1.get_sbin_dir(), 'ldap-agent'),
++        'net-snmp': '/etc/snmp/snmpd.conf', }
++    skip_msg = ""
++    for package,file in required_packages.items():
++        if not os.path.exists(file):
++            skip_msg += f"Package {package} is not installed ({file} is missing).\n"
++    if skip_msg != "":
++        pytest.skip(f'This test requires the following package(s): {skip_msg}')
++        return None
++
++    # Install snmp
++    # run_cmd(['/usr/bin/dnf', 'install', '-y', 'net-snmp', 'net-snmp-utils', '389-ds-base-snmp'])
++
++    # Prepare the lines to add/remove in files:
++    #  master agentx
++    #  snmp user (user_name - authentication_password - private_password)
++    #  ldap_agent ds instances
++    #
++    # Adding rwuser and createUser lines is the same as running:
++    #  net-snmp-create-v3-user -A authentication_password -a SHA -X private_password -x AES user_name
++    # but has the advantage of removing the user at cleanup phase
++    #
++    agent_cfg = '/etc/dirsrv/config/ldap-agent.conf'
++    lines_dict = { '/etc/snmp/snmpd.conf' : ['master agentx', f'rwuser {SNMP_USER}'],
++                   '/var/lib/net-snmp/snmpd.conf' : [
++                        f'createUser {SNMP_USER} SHA "{SNMP_PASSWORD}" AES "{SNMP_PRIVATE}"',],
++                   agent_cfg : [] }
++    for inst in topo_m2:
++        lines_dict[agent_cfg].append(f'server slapd-{inst.serverid}')
++
++    # Prepare the cleanup
++    def fin():
++        run_cmd(['systemctl', 'stop', 'dirsrv-snmp'])
++        if not DEBUGGING:
++            run_cmd(['systemctl', 'stop', 'snmpd'])
++            try:
++                os.remove('/usr/share/snmp/mibs/redhat-directory.mib')
++            except FileNotFoundError:
++                pass
++            for filename,lines in lines_dict.items():
++                remove_lines(lines, filename)
++            run_cmd(['systemctl', 'start', 'snmpd'])
++
++    request.addfinalizer(fin)
++
++    # Copy RHDS MIB in default MIB search path (Ugly because I have not found how to change the search path)
++    copyfile('/usr/share/dirsrv/mibs/redhat-directory.mib', '/usr/share/snmp/mibs/redhat-directory.mib')
++
++    run_cmd(['systemctl', 'stop', 'snmpd'])
++    for filename,lines in lines_dict.items():
++        add_lines(lines, filename)
++
++    run_cmd(['systemctl', 'start', 'snmpd'])
++
++    curtime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
++
++    run_cmd(['systemctl', 'start', 'dirsrv-snmp'])
++    return curtime
++
++
++@pytest.mark.skipif(not os.path.exists('/usr/bin/snmpwalk'), reason="net-snmp-utils package is not installed")
++def test_snmpwalk(topo_m2, setup_snmp):
++    """snmp smoke tests.
++
++    :id: e5d29998-1c21-11ef-a654-482ae39447e5
++    :setup: Two suppliers replication setup, snmp
++    :steps:
++        1. use snmpwalk to display LDAP statistics
++        2.  use snmpwalk to get the number of open connections
++    :expectedresults:
++        1. Success and no messages in stderr
++        2. The number of open connections should be positive
++    """
++
++    inst1 = topo_m2.ms["supplier1"]
++    inst2 = topo_m2.ms["supplier2"]
++
++
++    cmd = [ '/usr/bin/snmpwalk', '-v3', '-u', SNMP_USER, '-l', 'AuthPriv',
++            '-m', '+RHDS-MIB', '-A', SNMP_PASSWORD, '-a', 'SHA',
++            '-X', SNMP_PRIVATE, '-x', 'AES', 'localhost',
++            LDAP_OID ]
++    result = run_cmd(cmd)
++    assert not result.stderr
++
++    cmd = [ '/usr/bin/snmpwalk', '-v3', '-u', SNMP_USER, '-l', 'AuthPriv',
++            '-m', '+RHDS-MIB', '-A', SNMP_PASSWORD, '-a', 'SHA',
++            '-X', SNMP_PRIVATE, '-x', 'AES', 'localhost',
++            f'{LDAPCONNECTIONS_OID}.{inst1.port}', '-Ov' ]
++    result = run_cmd(cmd)
++    nbconns = int(result.stdout.split()[1])
++    log.info(f'There are {nbconns} open connections on {inst1.serverid}')
++    assert nbconns > 0
++
++
++@pytest.mark.skipif(not selinux_present(), reason="SELinux is not enabled")
++def test_snmp_avc(topo_m2, setup_snmp):
++    """snmp smoke tests.
++
++    :id: fb79728e-1d0d-11ef-9213-482ae39447e5
++    :setup: Two suppliers replication setup, snmp
++    :steps:
++        1. Get the system journal about ldap-agent
++    :expectedresults:
++        1. No AVC should be present
++    """
++    result = run_cmd(['journalctl', '-S', setup_snmp, '-g', 'ldap-agent'])
++    assert not 'AVC' in result.stdout
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main("-s %s" % CURRENT_FILE)
+diff --git a/ldap/servers/slapd/agtmmap.c b/ldap/servers/slapd/agtmmap.c
+index bc5fe1ee1..4dc67dcfb 100644
+--- a/ldap/servers/slapd/agtmmap.c
++++ b/ldap/servers/slapd/agtmmap.c
+@@ -34,6 +34,70 @@
+ agt_mmap_context_t mmap_tbl[2] = {{AGT_MAP_UNINIT, -1, (caddr_t)-1},
+                                   {AGT_MAP_UNINIT, -1, (caddr_t)-1}};
+ 
++#define CHECK_MAP_FAILURE(addr) ((addr)==NULL || (addr) == (caddr_t) -1)
++
++
++/****************************************************************************
++ *
++ *  agt_set_fmode () - try to increase file mode if some flags are missing.
++ *
++ *
++ * Inputs:
++ *    fd -> The file descriptor.
++ *
++ *    mode -> the wanted mode
++ *
++ * Outputs:           None
++ * Return Values:     None
++ *
++ ****************************************************************************/
++static void
++agt_set_fmode(int fd, mode_t mode)
++{
++    /* ns-slapd umask is 0022 which is usually fine.
++     * but ldap-agen needs S_IWGRP permission on snmp semaphore and mmap file
++     * ( when SELinux is enforced process with uid=0 does not bypass the file permission
++     * (unless the unfamous dac_override capability is set)
++     * Changing umask could lead to race conditions so it is better to check the
++     * file permission and change them if needed and if the process own the file.
++     */
++    struct stat fileinfo = {0};
++    if (fstat(fd, &fileinfo) == 0 && fileinfo.st_uid == getuid() &&
++        (fileinfo.st_mode & mode) != mode) {
++        (void) fchmod(fd, fileinfo.st_mode | mode);
++    }
++}
++
++/****************************************************************************
++ *
++ *  agt_sem_open () - Like sem_open but ignores umask
++ *
++ *
++ * Inputs:            see sem_open man page.
++ * Outputs:           see sem_open man page.
++ * Return Values:     see sem_open man page.
++ *
++ ****************************************************************************/
++sem_t *
++agt_sem_open(const char *name, int oflag, mode_t mode, unsigned int value)
++{
++    sem_t *sem = sem_open(name, oflag, mode, value);
++    char *semname = NULL;
++
++    if (sem != NULL) {
++        if (asprintf(&semname, "/dev/shm/sem.%s", name+1) > 0) {
++            int fd = open(semname, O_RDONLY);
++            if (fd >= 0) {
++                agt_set_fmode(fd, mode);
++                (void) close(fd);
++            }
++            free(semname);
++            semname = NULL;
++        }
++    }
++    return sem;
++}
++
+ /****************************************************************************
+  *
+  *  agt_mopen_stats () - open and Memory Map the stats file.  agt_mclose_stats()
+@@ -52,7 +116,6 @@ agt_mmap_context_t mmap_tbl[2] = {{AGT_MAP_UNINIT, -1, (caddr_t)-1},
+  *               as defined in <errno.h>, otherwise.
+  *
+  ****************************************************************************/
+-
+ int
+ agt_mopen_stats(char *statsfile, int mode, int *hdl)
+ {
+@@ -64,6 +127,7 @@ agt_mopen_stats(char *statsfile, int mode, int *hdl)
+     int err;
+     size_t sz;
+     struct stat fileinfo;
++    mode_t rw_mode = S_IWUSR | S_IRUSR | S_IRGRP | S_IWGRP | S_IROTH;
+ 
+     switch (mode) {
+     case O_RDONLY:
+@@ -128,10 +192,7 @@ agt_mopen_stats(char *statsfile, int mode, int *hdl)
+         break;
+ 
+     case O_RDWR:
+-        fd = open(path,
+-                  O_RDWR | O_CREAT,
+-                  S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+-
++        fd = open(path, O_RDWR | O_CREAT, rw_mode);
+         if (fd < 0) {
+             err = errno;
+ #if (0)
+@@ -140,6 +201,7 @@ agt_mopen_stats(char *statsfile, int mode, int *hdl)
+             rc = err;
+             goto bail;
+         }
++        agt_set_fmode(fd, rw_mode);
+ 
+         if (fstat(fd, &fileinfo) != 0) {
+             close(fd);
+diff --git a/ldap/servers/slapd/agtmmap.h b/ldap/servers/slapd/agtmmap.h
+index fb27ab2c4..99a8584a3 100644
+--- a/ldap/servers/slapd/agtmmap.h
++++ b/ldap/servers/slapd/agtmmap.h
+@@ -28,6 +28,7 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <fcntl.h>
++#include <semaphore.h>
+ #include <errno.h>
+ #include "nspr.h"
+ 
+@@ -188,6 +189,18 @@ int agt_mclose_stats(int hdl);
+ 
+ int agt_mread_stats(int hdl, struct hdr_stats_t *, struct ops_stats_t *, struct entries_stats_t *);
+ 
++/****************************************************************************
++ *
++ *  agt_sem_open () - Like sem_open but ignores umask
++ *
++ *
++ * Inputs:            see sem_open man page.
++ * Outputs:           see sem_open man page.
++ * Return Values:     see sem_open man page.
++ *
++ ****************************************************************************/
++sem_t *agt_sem_open(const char *name, int oflag, mode_t mode, unsigned int value);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/ldap/servers/slapd/dse.c b/ldap/servers/slapd/dse.c
+index b04fafde6..f1e48c6b1 100644
+--- a/ldap/servers/slapd/dse.c
++++ b/ldap/servers/slapd/dse.c
+@@ -683,7 +683,7 @@ dse_read_one_file(struct dse *pdse, const char *filename, Slapi_PBlock *pb, int
+                           "The configuration file %s could not be accessed, error %d\n",
+                           filename, rc);
+             rc = 0; /* Fail */
+-        } else if ((prfd = PR_Open(filename, PR_RDONLY, SLAPD_DEFAULT_FILE_MODE)) == NULL) {
++        } else if ((prfd = PR_Open(filename, PR_RDONLY, SLAPD_DEFAULT_DSE_FILE_MODE)) == NULL) {
+             slapi_log_err(SLAPI_LOG_ERR, "dse_read_one_file",
+                           "The configuration file %s could not be read. " SLAPI_COMPONENT_NAME_NSPR " %d (%s)\n",
+                           filename,
+@@ -871,7 +871,7 @@ dse_rw_permission_to_one_file(const char *name, int loglevel)
+         PRFileDesc *prfd;
+ 
+         prfd = PR_Open(name, PR_RDWR | PR_CREATE_FILE | PR_TRUNCATE,
+-                       SLAPD_DEFAULT_FILE_MODE);
++                       SLAPD_DEFAULT_DSE_FILE_MODE);
+         if (NULL == prfd) {
+             prerr = PR_GetError();
+             accesstype = "create";
+@@ -970,7 +970,7 @@ dse_write_file_nolock(struct dse *pdse)
+     fpw.fpw_prfd = NULL;
+ 
+     if (NULL != pdse->dse_filename) {
+-        if ((fpw.fpw_prfd = PR_Open(pdse->dse_tmpfile, PR_RDWR | PR_CREATE_FILE | PR_TRUNCATE, SLAPD_DEFAULT_FILE_MODE)) == NULL) {
++        if ((fpw.fpw_prfd = PR_Open(pdse->dse_tmpfile, PR_RDWR | PR_CREATE_FILE | PR_TRUNCATE, SLAPD_DEFAULT_DSE_FILE_MODE)) == NULL) {
+             rc = PR_GetOSError();
+             slapi_log_err(SLAPI_LOG_ERR, "dse_write_file_nolock", "Cannot open "
+                                                                   "temporary DSE file \"%s\" for update: OS error %d (%s)\n",
+diff --git a/ldap/servers/slapd/slap.h b/ldap/servers/slapd/slap.h
+index 469874fd1..927576b70 100644
+--- a/ldap/servers/slapd/slap.h
++++ b/ldap/servers/slapd/slap.h
+@@ -238,6 +238,12 @@ typedef void (*VFPV)(); /* takes undefined arguments */
+  */
+ 
+ #define SLAPD_DEFAULT_FILE_MODE S_IRUSR | S_IWUSR
++/* ldap_agent run as uid=root gid=dirsrv and requires S_IRGRP | S_IWGRP
++ * on semaphore and mmap file if SELinux is enforced.
++ */
++#define SLAPD_DEFAULT_SNMP_FILE_MODE S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP
++/* ldap_agent run as uid=root gid=dirsrv and requires S_IRGRP on dse.ldif if SELinux is enforced. */
++#define SLAPD_DEFAULT_DSE_FILE_MODE S_IRUSR | S_IWUSR | S_IRGRP
+ #define SLAPD_DEFAULT_DIR_MODE S_IRWXU
+ #define SLAPD_DEFAULT_IDLE_TIMEOUT 3600 /* seconds - 0 == never */
+ #define SLAPD_DEFAULT_IDLE_TIMEOUT_STR "3600"
+diff --git a/ldap/servers/slapd/snmp_collator.c b/ldap/servers/slapd/snmp_collator.c
+index c998d4262..bd7020585 100644
+--- a/ldap/servers/slapd/snmp_collator.c
++++ b/ldap/servers/slapd/snmp_collator.c
+@@ -474,7 +474,7 @@ static void
+ snmp_collator_create_semaphore(void)
+ {
+     /* First just try to create the semaphore.  This should usually just work. */
+-    if ((stats_sem = sem_open(stats_sem_name, O_CREAT | O_EXCL, SLAPD_DEFAULT_FILE_MODE, 1)) == SEM_FAILED) {
++    if ((stats_sem = agt_sem_open(stats_sem_name, O_CREAT | O_EXCL, SLAPD_DEFAULT_SNMP_FILE_MODE, 1)) == SEM_FAILED) {
+         if (errno == EEXIST) {
+             /* It appears that we didn't exit cleanly last time and left the semaphore
+              * around.  Recreate it since we don't know what state it is in. */
+@@ -486,7 +486,7 @@ snmp_collator_create_semaphore(void)
+                 exit(1);
+             }
+ 
+-            if ((stats_sem = sem_open(stats_sem_name, O_CREAT | O_EXCL, SLAPD_DEFAULT_FILE_MODE, 1)) == SEM_FAILED) {
++            if ((stats_sem = agt_sem_open(stats_sem_name, O_CREAT | O_EXCL, SLAPD_DEFAULT_SNMP_FILE_MODE, 1)) == SEM_FAILED) {
+                 /* No dice */
+                 slapi_log_err(SLAPI_LOG_EMERG, "snmp_collator_create_semaphore",
+                               "Failed to create semaphore for stats file (/dev/shm/sem.%s). Error %d (%s).\n",
+diff --git a/src/lib389/lib389/instance/setup.py b/src/lib389/lib389/instance/setup.py
+index 036664447..fca03383e 100644
+--- a/src/lib389/lib389/instance/setup.py
++++ b/src/lib389/lib389/instance/setup.py
+@@ -10,6 +10,7 @@
+ import os
+ import sys
+ import shutil
++import stat
+ import pwd
+ import grp
+ import re
+@@ -773,6 +774,10 @@ class SetupDs(object):
+                 ldapi_autobind="on",
+             )
+             file_dse.write(dse_fmt)
++            # Set minimum permission required by snmp ldap-agent
++            status = os.fstat(file_dse.fileno())
++            os.fchmod(file_dse.fileno(), status.st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
++        os.chown(os.path.join(slapd['config_dir'], 'dse.ldif'), slapd['user_uid'], slapd['group_gid'])
+ 
+         self.log.info("Create file system structures ...")
+         # Create all the needed paths
+diff --git a/wrappers/systemd-snmp.service.in b/wrappers/systemd-snmp.service.in
+index f18766cb4..d344367a0 100644
+--- a/wrappers/systemd-snmp.service.in
++++ b/wrappers/systemd-snmp.service.in
+@@ -9,6 +9,7 @@ After=network.target
+ 
+ [Service]
+ Type=forking
++Group=@defaultgroup@
+ PIDFile=/run/dirsrv/ldap-agent.pid
+ ExecStart=@sbindir@/ldap-agent @configdir@/ldap-agent.conf
+ 
+-- 
+2.49.0
+
