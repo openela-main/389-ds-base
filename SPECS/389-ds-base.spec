@@ -47,8 +47,8 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.6.1
-Release:          8%{?dist}
-License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
+Release:          9%{?dist}
+License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
 Conflicts:        freeipa-server < 4.0.3
@@ -60,78 +60,84 @@ Provides:         ldif2ldbm >= 0
 ##### Bundled cargo crates list - START #####
 Provides:  bundled(crate(addr2line)) = 0.24.2
 Provides:  bundled(crate(adler2)) = 2.0.0
-Provides:  bundled(crate(ahash)) = 0.8.11
-Provides:  bundled(crate(allocator-api2)) = 0.2.21
-Provides:  bundled(crate(arc-swap)) = 1.7.1
+Provides:  bundled(crate(ahash)) = 0.7.8
 Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.4.0
-Provides:  bundled(crate(backtrace)) = 0.3.74
+Provides:  bundled(crate(backtrace)) = 0.3.75
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 2.9.0
+Provides:  bundled(crate(bitflags)) = 2.9.1
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.26.0
-Provides:  bundled(crate(cc)) = 1.2.18
+Provides:  bundled(crate(cc)) = 1.2.25
 Provides:  bundled(crate(cfg-if)) = 1.0.0
 Provides:  bundled(crate(clap)) = 3.2.25
 Provides:  bundled(crate(clap_lex)) = 0.2.4
-Provides:  bundled(crate(concread)) = 0.5.5
+Provides:  bundled(crate(concread)) = 0.2.21
+Provides:  bundled(crate(crossbeam)) = 0.8.4
+Provides:  bundled(crate(crossbeam-channel)) = 0.5.15
+Provides:  bundled(crate(crossbeam-deque)) = 0.8.6
 Provides:  bundled(crate(crossbeam-epoch)) = 0.9.18
 Provides:  bundled(crate(crossbeam-queue)) = 0.3.12
 Provides:  bundled(crate(crossbeam-utils)) = 0.8.21
-Provides:  bundled(crate(equivalent)) = 1.0.2
-Provides:  bundled(crate(errno)) = 0.3.11
+Provides:  bundled(crate(errno)) = 0.3.12
 Provides:  bundled(crate(fastrand)) = 2.3.0
 Provides:  bundled(crate(fernet)) = 0.1.4
-Provides:  bundled(crate(foldhash)) = 0.1.5
 Provides:  bundled(crate(foreign-types)) = 0.3.2
 Provides:  bundled(crate(foreign-types-shared)) = 0.1.1
-Provides:  bundled(crate(getrandom)) = 0.3.2
+Provides:  bundled(crate(getrandom)) = 0.3.3
 Provides:  bundled(crate(gimli)) = 0.31.1
-Provides:  bundled(crate(hashbrown)) = 0.15.2
+Provides:  bundled(crate(hashbrown)) = 0.12.3
 Provides:  bundled(crate(heck)) = 0.4.1
 Provides:  bundled(crate(hermit-abi)) = 0.1.19
 Provides:  bundled(crate(indexmap)) = 1.9.3
+Provides:  bundled(crate(instant)) = 0.1.13
 Provides:  bundled(crate(itoa)) = 1.0.15
 Provides:  bundled(crate(jobserver)) = 0.1.33
-Provides:  bundled(crate(libc)) = 0.2.171
-Provides:  bundled(crate(linux-raw-sys)) = 0.9.3
+Provides:  bundled(crate(libc)) = 0.2.172
+Provides:  bundled(crate(linux-raw-sys)) = 0.9.4
+Provides:  bundled(crate(lock_api)) = 0.4.13
 Provides:  bundled(crate(log)) = 0.4.27
-Provides:  bundled(crate(lru)) = 0.13.0
+Provides:  bundled(crate(lru)) = 0.7.8
 Provides:  bundled(crate(memchr)) = 2.7.4
 Provides:  bundled(crate(miniz_oxide)) = 0.8.8
 Provides:  bundled(crate(object)) = 0.36.7
 Provides:  bundled(crate(once_cell)) = 1.21.3
-Provides:  bundled(crate(openssl)) = 0.10.72
+Provides:  bundled(crate(openssl)) = 0.10.73
 Provides:  bundled(crate(openssl-macros)) = 0.1.1
-Provides:  bundled(crate(openssl-sys)) = 0.9.107
+Provides:  bundled(crate(openssl-sys)) = 0.9.109
 Provides:  bundled(crate(os_str_bytes)) = 6.6.1
+Provides:  bundled(crate(parking_lot)) = 0.11.2
+Provides:  bundled(crate(parking_lot_core)) = 0.8.6
 Provides:  bundled(crate(paste)) = 0.1.18
 Provides:  bundled(crate(paste-impl)) = 0.1.18
 Provides:  bundled(crate(pin-project-lite)) = 0.2.16
 Provides:  bundled(crate(pkg-config)) = 0.3.32
+Provides:  bundled(crate(ppv-lite86)) = 0.2.21
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
-Provides:  bundled(crate(proc-macro2)) = 1.0.94
+Provides:  bundled(crate(proc-macro2)) = 1.0.95
 Provides:  bundled(crate(quote)) = 1.0.40
 Provides:  bundled(crate(r-efi)) = 5.2.0
+Provides:  bundled(crate(rand)) = 0.8.5
+Provides:  bundled(crate(rand_chacha)) = 0.3.1
+Provides:  bundled(crate(rand_core)) = 0.6.4
+Provides:  bundled(crate(redox_syscall)) = 0.2.16
 Provides:  bundled(crate(rustc-demangle)) = 0.1.24
-Provides:  bundled(crate(rustix)) = 1.0.5
+Provides:  bundled(crate(rustix)) = 1.0.7
 Provides:  bundled(crate(ryu)) = 1.0.20
+Provides:  bundled(crate(scopeguard)) = 1.2.0
 Provides:  bundled(crate(serde)) = 1.0.219
 Provides:  bundled(crate(serde_derive)) = 1.0.219
 Provides:  bundled(crate(serde_json)) = 1.0.140
 Provides:  bundled(crate(shlex)) = 1.3.0
 Provides:  bundled(crate(smallvec)) = 1.15.0
-Provides:  bundled(crate(sptr)) = 0.3.2
 Provides:  bundled(crate(strsim)) = 0.10.0
-Provides:  bundled(crate(syn)) = 2.0.100
-Provides:  bundled(crate(tempfile)) = 3.19.1
+Provides:  bundled(crate(syn)) = 2.0.101
+Provides:  bundled(crate(tempfile)) = 3.20.0
 Provides:  bundled(crate(termcolor)) = 1.4.1
 Provides:  bundled(crate(textwrap)) = 0.16.2
-Provides:  bundled(crate(tokio)) = 1.44.2
+Provides:  bundled(crate(tokio)) = 1.45.1
+Provides:  bundled(crate(tokio-macros)) = 2.5.0
 Provides:  bundled(crate(toml)) = 0.5.11
-Provides:  bundled(crate(tracing)) = 0.1.41
-Provides:  bundled(crate(tracing-attributes)) = 0.1.28
-Provides:  bundled(crate(tracing-core)) = 0.1.33
 Provides:  bundled(crate(unicode-ident)) = 1.0.18
 Provides:  bundled(crate(uuid)) = 0.8.2
 Provides:  bundled(crate(vcpkg)) = 0.2.15
@@ -152,8 +158,8 @@ Provides:  bundled(crate(windows_x86_64_gnu)) = 0.52.6
 Provides:  bundled(crate(windows_x86_64_gnullvm)) = 0.52.6
 Provides:  bundled(crate(windows_x86_64_msvc)) = 0.52.6
 Provides:  bundled(crate(wit-bindgen-rt)) = 0.39.0
-Provides:  bundled(crate(zerocopy)) = 0.7.35
-Provides:  bundled(crate(zerocopy-derive)) = 0.7.35
+Provides:  bundled(crate(zerocopy)) = 0.8.25
+Provides:  bundled(crate(zerocopy-derive)) = 0.8.25
 Provides:  bundled(crate(zeroize)) = 1.8.1
 Provides:  bundled(crate(zeroize_derive)) = 1.4.2
 ##### Bundled cargo crates list - END #####
@@ -288,8 +294,8 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 Source4:          389-ds-base.sysusers
 
 # Vendored cargo crates update
-Source5:          vendor-%{version}-1.tar.gz
-Source6:          Cargo-%{version}-1.lock
+Source5:          vendor-%{version}-2.tar.gz
+Source6:          Cargo-%{version}-2.lock
 
 Patch:            0001-Issue-6468-Fix-building-for-older-versions-of-Python.patch
 Patch:            0002-Issue-6489-After-log-rotation-refresh-the-FD-pointer.patch
@@ -315,8 +321,8 @@ Patch:            0021-Issue-6704-UI-Add-error-log-buffering-config.patch
 Patch:            0022-Issue-6700-CLI-UI-include-superior-objectclasses-all.patch
 Patch:            0023-Issue-6464-UI-Fixed-spelling-in-cockpit-messages.patch
 Patch:            0024-Issue-6481-When-ports-that-are-in-use-are-used-to-up.patch
-Patch:            0025-Issue-6553-Update-concread-to-0.5.4-and-refactor-sta.patch
-Patch:            0026-Security-fix-for-CVE-2025-2487.patch 
+#Patch:            0025-Issue-6553-Update-concread-to-0.5.4-and-refactor-sta.patch
+Patch:            0026-Security-fix-for-CVE-2025-2487.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -762,6 +768,10 @@ exit 0
 %endif
 
 %changelog
+* Thu Jun 05 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-9
+- Reverts: RHEL-80713 - Increased memory consumption caused by NDN cache [rhel-9.6.z]
+- Resolves: RHEL-95443 - ns-slapd[xxxx]: segfault at 10d7d0d0 ip 00007ff734050cdb sp 00007ff6de9f1430 error 6 in libslapd.so.0.1.0[7ff733ec0000+1b3000] [rhel-9.6.z]
+
 * Wed Apr 09 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-8
 - Resolves: RHEL-83876 - CVE-2025-2487 389-ds-base: null pointer dereference leads to denial of service [rhel-9.6]
 
