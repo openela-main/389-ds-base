@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.6.1
-Release:          9%{?dist}
+Release:          10%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -323,6 +323,17 @@ Patch:            0023-Issue-6464-UI-Fixed-spelling-in-cockpit-messages.patch
 Patch:            0024-Issue-6481-When-ports-that-are-in-use-are-used-to-up.patch
 #Patch:            0025-Issue-6553-Update-concread-to-0.5.4-and-refactor-sta.patch
 Patch:            0026-Security-fix-for-CVE-2025-2487.patch
+Patch:            0027-Issue-6715-dsconf-backend-replication-monitor-fails-.patch
+Patch:            0028-Issue-6713-ns-slapd-crash-during-mdb-offline-import-.patch
+Patch:            0029-Issue-6571-Nested-group-does-not-receive-memberOf-at.patch
+Patch:            0030-Issue-6288-dsidm-crash-with-account-policy-when-alt-.patch
+Patch:            0031-Issue-6686-CLI-Re-enabling-user-accounts-that-reache.patch
+Patch:            0032-Issue-6571-2nd-Nested-group-does-not-receive-memberO.patch
+Patch:            0033-Issue-6698-NPE-after-configuring-invalid-filtered-ro.patch
+Patch:            0034-Issue-6626-Ignore-replica-busy-condition-in-healthch.patch
+Patch:            0035-Issue-6655-fix-replication-release-replica-decoding-.patch
+Patch:            0036-Issue-6787-Improve-error-message-when-bulk-import-co.patch
+
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -768,6 +779,16 @@ exit 0
 %endif
 
 %changelog
+* Mon Jun 09 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-10
+- Resolves: RHEL-89735 - dsconf backend replication monitor fails if replica id starts with 0 [rhel-9.6.z]
+- Resolves: RHEL-89746 - ns-slapd crash in dbmdb_import_prepare_worker_entry() [rhel-9.6.z]
+- Resolves: RHEL-89752 - Nested group does not receive memberOf attribute [rhel-9.6.z]
+- Resolves: RHEL-89761 - dsidm Error: float() argument must be a string or a number, not 'NoneType' [rhel-9.6.z]
+- Resolves: RHEL-89768 - Crash in __strlen_sse2 when using the nsRole filter rewriter. [rhel-9.6.z]
+- Resolves: RHEL-89773 - Improve the "result" field of ipa-healthcheck if replicas are busy [rhel-9.6.z]
+- Resolves: RHEL-89781 - RHDS12.2 NSMMReplicationPlugin - release_replica Unable to parse the response [rhel-9.6.z]
+- Resolves: RHEL-95767 - Improve  error message when bulk import connection is closed [rhel-9.6.z]
+
 * Thu Jun 05 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-9
 - Reverts: RHEL-80713 - Increased memory consumption caused by NDN cache [rhel-9.6.z]
 - Resolves: RHEL-95443 - ns-slapd[xxxx]: segfault at 10d7d0d0 ip 00007ff734050cdb sp 00007ff6de9f1430 error 6 in libslapd.so.0.1.0[7ff733ec0000+1b3000] [rhel-9.6.z]

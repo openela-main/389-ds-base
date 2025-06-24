@@ -1,0 +1,67 @@
+From 0239d76ed22737a005a782882c6eddc7c3758654 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 19 May 2025 17:01:16 -0400
+Subject: [PATCH] Issue 6787 - Improve error message when bulk import
+ connection is closed
+
+Description:
+
+If an online replication initialization connection is closed a vague error
+message is reported when the init is aborted:
+
+    factory_destructor - ERROR bulk import abandoned
+
+It should be clear that the import is being abandoned because the connection
+was closed and identify the conn id.
+
+relates: https://github.com/389ds/389-ds-base/issues/6787
+
+Reviewed by: progier(Thanks!)
+---
+ ldap/servers/slapd/back-ldbm/import.c          | 7 +++++--
+ ldap/servers/slapd/back-ldbm/proto-back-ldbm.h | 2 +-
+ 2 files changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/import.c b/ldap/servers/slapd/back-ldbm/import.c
+index 30ec462fa..5a03bb533 100644
+--- a/ldap/servers/slapd/back-ldbm/import.c
++++ b/ldap/servers/slapd/back-ldbm/import.c
+@@ -189,9 +189,10 @@ factory_constructor(void *object __attribute__((unused)), void *parent __attribu
+ }
+ 
+ void
+-factory_destructor(void *extension, void *object __attribute__((unused)), void *parent __attribute__((unused)))
++factory_destructor(void *extension, void *object, void *parent __attribute__((unused)))
+ {
+     ImportJob *job = (ImportJob *)extension;
++    Connection *conn = (Connection *)object;
+     PRThread *thread;
+ 
+     if (extension == NULL)
+@@ -203,7 +204,9 @@ factory_destructor(void *extension, void *object __attribute__((unused)), void *
+      */
+     thread = job->main_thread;
+     slapi_log_err(SLAPI_LOG_ERR, "factory_destructor",
+-                  "ERROR bulk import abandoned\n");
++                  "ERROR bulk import abandoned: conn=%ld was closed\n",
++                  conn->c_connid);
++
+     import_abort_all(job, 1);
+     /* wait for bdb_import_main to finish... */
+     PR_JoinThread(thread);
+diff --git a/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h b/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
+index a36f84aba..9a7ffee37 100644
+--- a/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
++++ b/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
+@@ -606,7 +606,7 @@ int ldbm_ancestorid_move_subtree(
+ int ldbm_back_wire_import(Slapi_PBlock *pb);
+ void import_abort_all(struct _ImportJob *job, int wait_for_them);
+ void *factory_constructor(void *object __attribute__((unused)), void *parent __attribute__((unused)));
+-void factory_destructor(void *extension, void *object __attribute__((unused)), void *parent __attribute__((unused)));
++void factory_destructor(void *extension, void *object, void *parent __attribute__((unused)));
+ uint64_t wait_for_ref_count(Slapi_Counter *inst_ref_count);
+ 
+ /*
+-- 
+2.49.0
+
