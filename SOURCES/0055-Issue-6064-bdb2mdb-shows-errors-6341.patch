@@ -1,0 +1,635 @@
+From 93d7d611a34c152924735962094a8b1c5a2c4dfe Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Fri, 27 Sep 2024 17:06:45 +0200
+Subject: [PATCH] Issue 6064 - bdb2mdb shows errors (#6341)
+
+Fix several issues with dsctl dblib migration tools:
+Fix some problem related to dbscan -D bdb --import:
+
+random crash when closing the database - Fixed by fully cleaning the bdb framework if open in read-write mode
+random records were missing - Fixed by fully starting the bdb framework when it is open in read-write mode
+and by using txn
+Fixed error messages displayed when trying to reopen ldap connection on restarted instance by not reopening the connection that are not needed.
+Fixed error messages displayed when there is no replication changelog by detecting the presence of replication changelog before trying to export it.
+Issue: #6064
+
+Reviewed by: @tbordaz (Thans!)
+
+(cherry picked from commit c1b842eafc63e0c59128369a7a02ecbb6a07a8e4)
+---
+ .../tests/suites/clu/dsctl_dblib_test.py      |  43 +++++--
+ .../slapd/back-ldbm/db-bdb/bdb_layer.c        |  80 +++++++++----
+ .../slapd/back-ldbm/db-mdb/mdb_layer.c        |   2 +-
+ ldap/servers/slapd/back-ldbm/dbimpl.c         |   8 +-
+ ldap/servers/slapd/back-ldbm/dblayer.h        |   2 +-
+ ldap/servers/slapd/tools/dbscan.c             |  26 +++-
+ src/lib389/lib389/cli_ctl/dblib.py            | 111 +++++++++++-------
+ 7 files changed, 183 insertions(+), 89 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/clu/dsctl_dblib_test.py b/dirsrvtests/tests/suites/clu/dsctl_dblib_test.py
+index 44316d2d7..e30cabced 100644
+--- a/dirsrvtests/tests/suites/clu/dsctl_dblib_test.py
++++ b/dirsrvtests/tests/suites/clu/dsctl_dblib_test.py
+@@ -10,22 +10,28 @@ import logging
+ import pytest
+ import ldap
+ import os
++import time
+ from lib389._constants import DEFAULT_SUFFIX
+ from lib389.backend import DatabaseConfig
+ from lib389.cli_ctl.dblib import (FakeArgs, dblib_bdb2mdb, dblib_mdb2bdb, dblib_cleanup)
+ from lib389.idm.user import UserAccounts
+ from lib389.replica import ReplicationManager
+-from lib389.topologies import topology_m2 as topo_m2
++from lib389.topologies import topology_m2 as topo_m2, topology_st as topo_st
+ 
+ 
+ log = logging.getLogger(__name__)
+ 
+ 
+-@pytest.fixture
+-def init_user(topo_m2, request):
++@pytest.fixture(scope='function', params=['topo_st','topo_m2'])
++def init_user(topo_m2, topo_st, request):
+     """Initialize a user - Delete and re-add test user
+     """
+-    s1 = topo_m2.ms["supplier1"]
++    if  request.param == 'topo_st':
++        s1 = topo_st.standalone
++        s2 = None
++    else:
++        s1 = topo_m2.ms["supplier1"]
++        s2 = topo_m2.ms["supplier2"]
+     users = UserAccounts(s1, DEFAULT_SUFFIX)
+     try:
+         user_data = {'uid': 'test entry',
+@@ -48,6 +54,7 @@ def init_user(topo_m2, request):
+             pass
+ 
+     request.addfinalizer(fin)
++    return (s1, s2)
+ 
+ 
+ def _check_db(inst, log, impl):
+@@ -59,8 +66,10 @@ def _check_db(inst, log, impl):
+     db_files = os.listdir(inst.dbdir)
+     if inst.ds_paths.db_home_dir is not None and inst.ds_paths.db_home_dir != inst.dbdir:
+         db_files.extend(os.listdir(inst.ds_paths.db_home_dir))
++    db_files = [ file for file in db_files if not file.startswith('log.00') ]
++
+     mdb_list = ['data.mdb', 'INFO.mdb', 'lock.mdb']
+-    bdb_list = ['__db.001', 'DBVERSION', '__db.003', 'userRoot', 'log.0000000001', '__db.002']
++    bdb_list = ['__db.001', 'DBVERSION', '__db.003', 'userRoot', '__db.002']
+     mdb_list.sort()
+     bdb_list.sort()
+     db_files = sorted(set(db_files))
+@@ -77,7 +86,7 @@ def _check_db(inst, log, impl):
+         assert db_files == mdb_list
+ 
+ 
+-def test_dblib_migration(topo_m2, init_user):
++def test_dblib_migration(init_user):
+     """
+     Verify dsctl dblib xxxxxxx sub commands (migration between bdb and lmdb)
+ 
+@@ -92,28 +101,36 @@ def test_dblib_migration(topo_m2, init_user):
+         2. Success
+         3. Success
+     """
+-    s1 = topo_m2.ms["supplier1"]
+-    s2 = topo_m2.ms["supplier2"]
++    s1, s2 = init_user
+     db_lib = s1.get_db_lib()
+-    repl = ReplicationManager(DEFAULT_SUFFIX)
++    if s2 is not None:
++        repl = ReplicationManager(DEFAULT_SUFFIX)
+     users = UserAccounts(s1, DEFAULT_SUFFIX)
+     assert users.get('test entry')
+     args = FakeArgs({'tmpdir': None})
+     if db_lib == 'bdb':
+         dblib_bdb2mdb(s1, log, args)
++        s1.open()
+         dblib_cleanup(s1, log, args)
+         _check_db(s1, log, 'mdb')
+-        repl.test_replication_topology([s1, s2])
++        if s2 is not None:
++            repl.test_replication_topology([s1, s2])
+         dblib_mdb2bdb(s1, log, args)
++        s1.open()
+         dblib_cleanup(s1, log, args)
+         _check_db(s1, log, 'bdb')
+-        repl.test_replication_topology([s1, s2])
++        if s2 is not None:
++            repl.test_replication_topology([s1, s2])
+     else:
+         dblib_mdb2bdb(s1, log, args)
++        s1.open()
+         dblib_cleanup(s1, log, args)
+         _check_db(s1, log, 'bdb')
+-        repl.test_replication_topology([s1, s2])
++        if s2 is not None:
++            repl.test_replication_topology([s1, s2])
+         dblib_bdb2mdb(s1, log, args)
++        s1.open()
+         dblib_cleanup(s1, log, args)
+         _check_db(s1, log, 'mdb')
+-        repl.test_replication_topology([s1, s2])
++        if s2 is not None:
++            repl.test_replication_topology([s1, s2])
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+index 4b30e8e87..7c3a7dcc9 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+@@ -6931,39 +6931,51 @@ bdb_public_private_open(backend *be, const char *db_filename, int rw, dbi_env_t
+     int flags;
+     int rc;
+ 
+-    /* Either filename is an existing regular file
+-     *  or the "home" directory where txn logs are
+-     */
++    slapi_ch_free_string(&conf->bdb_dbhome_directory);
++    if (li->li_directory == NULL) {
++        /* Either filename is an existing regular file
++         *  or the "home" directory where txn logs are
++         */
+ 
+-    PL_strncpyz(dbhome, db_filename, MAXPATHLEN);
+-    if (stat(dbhome, &st) == 0) {
+-        if (S_ISDIR(st.st_mode)) {
+-            li->li_directory = slapi_ch_strdup(dbhome);
+-        } else if (S_ISREG(st.st_mode)) {
++        PL_strncpyz(dbhome, db_filename, MAXPATHLEN);
++        if (stat(dbhome, &st) == 0) {
++            if (S_ISDIR(st.st_mode)) {
++                li->li_directory = slapi_ch_strdup(dbhome);
++            } else if (S_ISREG(st.st_mode)) {
++                getdir(dbhome, NULL);
++                li->li_directory = slapi_ch_strdup(db_filename);
++                getdir(dbhome, NULL);
++            } else {
++                fprintf(stderr, "bdb_public_private_open: Unable to determine dbhome from %s\n", db_filename);
++                return EINVAL;
++            }
++        } else {
+             getdir(dbhome, NULL);
+-            li->li_directory = slapi_ch_strdup(db_filename);
++            li->li_directory = slapi_ch_strdup(dbhome);
+             getdir(dbhome, NULL);
+-        } else {
+-            fprintf(stderr, "bdb_public_private_open: Unable to determine dbhome from %s\n", db_filename);
+-            return EINVAL;
++            if (stat(dbhome, &st) || ((st.st_mode & S_IFMT) != S_IFDIR)) {
++                fprintf(stderr, "bdb_public_private_open: Unable to determine dbhome from %s\n", db_filename);
++                return EINVAL;
++            }
+         }
++        conf->bdb_dbhome_directory = slapi_ch_strdup(dbhome);
+     } else {
+-        getdir(dbhome, NULL);
+-        li->li_directory = slapi_ch_strdup(dbhome);
+-        getdir(dbhome, NULL);
+-        if (stat(dbhome, &st) || ((st.st_mode & S_IFMT) != S_IFDIR)) {
+-            fprintf(stderr, "bdb_public_private_open: Unable to determine dbhome from %s\n", db_filename);
+-            return EINVAL;
++        conf->bdb_dbhome_directory = slapi_ch_strdup(li->li_directory);
++        if (strcmp(li->li_directory, db_filename)) {
++            getdir(conf->bdb_dbhome_directory, NULL);
+         }
+     }
++
+     li->li_config_mutex = PR_NewLock();
+-    conf->bdb_dbhome_directory = slapi_ch_strdup(dbhome);
+     if (rw) {
+         /* Setup a fully transacted environment */
+         priv->dblayer_env = NULL;
+-        conf->bdb_enable_transactions = 0;
++        conf->bdb_enable_transactions = 1;
+         conf->bdb_tx_max = 50;
+         rc = bdb_start(li, DBLAYER_NORMAL_MODE);
++        if (rc == 0) {
++            bdb_env = ((struct bdb_db_env*)(priv->dblayer_env))->bdb_DB_ENV;
++        }
+     } else {
+         /* Setup minimal environment */
+         rc = db_env_create(&bdb_env, 0);
+@@ -6994,18 +7006,36 @@ bdb_public_private_open(backend *be, const char *db_filename, int rw, dbi_env_t
+ }
+ 
+ int
+-bdb_public_private_close(dbi_env_t **env, dbi_db_t **db)
++bdb_public_private_close(struct ldbminfo *li, dbi_env_t **env, dbi_db_t **db)
+ {
+     DB_ENV *bdb_env = *env;
+     DB *bdb_db = *db;
+     int rc = 0;
++    int rw = 0;
++    dblayer_private *priv = li->li_dblayer_private;
++    bdb_config *conf = (bdb_config *)li->li_dblayer_config;
+ 
+-    if (bdb_db) {
+-        rc = bdb_db->close(bdb_db, 0);
++    if (priv) {
++        /* Detect if db is fully set up in read write mode */
++        bdb_db_env *pEnv = (bdb_db_env *)priv->dblayer_env;
++        if (pEnv && pEnv->bdb_thread_count>0) {
++            rw = 1;
++        }
+     }
+-    if (bdb_env) {
+-        rc = bdb_env->close(bdb_env, 0);
++    if (rw == 0) {
++        if (bdb_db) {
++            rc = bdb_db->close(bdb_db, 0);
++        }
++        if (bdb_env) {
++            rc = bdb_env->close(bdb_env, 0);
++        }
++    } else {
++        rc = bdb_close(li, DBLAYER_NORMAL_MODE);
+     }
++    slapi_ch_free_string(&conf->bdb_dbhome_directory);
++    slapi_ch_free_string(&conf->bdb_home_directory);
++    slapi_ch_free_string(&conf->bdb_compactdb_time);
++    slapi_ch_free_string(&conf->bdb_log_directory);
+     *db = NULL;
+     *env = NULL;
+     return bdb_map_error(__FUNCTION__, rc);
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
+index de4161b0c..3ecc47170 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
+@@ -2725,7 +2725,7 @@ dbmdb_public_private_open(backend *be, const char *db_filename, int rw, dbi_env_
+ 
+ 
+ int
+-dbmdb_public_private_close(dbi_env_t **env, dbi_db_t **db)
++dbmdb_public_private_close(struct ldbminfo *li, dbi_env_t **env, dbi_db_t **db)
+ {
+     if (*db)
+         dbmdb_public_db_op(*db, NULL, DBI_OP_CLOSE, NULL, NULL);
+diff --git a/ldap/servers/slapd/back-ldbm/dbimpl.c b/ldap/servers/slapd/back-ldbm/dbimpl.c
+index 134d06480..f3bf68a9f 100644
+--- a/ldap/servers/slapd/back-ldbm/dbimpl.c
++++ b/ldap/servers/slapd/back-ldbm/dbimpl.c
+@@ -476,14 +476,12 @@ int dblayer_private_close(Slapi_Backend **be, dbi_env_t **env, dbi_db_t **db)
+         dblayer_private *priv = li->li_dblayer_private;
+ 
+         if (priv && priv->dblayer_private_close_fn) {
+-            rc = priv->dblayer_private_close_fn(env, db);
++            rc = priv->dblayer_private_close_fn(li, env, db);
+         }
++        slapi_ch_free_string(&li->li_directory);
+         slapi_ch_free((void**)&li->li_dblayer_private);
+         slapi_ch_free((void**)&li->li_dblayer_config);
+-        if (dblayer_is_lmdb(*be)) {
+-            /* Generate use after free and double free in bdb case */
+-            ldbm_config_destroy(li);
+-        }
++        ldbm_config_destroy(li);
+         slapi_ch_free((void**)&(*be)->be_database);
+         slapi_ch_free((void**)&(*be)->be_instance_info);
+         slapi_ch_free((void**)be);
+diff --git a/ldap/servers/slapd/back-ldbm/dblayer.h b/ldap/servers/slapd/back-ldbm/dblayer.h
+index 0876fccec..61fdf8b82 100644
+--- a/ldap/servers/slapd/back-ldbm/dblayer.h
++++ b/ldap/servers/slapd/back-ldbm/dblayer.h
+@@ -113,7 +113,7 @@ typedef int dblayer_dbi_txn_abort_fn_t(dbi_txn_t *txn);
+ typedef int dblayer_get_entries_count_fn_t(dbi_db_t *db, dbi_txn_t *txn, int *count);
+ typedef int dblayer_cursor_get_count_fn_t(dbi_cursor_t *cursor, dbi_recno_t *count);
+ typedef int dblayer_private_open_fn_t(backend *be, const char *db_filename, int rw, dbi_env_t **env, dbi_db_t **db);
+-typedef int dblayer_private_close_fn_t(dbi_env_t **env, dbi_db_t **db);
++typedef int dblayer_private_close_fn_t(struct ldbminfo *li, dbi_env_t **env, dbi_db_t **db);
+ typedef int ldbm_back_wire_import_fn_t(Slapi_PBlock *pb);
+ typedef int dblayer_restore_file_init_fn_t(struct ldbminfo *li);
+ typedef void dblayer_restore_file_update_fn_t(struct ldbminfo *li, const char *directory);
+diff --git a/ldap/servers/slapd/tools/dbscan.c b/ldap/servers/slapd/tools/dbscan.c
+index 9260c1532..1c55bc4ad 100644
+--- a/ldap/servers/slapd/tools/dbscan.c
++++ b/ldap/servers/slapd/tools/dbscan.c
+@@ -1162,6 +1162,7 @@ importdb(const char *dbimpl_name, const char *filename, const char *dump_name)
+     dbi_db_t *db = NULL;
+     int keyword = 0;
+     int ret = 0;
++    int count = 0;
+ 
+     if (dump_name == NULL) {
+         printf("Error: dump_name can not be NULL\n");
+@@ -1183,12 +1184,35 @@ importdb(const char *dbimpl_name, const char *filename, const char *dump_name)
+         return 1;
+     }
+ 
++    ret = dblayer_txn_begin(be, NULL, &txn);
++    if (ret != 0) {
++        printf("Error: failed to start the database txn. Error %d: %s\n", ret, dblayer_strerror(ret));
++    }
+     while (ret == 0 &&
+            !_read_line(dump, &keyword, &key) && keyword == 'k' &&
+            !_read_line(dump, &keyword, &data) && keyword == 'v') {
+         ret = dblayer_db_op(be, db, txn.txn, DBI_OP_PUT, &key, &data);
++        if (ret == 0  && count++ >= 1000) {
++            ret = dblayer_txn_commit(be, &txn);
++            if (ret != 0) {
++                printf("Error: failed to commit the database txn. Error %d: %s\n", ret, dblayer_strerror(ret));
++            } else {
++                count = 0;
++                ret = dblayer_txn_begin(be, NULL, &txn);
++                if (ret != 0) {
++                    printf("Error: failed to start the database txn. Error %d: %s\n", ret, dblayer_strerror(ret));
++                }
++            }
++        }
+     }
+-    if (ret !=0) {
++    if (ret == 0) {
++        ret = dblayer_txn_commit(be, &txn);
++        if (ret != 0) {
++            printf("Error: failed to commit the database txn. Error %d: %s\n", ret, dblayer_strerror(ret));
++        }
++    }
++    if (ret != 0) {
++        (void) dblayer_txn_abort(be, &txn);
+         printf("Error: failed to write record in database. Error %d: %s\n", ret, dblayer_strerror(ret));
+         dump_ascii_val("Failing record key", &key);
+         dump_ascii_val("Failing record value", &data);
+diff --git a/src/lib389/lib389/cli_ctl/dblib.py b/src/lib389/lib389/cli_ctl/dblib.py
+index 82f09c70c..ff81f0e19 100644
+--- a/src/lib389/lib389/cli_ctl/dblib.py
++++ b/src/lib389/lib389/cli_ctl/dblib.py
+@@ -11,11 +11,13 @@
+ #
+ 
+ import os
++import pwd
+ import re
+ import glob
+ import shutil
++from pathlib import Path
+ from lib389.dseldif import DSEldif
+-from lib389._constants import DEFAULT_LMDB_SIZE
++from lib389._constants import DN_CONFIG, DEFAULT_LMDB_SIZE
+ from lib389.cli_base import CustomHelpFormatter
+ from lib389.utils import parse_size, format_size
+ import subprocess
+@@ -32,6 +34,8 @@ MDB_LOCK = "lock.mdb"
+ 
+ LDBM_DN = "cn=config,cn=ldbm database,cn=plugins,cn=config"
+ 
++CL5DB='replication_changelog.db'
++
+ _log = None
+ 
+ 
+@@ -65,6 +69,7 @@ def get_backends(log, dse, tmpdir):
+     # Lets be sure to keep config backend info
+     ic2ec['config'] = 'config'
+     update_dse = []
++    dbis = None
+     for entry in dse._contents:
+         found = re.search(r'^nsslapd-backend: (.*)', entry)
+         if found:
+@@ -74,22 +79,28 @@ def get_backends(log, dse, tmpdir):
+             dn = found[0][4:]
+             bename = found[1].lower()
+             if not bename in ic2ec:
+-                # Not a mapping tree backend 
++                # Not a mapping tree backend
+                 continue
+             ecbename = ic2ec[bename]
+             suffix = dse.get(dn, "nsslapd-suffix", True)
+             dbdir = dse.get(dn, "nsslapd-directory", True)
+             ecdbdir = dbdir
+-            if dbdir is None and 'config' in res:
++            dblib = dse.get(dn, "nsslapd-backend-implement", True)
++            if dblib is None and 'config' in res:
++                dblib = res['config']['dblib']
++            if dbis is None:
++                dbis = get_mdb_dbis(dbdir) if dblib == 'mdb' else []
++            # in bdb case dbdir should be the database instance directory
++            # in mdb case it is the database map file directory
++            if 'config' in res and ( dbdir is None or dblib == 'mdb'):
+                 dbdir = f"{res['config']['dbdir']}/{bename}"
+                 ecdbdir = f"{res['config']['dbdir']}/{ecbename}"
+                 # bdb requires nsslapd-directory so lets add it once reading is done.
+                 update_dse.append((dn, ecdbdir))
+-            dblib = dse.get(dn, "nsslapd-backend-implement", True)
+             ldifname = f'{tmpdir}/{DBLIB_LDIF_PREFIX}{bename}.ldif'
+             cl5name = f'{tmpdir}/{DBLIB_LDIF_PREFIX}{bename}.cl5.dbtxt'
+-            cl5dbname = f'{dbdir}/replication_changelog.db'
+-            eccl5dbname = f'{ecdbdir}/replication_changelog.db'
++            cl5dbname = f'{dbdir}/{CL5DB}'
++            eccl5dbname = f'{ecdbdir}/{CL5DB}'
+             dbsize = 0
+             entrysize = 0
+             for f in glob.glob(f'{dbdir}/id2entry.db*'):
+@@ -99,8 +110,14 @@ def get_backends(log, dse, tmpdir):
+             indexes = dse.get_indexes(bename)
+             # Let estimate the number of dbis: id2entry + 1 per regular index + 2 per vlv index
+             dbi = 1 + len(indexes) + len([index for index in indexes if index.startswith("vlv#")])
+-
+-            res[bename] = ({
++            if dblib == "bdb":
++                has_changelog = os.path.isfile(eccl5dbname)
++            elif bename in dbis:
++                has_changelog = CL5DB in dbis[bename]
++            else:
++                has_changelog = False
++
++            res[bename] = {
+                 'dn': dn,
+                 'bename': bename,
+                 'ecbename': ecbename,
+@@ -116,13 +133,15 @@ def get_backends(log, dse, tmpdir):
+                 'dbsize': dbsize,
+                 'entrysize': entrysize,
+                 'indexes': indexes,
++                'has_changelog': has_changelog,
+                 'dbi': dbi
+-            })
++            }
++
+     # now that we finish reading the dse.ldif we may update it if needed.
+     for dn, dir in update_dse:
+         dse.replace(dn, 'nsslapd-directory', dir)
+     log.debug(f'lib389.cli_ctl.dblib.get_backends returns: {str(res)}')
+-    return res
++    return (res, dbis)
+ 
+ 
+ def get_mdb_dbis(dbdir):
+@@ -158,18 +177,13 @@ def run_dbscan(args):
+     return output
+ 
+ 
+-def does_dbscan_need_do_it():
+-    prefix = os.environ.get('PREFIX', "")
+-    prog = f'{prefix}/bin/dbscan'
+-    args = [ prog, '-h' ]
+-    output = subprocess.run(args, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+-    return '--do-it' in output.stdout
+-
+-
+ def export_changelog(be, dblib):
+     # Export backend changelog
++    if not be['has_changelog']:
++        return False
+     try:
+         cl5dbname = be['eccl5dbname'] if dblib == "bdb" else be['cl5dbname']
++        _log.info(f'Exporting changelog {cl5dbname} to {be['cl5name']}')
+         run_dbscan(['-D', dblib, '-f', cl5dbname, '-X', be['cl5name']])
+         return True
+     except subprocess.CalledProcessError as e:
+@@ -180,10 +194,8 @@ def import_changelog(be, dblib):
+     # import backend changelog
+     try:
+         cl5dbname = be['eccl5dbname'] if dblib == "bdb" else be['cl5dbname']
+-        if does_dbscan_need_do_it():
+-            run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name'], '--do-it'])
+-        else:
+-            run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name']])
++        _log.info(f'Importing changelog {cl5dbname} from {be['cl5name']}')
++        run_dbscan(['-D', dblib, '-f', cl5dbname, '--import', be['cl5name'], '--do-it'])
+         return True
+     except subprocess.CalledProcessError as e:
+         return False
+@@ -200,6 +212,15 @@ def set_owner(list, uid, gid):
+             pass
+ 
+ 
++def get_uid_gid_from_dse(dse):
++    # For some reason inst.get_user_uid() always returns dirsrv uid
++    # even for non root install.
++    # Lets looks directly in the dse.ldif intead
++    user = dse.get(DN_CONFIG, 'nsslapd-localuser', single=True)
++    pwent = pwd.getpwnam(user)
++    return ( pwent.pw_uid, pwent.pw_gid )
++
++
+ def dblib_bdb2mdb(inst, log, args):
+     global _log
+     _log = log
+@@ -218,7 +239,8 @@ def dblib_bdb2mdb(inst, log, args):
+ 
+     inst.stop()
+     dse = DSEldif(inst)
+-    backends = get_backends(log, dse, tmpdir)
++    uid, gid = get_uid_gid_from_dse(dse)
++    backends,dbis = get_backends(log, dse, tmpdir)
+     dbmapdir = backends['config']['dbdir']
+     dblib = backends['config']['dblib']
+ 
+@@ -229,6 +251,8 @@ def dblib_bdb2mdb(inst, log, args):
+     # Remove ldif files and mdb files
+     dblib_cleanup(inst, log, args)
+ 
++    # Check if changelog is present in backends
++
+     # Compute the needed space and the lmdb map configuration
+     total_dbsize = 0
+     total_entrysize = 0
+@@ -258,8 +282,6 @@ def dblib_bdb2mdb(inst, log, args):
+     log.info(f"Required number of dbi is {nbdbis}")
+ 
+     # Generate the info file (so dbscan could generate the map)
+-    uid = inst.get_user_uid()
+-    gid = inst.get_group_gid()
+     with open(f'{dbmapdir}/{MDB_INFO}', 'w') as f:
+         f.write('LIBVERSION=9025\n')
+         f.write('DATAVERSION=0\n')
+@@ -346,7 +368,7 @@ def dblib_bdb2mdb(inst, log, args):
+     dbhome=backends["config"]["dbdir"]
+     set_owner(glob.glob(f'{dbhome}/*.mdb'), uid, gid)
+     log.info("Backends importation 100%")
+-    inst.start()
++    inst.start(post_open=False)
+     log.info("Migration from Berkeley database to lmdb is done.")
+ 
+ 
+@@ -368,11 +390,11 @@ def dblib_mdb2bdb(inst, log, args):
+ 
+     inst.stop()
+     dse = DSEldif(inst)
+-    backends = get_backends(log, dse, tmpdir)
++    uid, gid = get_uid_gid_from_dse(dse)
++    backends,dbis = get_backends(log, dse, tmpdir)
+     dbmapdir = backends['config']['dbdir']
+     dbhome = inst.ds_paths.db_home_dir
+     dblib = backends['config']['dblib']
+-    dbis = get_mdb_dbis(dbmapdir)
+ 
+     if dblib == "bdb":
+         log.error(f"Instance {inst.serverid} is already configured with bdb.")
+@@ -421,8 +443,6 @@ def dblib_mdb2bdb(inst, log, args):
+         if 'has_id2entry' not in be:
+             continue
+         total_dbsize += 1
+-    uid = inst.get_user_uid()
+-    gid = inst.get_group_gid()
+     for bename, be in backends.items():
+         # Keep only backend associated with a db
+         if 'has_id2entry' not in be:
+@@ -467,7 +487,7 @@ def dblib_mdb2bdb(inst, log, args):
+     set_owner((f'{dbhome}/DBVERSION', f'{dbmapdir}/DBVERSION', f'{dbhome}/guardian', '{dbmapdir}/guardian'), uid, gid)
+ 
+     log.info("Backends importation 100%")
+-    inst.start()
++    inst.start(post_open=False)
+     log.info("Migration from ldbm to Berkeley database is done.")
+ 
+ 
+@@ -484,7 +504,7 @@ def dblib_cleanup(inst, log, args):
+     _log = log
+     tmpdir = get_ldif_dir(inst)
+     dse = DSEldif(inst)
+-    backends = get_backends(log, dse, tmpdir)
++    backends,dbis = get_backends(log, dse, tmpdir)
+     dbmapdir = backends['config']['dbdir']
+     dbhome = inst.ds_paths.db_home_dir
+     dblib = backends['config']['dblib']
+@@ -495,14 +515,19 @@ def dblib_cleanup(inst, log, args):
+         # Keep only backend associated with a db
+         if 'has_id2entry' not in be and be['dbsize'] == 0:
+             continue
+-        rm(be['ldifname'])
+-        rm(be['cl5name'])
+-        dbdir = be['dbdir']
+-        if dblib == "mdb":
+-            # remove db dir
+-            for f in glob.glob(f'{dbdir}/*.db*'):
++        # rm(be['ldifname'])
++        # rm(be['cl5name'])
++
++    if dblib == "mdb":
++        # Looks for bdb database instance subdirectories
++        for id2entry in glob.glob(f'{dbmapdir}/*/id2entry.db*'):
++            dbdir = Path(id2entry).parent.absolute()
++            log.info(f"cleanup removing {dbdir}")
++            for f in glob.iglob(f'{dbdir}/*.db*'):
+                 rm(f)
+-            rm(f'{dbdir}/DBVERSION')
++            for f in [ 'guardian', 'DBVERSION' ]:
++                if os.path.isfile(f'{dbdir}/{f}'):
++                    rm(f'{dbdir}/{f}')
+             os.rmdir(dbdir)
+ 
+     if dblib == "bdb":
+@@ -510,13 +535,13 @@ def dblib_cleanup(inst, log, args):
+         rm(f'{dbmapdir}/data.mdb')
+         rm(f'{dbmapdir}/lock.mdb')
+     else:
+-        for f in glob.glob(f'{dbhome}/__db.*'):
++        for f in glob.iglob(f'{dbhome}/__db.*'):
+             rm(f)
+-        for f in glob.glob(f'{dbmapdir}/__db.*'):
++        for f in glob.iglob(f'{dbmapdir}/__db.*'):
+             rm(f)
+-        for f in glob.glob(f'{dbhome}/log.*'):
++        for f in glob.iglob(f'{dbhome}/log.*'):
+             rm(f)
+-        for f in glob.glob(f'{dbmapdir}/log.*'):
++        for f in glob.iglob(f'{dbmapdir}/log.*'):
+             rm(f)
+         rm(f'{dbhome}/DBVERSION')
+         rm(f'{dbmapdir}/DBVERSION')
+-- 
+2.49.0
+
