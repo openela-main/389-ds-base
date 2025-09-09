@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}14%{?prerel}%{?dist}
+Release:          %{?relprefix}15%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -345,6 +345,8 @@ Patch44:          0044-Issue-6571-2nd-Nested-group-does-not-receive-memberO.patc
 Patch45:          0045-Issue-6698-NPE-after-configuring-invalid-filtered-ro.patch
 Patch46:          0046-Issue-6686-CLI-Re-enabling-user-accounts-that-reache.patch
 Patch47:          0047-Issue-6302-Allow-to-run-replication-status-without-a.patch
+Patch48:          0048-Issue-6857-uiduniq-allow-specifying-match-rules-in-t.patch
+Patch49:          0049-Issue-6859-str2filter-is-not-fully-applying-matching.patch
 
 
 #Patch100:         cargo.patch
@@ -970,6 +972,9 @@ exit 0
 %doc README.md
 
 %changelog
+* Mon Aug 18 2025 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-15
+- Resolves: RHEL-109028 - Allow Uniqueness plugin to search uniqueness attributes using custom matching rules [rhel-8.10.z]
+
 * Thu Jun 5 2025 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-14
 - Reverts: RHEL-80704 - Increased memory consumption caused by NDN cache [rhel-8.10.z]
 - Resolves: RHEL-95442 - ns-slapd[xxxx]: segfault at 10d7d0d0 ip 00007ff734050cdb sp 00007ff6de9f1430 error 6 in libslapd.so.0.1.0[7ff733ec0000+1b3000] [rhel-8.10.z]
