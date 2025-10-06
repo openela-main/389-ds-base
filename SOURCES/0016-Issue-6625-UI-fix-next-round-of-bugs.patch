@@ -1,0 +1,2900 @@
+From c5a2f2cdc66754e2199039a45f626b696325113f Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 20 Feb 2025 16:00:10 -0500
+Subject: [PATCH] Issue 6625 - UI - fix next round of bugs
+
+Description:
+
+This fixes the following issues:
+
+- Subtrees field must not be mandatory If you configure the Attribute Uniqueness
+  plug-in over object classes
+- MemberOf configuration window you can select empty values for Subtree Scope
+  and Exclude Subtree fields
+- Database suffix field accepts dash symbol which ends in error
+- Enable logs checkboxes do not display properly after changes
+- Instance fails to load when DB backup directory doesn't exist
+- Improvement for Create New Instance form
+- Database Name is not validated
+- Database Suffix is not validated properly
+- Failing to update NDN cache size
+- Import cache size is not easy to set
+- Import cache autosize off/on fails
+- Statistic about worker threads is incorrect
+- Database index table searching does not work
+- Schema attribute table searching does not work
+- TimePicker component needs updating for PF5
+- Fix Treeview appearance for browser Dark Mode
+- Add attribute syntax oid name to table
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6625
+Fixes: https://github.com/389ds/389-ds-base/issues/5969
+
+Reviewed by: spichugi(Thanks!)
+---
+ ldap/servers/plugins/uiduniq/uid.c            |  41 ++-
+ src/cockpit/389-console/src/css/ds.css        |   2 -
+ src/cockpit/389-console/src/database.jsx      |  29 +-
+ src/cockpit/389-console/src/ds.jsx            |  21 +-
+ src/cockpit/389-console/src/dsModals.jsx      |  96 +++++--
+ .../src/lib/database/databaseConfig.jsx       | 209 ++++++++++++--
+ .../src/lib/database/databaseModal.jsx        |   1 +
+ .../src/lib/database/databaseTables.jsx       |  63 ++--
+ .../ldap_editor/wizards/operations/aciNew.jsx |   4 +-
+ .../src/lib/monitor/serverMonitor.jsx         |   6 +-
+ .../src/lib/plugins/attributeUniqueness.jsx   | 268 ++++++++++++++----
+ .../389-console/src/lib/plugins/memberOf.jsx  |  28 +-
+ .../src/lib/plugins/rootDNAccessControl.jsx   |   4 +-
+ .../src/lib/replication/replAgmts.jsx         |   3 +-
+ .../src/lib/replication/replModals.jsx        |  16 +-
+ .../src/lib/replication/replTables.jsx        |  33 +--
+ .../src/lib/replication/winsyncAgmts.jsx      |   2 +-
+ .../src/lib/schema/schemaTables.jsx           |  46 +--
+ .../389-console/src/lib/server/accessLog.jsx  |  22 +-
+ .../389-console/src/lib/server/auditLog.jsx   |  27 +-
+ .../src/lib/server/auditfailLog.jsx           |  24 +-
+ .../389-console/src/lib/server/errorLog.jsx   |  28 +-
+ .../src/lib/server/securityLog.jsx            |  24 +-
+ src/cockpit/389-console/src/lib/tools.jsx     |  45 ++-
+ src/cockpit/389-console/src/monitor.jsx       |  21 +-
+ src/cockpit/389-console/src/replication.jsx   |  19 +-
+ src/cockpit/389-console/src/server.jsx        |  10 +-
+ .../lib389/cli_conf/plugins/attruniq.py       |   7 +-
+ src/lib389/lib389/cli_conf/schema.py          |   4 +-
+ 29 files changed, 800 insertions(+), 303 deletions(-)
+
+diff --git a/ldap/servers/plugins/uiduniq/uid.c b/ldap/servers/plugins/uiduniq/uid.c
+index 5b763b551..053af4f9d 100644
+--- a/ldap/servers/plugins/uiduniq/uid.c
++++ b/ldap/servers/plugins/uiduniq/uid.c
+@@ -195,17 +195,17 @@ uniqueness_entry_to_config(Slapi_PBlock *pb, Slapi_Entry *config_entry)
+     slapi_pblock_get(pb, SLAPI_PLUGIN_ARGC, &argc);
+     if (argc == 0) {
+         /* This is new config style
+-                 * uniqueness-attribute-name: uid
+-                 * uniqueness-subtrees: dc=people,dc=example,dc=com
+-                 * uniqueness-subtrees: dc=sales, dc=example,dc=com
+-                 * uniqueness-across-all-subtrees: on
+-                 *
+-                 * or
+-                 *
+-                 * uniqueness-attribute-name: uid
+-                 * uniqueness-top-entry-oc: organizationalUnit
+-                 * uniqueness-subtree-entries-oc: person
+-                 */
++         * uniqueness-attribute-name: uid
++         * uniqueness-subtrees: dc=people,dc=example,dc=com
++         * uniqueness-subtrees: dc=sales, dc=example,dc=com
++         * uniqueness-across-all-subtrees: on
++         *
++         * or
++         *
++         * uniqueness-attribute-name: uid
++         * uniqueness-top-entry-oc: organizationalUnit
++         * uniqueness-subtree-entries-oc: person
++         */
+ 
+         /* Attribute name of the attribute we are going to check value uniqueness */
+         values = slapi_entry_attr_get_charray(config_entry, ATTR_UNIQUENESS_ATTRIBUTE_NAME);
+@@ -293,16 +293,15 @@ uniqueness_entry_to_config(Slapi_PBlock *pb, Slapi_Entry *config_entry)
+         }
+         if (UNTAGGED_PARAMETER == result) {
+             /* This is
+-                         * nsslapd-pluginarg0: uid
+-                         * nsslapd-pluginarg1: dc=people,dc=example,dc=com
+-                         * nsslapd-pluginarg2: dc=sales, dc=example,dc=com
+-                         *
+-                         * config attribute are in argc/argv
+-                         *
+-                         * attrName is set
+-                         * markerObjectClass/requiredObjectClass are NOT set
+-                         */
+-
++             * nsslapd-pluginarg0: uid
++             * nsslapd-pluginarg1: dc=people,dc=example,dc=com
++             * nsslapd-pluginarg2: dc=sales, dc=example,dc=com
++             *
++             * config attribute are in argc/argv
++             *
++             * attrName is set
++             * markerObjectClass/requiredObjectClass are NOT set
++             */
+             if (slapi_pblock_get(pb, SLAPI_PLUGIN_ARGC, &argc) || slapi_pblock_get(pb, SLAPI_PLUGIN_ARGV, &argv)) {
+                 slapi_log_err(SLAPI_LOG_PLUGIN, plugin_name, "uniqueness_entry_to_config - "
+                                                              "Only attribute name is valid\n");
+diff --git a/src/cockpit/389-console/src/css/ds.css b/src/cockpit/389-console/src/css/ds.css
+index 9cd669569..03be19911 100644
+--- a/src/cockpit/389-console/src/css/ds.css
++++ b/src/cockpit/389-console/src/css/ds.css
+@@ -62,7 +62,6 @@ td {
+ 
+ .ds-tree {
+     border: 1px solid #909090;
+-    background-color: #f8f8f8;
+     width: 300px;
+     min-width: 300px;
+     min-height: 350px;
+@@ -75,7 +74,6 @@ td {
+ 
+ .pf-theme-dark .ds-tree {
+     border: 1px solid #909090;
+-    background-color: rgb(54 55 58);
+     width: 300px;
+     min-width: 300px;
+     min-height: 350px;
+diff --git a/src/cockpit/389-console/src/database.jsx b/src/cockpit/389-console/src/database.jsx
+index c33c1e2d2..509f7105c 100644
+--- a/src/cockpit/389-console/src/database.jsx
++++ b/src/cockpit/389-console/src/database.jsx
+@@ -1,6 +1,6 @@
+ import cockpit from "cockpit";
+ import React from "react";
+-import { log_cmd, valid_dn } from "./lib/tools.jsx";
++import { log_cmd, valid_dn, valid_db_name } from "./lib/tools.jsx";
+ import {
+     ChainingConfig,
+     ChainingDatabaseConfig
+@@ -12,6 +12,7 @@ import { GlobalPwPolicy } from "./lib/database/globalPwp.jsx";
+ import { LocalPwPolicy } from "./lib/database/localPwp.jsx";
+ import {
+     Button,
++    Card,
+     Form,
+     FormGroup,
+     FormSelect,
+@@ -749,7 +750,11 @@ export class Database extends React.Component {
+         } else if (e.target.id === "createSuffix" && !valid_dn(str)) {
+             valueErr = true;
+             createNotOK = true;
++        } else if (e.target.id === "createBeName" && !valid_db_name(str)) {
++            valueErr = true;
++            createNotOK = true;
+         }
++
+         // Check existing values
+         if (e.target.id !== "createSuffix") {
+             if (!valid_dn(this.state.createSuffix)) {
+@@ -758,7 +763,7 @@ export class Database extends React.Component {
+             }
+         }
+         if (e.target.id !== "createBeName") {
+-            if (this.state.createBeName === "") {
++            if (this.state.createBeName === "" || !valid_db_name(this.state.createBeName)) {
+                 errObj.createBeName = true;
+                 createNotOK = true;
+             }
+@@ -1386,18 +1391,16 @@ export class Database extends React.Component {
+             }
+             body = (
+                 <div className="ds-container">
+-                    <div>
+-                        <div className="ds-tree">
+-                            <div className={disabled} id="db-tree">
+-                                <TreeView
+-                                    hasSelectableNodes
+-                                    data={this.state.nodes}
+-                                    activeItems={this.state.activeItems}
+-                                    onSelect={this.handleTreeClick}
+-                                />
+-                            </div>
++                    <Card className="ds-tree">
++                        <div className={disabled} id="db-tree">
++                            <TreeView
++                                hasSelectableNodes
++                                data={this.state.nodes}
++                                activeItems={this.state.activeItems}
++                                onSelect={this.handleTreeClick}
++                            />
+                         </div>
+-                    </div>
++                    </Card>
+                     <div className="ds-tree-content">
+                         {db_element}
+                     </div>
+diff --git a/src/cockpit/389-console/src/ds.jsx b/src/cockpit/389-console/src/ds.jsx
+index 144ce8d4d..b87084b8d 100644
+--- a/src/cockpit/389-console/src/ds.jsx
++++ b/src/cockpit/389-console/src/ds.jsx
+@@ -270,7 +270,7 @@ export class DSInstance extends React.Component {
+                                                         wasActiveList: [this.state.activeTabKey]
+                                                     },
+                                                     () => {
+-                                                        this.loadBackups();
++                                                        this.loadBackups(true);
+                                                     }
+                                                 );
+                                                 if (action === "restart") {
+@@ -305,7 +305,7 @@ export class DSInstance extends React.Component {
+                                                                 wasActiveList: []
+                                                             },
+                                                             () => {
+-                                                                this.loadBackups();
++                                                                this.loadBackups(true);
+                                                             }
+                                                         );
+                                                     }
+@@ -329,7 +329,7 @@ export class DSInstance extends React.Component {
+                                                     wasActiveList: []
+                                                 },
+                                                 () => {
+-                                                    this.loadBackups();
++                                                    this.loadBackups(true);
+                                                 }
+                                             );
+                                         }
+@@ -371,7 +371,7 @@ export class DSInstance extends React.Component {
+                                     wasActiveList: []
+                                 },
+                                 () => {
+-                                    this.loadBackups();
++                                    this.loadBackups(true);
+                                 }
+                             );
+                         }
+@@ -448,7 +448,7 @@ export class DSInstance extends React.Component {
+         );
+     }
+ 
+-    loadBackups() {
++    loadBackups(initializing) {
+         let cmd = ["dsctl", "-j", this.state.serverId, "backups"];
+         log_cmd("loadBackups", "Load Backups", cmd);
+         cockpit.spawn(cmd, { superuser: true, err: "message" })
+@@ -479,10 +479,13 @@ export class DSInstance extends React.Component {
+                 .fail(err => {
+                     this.updateProgress(25);
+                     const errMsg = JSON.parse(err);
+-                    this.addNotification(
+-                        "error",
+-                        cockpit.format(_("Load Backups operation failed - $0"), errMsg.desc)
+-                    );
++                    if (!initializing) {
++                        // Don't log an error when first initializing the UI
++                        this.addNotification(
++                            "error",
++                            cockpit.format(_("Load Backups operation failed - $0"), errMsg.desc)
++                        );
++                    }
+                     this.setState({
+                         backupRows: [],
+                     });
+diff --git a/src/cockpit/389-console/src/dsModals.jsx b/src/cockpit/389-console/src/dsModals.jsx
+index 8b39324ef..e3ee18fc0 100644
+--- a/src/cockpit/389-console/src/dsModals.jsx
++++ b/src/cockpit/389-console/src/dsModals.jsx
+@@ -12,6 +12,8 @@ import {
+     FormHelperText,
+     FormSelect,
+     FormSelectOption,
++    HelperText,
++    HelperTextItem,
+     Grid,
+     GridItem,
+     Modal,
+@@ -419,12 +421,18 @@ export class CreateInstanceModal extends React.Component {
+                                     }}
+                                     validated={errObj.createServerId ? ValidatedOptions.error : ValidatedOptions.default}
+                                 />
+-                                <FormHelperText  >
+-                                    {this.state.createServerIdMsg}
+-                                </FormHelperText>
++                                {errObj.createServerId &&
++                                    <FormHelperText>
++                                        <HelperText>
++                                            <HelperTextItem variant="error">
++                                                {this.state.createServerIdMsg}
++                                            </HelperTextItem>
++                                        </HelperText>
++                                    </FormHelperText>
++                                }
+                             </GridItem>
+                         </Grid>
+-                        <Grid title={_("The server port number should be in the range of 0 to 65534.")}>
++                        <Grid title={_("The server port number should be in the range of 0 to 65534")}>
+                             <GridItem className="ds-label" span={4}>
+                                 {_("Port")}
+                             </GridItem>
+@@ -443,11 +451,15 @@ export class CreateInstanceModal extends React.Component {
+                                     widthChars={8}
+                                 />
+                                 <FormHelperText className="ds-info-color" >
+-                                    {_("Port 0 will disable non-TLS connections")}
++                                    <HelperText>
++                                        <HelperTextItem variant={"indeterminate"}>
++                                            {_("Port 0 will disable non-TLS connections")}
++                                        </HelperTextItem>
++                                    </HelperText>
+                                 </FormHelperText>
+                             </GridItem>
+                         </Grid>
+-                        <Grid title={_("The secure port number for TLS connections. It should be in the range of 1 to 65534.")}>
++                        <Grid title={_("The secure port number for TLS connections. It should be in the range of 1 to 65534")}>
+                             <GridItem className="ds-label" span={4}>
+                                 {_("Secure Port")}
+                             </GridItem>
+@@ -467,7 +479,7 @@ export class CreateInstanceModal extends React.Component {
+                                 />
+                             </GridItem>
+                         </Grid>
+-                        <Grid title={_("Create a self-signed certificate database in /etc/dirsrc/ssca directory.")}>
++                        <Grid title={_("Create a self-signed certificate database in /etc/dirsrc/ssca directory")}>
+                             <GridItem className="ds-label-checkbox" span={4}>
+                                 {_("Create Self-Signed TLS Certificate")}
+                             </GridItem>
+@@ -497,12 +509,18 @@ export class CreateInstanceModal extends React.Component {
+                                     }}
+                                     validated={errObj.createDM ? ValidatedOptions.error : ValidatedOptions.default}
+                                 />
+-                                <FormHelperText  >
+-                                    {_("Enter a valid DN")}
+-                                </FormHelperText>
++                                {errObj.createDM &&
++                                    <FormHelperText>
++                                        <HelperText>
++                                            <HelperTextItem variant="error">
++                                                {_("Enter a valid DN")}
++                                            </HelperTextItem>
++                                        </HelperText>
++                                    </FormHelperText>
++                                }
+                             </GridItem>
+                         </Grid>
+-                        <Grid title={_("Directory Manager password must be at least 8 characters in length.")}>
++                        <Grid title={_("Directory Manager password must be at least 8 characters in length")}>
+                             <GridItem className="ds-label" span={4}>
+                                 {_("Directory Manager Password")}
+                             </GridItem>
+@@ -518,12 +536,18 @@ export class CreateInstanceModal extends React.Component {
+                                     }}
+                                     validated={errObj.createDMPassword ? ValidatedOptions.error : ValidatedOptions.default}
+                                 />
+-                                <FormHelperText  >
+-                                    {_("Password must be set and it must match the confirmation password.")}
+-                                </FormHelperText>
++                                {errObj.createDMPassword &&
++                                    <FormHelperText>
++                                        <HelperText>
++                                            <HelperTextItem variant="error">
++                                                Password must be set with at least 8 characters, and it must match the confirmation password
++                                            </HelperTextItem>
++                                        </HelperText>
++                                    </FormHelperText>
++                                }
+                             </GridItem>
+                         </Grid>
+-                        <Grid title={_("Confirm the previously entered password.")}>
++                        <Grid title={_("Confirm the previously entered password")}>
+                             <GridItem className="ds-label" span={4}>
+                                 {_("Confirm Password")}
+                             </GridItem>
+@@ -539,12 +563,18 @@ export class CreateInstanceModal extends React.Component {
+                                     }}
+                                     validated={errObj.createDMPasswordConfirm ? ValidatedOptions.error : ValidatedOptions.default}
+                                 />
+-                                <FormHelperText  >
+-                                    {_("Confirmation password must be set and it must match the first password.")}
+-                                </FormHelperText>
++                                {errObj.createDMPasswordConfirm &&
++                                    <FormHelperText>
++                                        <HelperText>
++                                            <HelperTextItem variant="error">
++                                                Confirmation password must be set with at least 8 characters, and it must match the first password
++                                            </HelperTextItem>
++                                        </HelperText>
++                                    </FormHelperText>
++                                }
+                             </GridItem>
+                         </Grid>
+-                        <Grid className="ds-margin-top" title={_("Create a database during the installation.")}>
++                        <Grid className="ds-margin-top" title={_("Create a database during the installation")}>
+                             <Checkbox
+                                 id="createDBCheckbox"
+                                 label={_("Create Database")}
+@@ -573,12 +603,18 @@ export class CreateInstanceModal extends React.Component {
+                                         }}
+                                         validated={errObj.createDBSuffix ? ValidatedOptions.error : ValidatedOptions.default}
+                                     />
+-                                    <FormHelperText  >
+-                                        {_("Value must be a valid DN")}
+-                                    </FormHelperText>
++                                    {errObj.createDBSuffix &&
++                                        <FormHelperText>
++                                            <HelperText>
++                                                <HelperTextItem variant="error">
++                                                    {_("Value must be a valid DN")}
++                                                </HelperTextItem>
++                                            </HelperText>
++                                        </FormHelperText>
++                                    }
+                                 </GridItem>
+                             </Grid>
+-                            <Grid title={_("The name for the backend database, like 'userroot'. The name can be a combination of alphanumeric characters, dashes (-), and underscores (_). No other characters are allowed, and the name must be unique across all backends.")}>
++                            <Grid className="ds-margin-top" title={_("The name for the backend database, like 'userroot'. The name can be a combination of alphanumeric characters, dashes (-), and underscores (_). No other characters are allowed, and the name must be unique across all backends")}>
+                                 <GridItem className="ds-label" offset={1} span={3}>
+                                     {_("Database Name")}
+                                 </GridItem>
+@@ -596,12 +632,18 @@ export class CreateInstanceModal extends React.Component {
+                                         }}
+                                         validated={errObj.createDBName ? ValidatedOptions.error : ValidatedOptions.default}
+                                     />
+-                                    <FormHelperText  >
+-                                        {_("Name is required")}
+-                                    </FormHelperText>
++                                    {errObj.createDBName &&
++                                        <FormHelperText >
++                                            <HelperText>
++                                                <HelperTextItem variant="error">
++                                                    {_("Name is required")}
++                                                </HelperTextItem>
++                                            </HelperText>
++                                        </FormHelperText>
++                                    }
+                                 </GridItem>
+                             </Grid>
+-                            <Grid>
++                            <Grid className="ds-margin-top" >
+                                 <GridItem className="ds-label" offset={1} span={3}>
+                                     {_("Database Initialization")}
+                                 </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/database/databaseConfig.jsx b/src/cockpit/389-console/src/lib/database/databaseConfig.jsx
+index b944c08d9..112625be9 100644
+--- a/src/cockpit/389-console/src/lib/database/databaseConfig.jsx
++++ b/src/cockpit/389-console/src/lib/database/databaseConfig.jsx
+@@ -17,8 +17,10 @@ import {
+     TextVariants,
+     TimePicker,
+     Tooltip,
++    ValidatedOptions,
+ } from "@patternfly/react-core";
+ import PropTypes from "prop-types";
++import { SyncAltIcon } from '@patternfly/react-icons';
+ import { OutlinedQuestionCircleIcon } from '@patternfly/react-icons/dist/js/icons/outlined-question-circle-icon';
+ 
+ const _ = cockpit.gettext;
+@@ -29,6 +31,7 @@ export class GlobalDatabaseConfig extends React.Component {
+         this.state = {
+             saving: false,
+             saveBtnDisabled: true,
++            error: {},
+             activeTabKey:  this.props.data.activeTab,
+             db_cache_auto: this.props.data.db_cache_auto,
+             import_cache_auto: this.props.data.import_cache_auto,
+@@ -86,22 +89,29 @@ export class GlobalDatabaseConfig extends React.Component {
+         this.maxValue = 2147483647;
+         this.onMinusConfig = (id) => {
+             this.setState({
+-                [id]: Number(this.state[id]) - 1
++                [id]: Number(this.state[id]) - 1,
+             }, () => { this.validateSaveBtn() });
+         };
+         this.onConfigChange = (event, id, min, max) => {
++            let error = this.state.error;
+             let maxValue = this.maxValue;
+             if (max !== 0) {
+                 maxValue = max;
+             }
++            let badValue = false;
+             const newValue = isNaN(event.target.value) ? 0 : Number(event.target.value);
++            if (newValue > maxValue || newValue < min) {
++                badValue = true;
++            }
++            error[id] = badValue;
+             this.setState({
+-                [id]: newValue > maxValue ? maxValue : newValue < min ? min : newValue
++                [id]: newValue,
++                error,
+             }, () => { this.validateSaveBtn() });
+         };
+         this.onPlusConfig = (id) => {
+             this.setState({
+-                [id]: Number(this.state[id]) + 1
++                [id]: Number(this.state[id]) + 1,
+             }, () => { this.validateSaveBtn() });
+         };
+ 
+@@ -143,6 +153,15 @@ export class GlobalDatabaseConfig extends React.Component {
+                 break;
+             }
+         }
++
++        // Check if have any errors on our attributes
++        for (const config_attr of check_attrs) {
++            if (config_attr in this.state.error && this.state.error[config_attr]) {
++                saveBtnDisabled = true;
++                break;
++            }
++        }
++
+         this.setState({
+             saveBtnDisabled,
+         });
+@@ -153,14 +172,21 @@ export class GlobalDatabaseConfig extends React.Component {
+         const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+         const attr = e.target.id;
+ 
++        if (attr === "import_cache_auto" && value) {
++            // We need to set it to -1 if it's already set to 0
++            if (this.state.importcacheauto === "0") {
++                this.setState({ importcacheauto: "-1" });
++            }
++        }
++
+         this.setState({
+             [attr]: value,
+         }, () => { this.validateSaveBtn() });
+     }
+ 
+-    handleTimeChange(_event, value) {
++    handleTimeChange = (_event, time, hour, min, seconds, isValid) => {
+         this.setState({
+-            compacttime: value,
++            compacttime: time,
+         }, () => { this.validateSaveBtn() });
+     }
+ 
+@@ -400,6 +426,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                 plusBtnAriaLabel="plus"
+                                 widthChars={10}
+                                 unit="%"
++                                validated={'dblocksMonitoringThreshold' in this.state.error &&
++                                    this.state.error['dblocksMonitoringThreshold']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -423,6 +453,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                 minusBtnAriaLabel="minus"
+                                 plusBtnAriaLabel="plus"
+                                 widthChars={10}
++                                validated={'dblocksMonitoringPause' in this.state.error &&
++                                    this.state.error['dblocksMonitoringPause']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -454,6 +488,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                 plusBtnAriaLabel="plus"
+                                 widthChars={4}
+                                 unit="%"
++                                validated={'autosize' in this.state.error &&
++                                    this.state.error['autosize']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -478,6 +516,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                 plusBtnAriaLabel="plus"
+                                 widthChars={4}
+                                 unit="%"
++                                validated={'autosizesplit' in this.state.error &&
++                                    this.state.error['autosizesplit']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -496,17 +538,21 @@ export class GlobalDatabaseConfig extends React.Component {
+                         </GridItem>
+                         <GridItem span={9}>
+                             <NumberInput
+-                            value={this.state.dbcachesize}
+-                            min={512000}
+-                            max={this.maxValue}
+-                            onMinus={() => { this.onMinusConfig("dbcachesize") }}
+-                            onChange={(e) => { this.onConfigChange(e, "dbcachesize", 512000, 0) }}
+-                            onPlus={() => { this.onPlusConfig("dbcachesize") }}
+-                            inputName="input"
+-                            inputAriaLabel="number input"
+-                            minusBtnAriaLabel="minus"
+-                            plusBtnAriaLabel="plus"
+-                            widthChars={10}
++                                value={this.state.dbcachesize}
++                                min={512000}
++                                max={this.maxValue}
++                                onMinus={() => { this.onMinusConfig("dbcachesize") }}
++                                onChange={(e) => { this.onConfigChange(e, "dbcachesize", 512000, 0) }}
++                                onPlus={() => { this.onPlusConfig("dbcachesize") }}
++                                inputName="input"
++                                inputAriaLabel="number input"
++                                minusBtnAriaLabel="minus"
++                                plusBtnAriaLabel="plus"
++                                widthChars={10}
++                                validated={'dbcachesize' in this.state.error &&
++                                    this.state.error['dbcachesize']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -539,6 +585,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                 plusBtnAriaLabel="plus"
+                                 widthChars={4}
+                                 unit={this.state.importcacheauto > 0 ? "%" : ""}
++                                validated={'importcacheauto' in this.state.error &&
++                                    this.state.error['importcacheauto']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -568,6 +618,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                 minusBtnAriaLabel="minus"
+                                 plusBtnAriaLabel="plus"
+                                 widthChars={10}
++                                validated={'importcachesize' in this.state.error &&
++                                    this.state.error['importcachesize']
++                                     ? ValidatedOptions.error
++                                     : ValidatedOptions.default}
+                             />
+                         </GridItem>
+                     </Grid>
+@@ -604,9 +658,17 @@ export class GlobalDatabaseConfig extends React.Component {
+                     <TextContent>
+                         <Text className="ds-config-header" component={TextVariants.h2}>
+                             {_("Global Database Configuration")}
++                            <Button
++                                variant="plain"
++                                aria-label={_("Refresh config settings")}
++                                onClick={() => {
++                                    this.props.reload(this.state.activeTabKey);
++                                }}
++                            >
++                                <SyncAltIcon />
++                            </Button>
+                         </Text>
+                     </TextContent>
+-
+                     <div className="ds-margin-top-lg">
+                         <Tabs isFilled activeKey={this.state.activeTabKey} onSelect={this.handleNavSelect}>
+                             <Tab eventKey={0} title={<TabTitleText>{_("Limits")}</TabTitleText>}>
+@@ -631,6 +693,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'looklimit' in this.state.error &&
++                                                    this.state.error['looklimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -654,6 +720,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'idscanlimit' in this.state.error &&
++                                                    this.state.error['idscanlimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -677,6 +747,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'pagelooklimit' in this.state.error &&
++                                                    this.state.error['pagelooklimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -700,6 +774,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'pagescanlimit' in this.state.error &&
++                                                    this.state.error['pagescanlimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -723,6 +801,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'rangelooklimit' in this.state.error &&
++                                                    this.state.error['rangelooklimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -790,6 +872,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'ndncachemaxsize' in this.state.error &&
++                                                    this.state.error['ndncachemaxsize']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -818,6 +904,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'dblocks' in this.state.error &&
++                                                    this.state.error['dblocks']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -928,6 +1018,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'compactinterval' in this.state.error &&
++                                                    this.state.error['compactinterval']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -951,6 +1045,10 @@ export class GlobalDatabaseConfig extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'chxpoint' in this.state.error &&
++                                                    this.state.error['chxpoint']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -999,6 +1097,7 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+             saving: false,
+             saveBtnDisabled: true,
+             availDbSizeBytes: 0,
++            error: {},
+             activeTabKey:  this.props.data.activeTab,
+             db_cache_auto: this.props.data.db_cache_auto,
+             import_cache_auto: this.props.data.import_cache_auto,
+@@ -1034,11 +1133,11 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+         this.onMinusConfig = (id) => {
+             if (id === "mdbmaxsize") {
+                 this.setState({
+-                    [id]: Number(this.state[id]) - (1024 * 1024)
++                    [id]: Number(this.state[id]) - (1024 * 1024),
+                 }, () => { this.validateSaveBtn() });
+             } else {
+                 this.setState({
+-                    [id]: Number(this.state[id]) - 1
++                    [id]: Number(this.state[id]) - 1,
+                 }, () => { this.validateSaveBtn() });
+             }
+         };
+@@ -1086,8 +1185,17 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                     [id]: (newValueBytes > max ? max : newValueBytes < min ? min : newValueBytes)
+                 }, () => { this.validateSaveBtn() });
+             } else {
++                let error = this.state.error;
++                let badValue = false;
++                const newValue = isNaN(event.target.value) ? 0 : Number(event.target.value);
++                if (newValue > maxValue || newValue < min) {
++                    badValue = true;
++
++                }
++                error[id] = badValue;
+                 this.setState({
+-                    [id]: newValue > maxValue ? maxValue : newValue < min ? min : newValue
++                    [id]: newValue,
++                    error,
+                 }, () => { this.validateSaveBtn() });
+             }
+         };
+@@ -1095,11 +1203,11 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+         this.onPlusConfig = (id) => {
+             if (id === "mdbmaxsize") {
+                 this.setState({
+-                    [id]: Number(this.state[id]) + (1024 * 1024)
++                    [id]: Number(this.state[id]) + (1024 * 1024),
+                 }, () => { this.validateSaveBtn() });
+             } else {
+                 this.setState({
+-                    [id]: Number(this.state[id]) + 1
++                    [id]: Number(this.state[id]) + 1,
+                 }, () => { this.validateSaveBtn() });
+             }
+         };
+@@ -1150,7 +1258,15 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                 break;
+             }
+         }
+-        // jc console.log(saveBtnDisabled);
++
++        // Check if have any errors on our attributes
++        for (const config_attr of check_attrs) {
++            if (config_attr in this.state.error && this.state.error[config_attr]) {
++                saveBtnDisabled = true;
++                break;
++            }
++        }
++
+         this.setState({
+             saveBtnDisabled
+         });
+@@ -1338,6 +1454,15 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                     <TextContent>
+                         <Text className="ds-config-header" component={TextVariants.h2}>
+                             {_("Global Database Configuration")}
++                            <Button
++                                variant="plain"
++                                aria-label={_("Refresh config settings")}
++                                onClick={() => {
++                                    this.props.reload(this.state.activeTabKey);
++                                }}
++                            >
++                                <SyncAltIcon />
++                            </Button>
+                         </Text>
+                     </TextContent>
+ 
+@@ -1366,6 +1491,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 plusBtnAriaLabel="plus"
+                                                 unit="MB"
+                                                 widthChars={10}
++                                                validated={'mdbmaxsize' in this.state.error &&
++                                                    this.state.error['mdbmaxsize']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1393,6 +1522,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'looklimit' in this.state.error &&
++                                                    this.state.error['looklimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1416,6 +1549,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'idscanlimit' in this.state.error &&
++                                                    this.state.error['idscanlimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1439,6 +1576,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'pagelooklimit' in this.state.error &&
++                                                    this.state.error['pagelooklimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1462,6 +1603,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'pagescanlimit' in this.state.error &&
++                                                    this.state.error['pagescanlimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1485,6 +1630,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'rangelooklimit' in this.state.error &&
++                                                    this.state.error['rangelooklimit']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1498,7 +1647,7 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                         className="ds-margin-top-xlg"
+                                     >
+                                         <GridItem className="ds-label" span={4}>
+-                                            {_("Normalized DN Cache Max Size")}
++                                            {_("Normalized DN Cache Max Size") }
+                                         </GridItem>
+                                         <GridItem span={8}>
+                                             <NumberInput
+@@ -1513,6 +1662,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'ndncachemaxsize' in this.state.error &&
++                                                           this.state.error['ndncachemaxsize']
++                                                            ? ValidatedOptions.error
++                                                            : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1560,6 +1713,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'mdbmaxreaders' in this.state.error &&
++                                                    this.state.error['mdbmaxreaders']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+@@ -1584,6 +1741,10 @@ export class GlobalDatabaseConfigMDB extends React.Component {
+                                                 minusBtnAriaLabel="minus"
+                                                 plusBtnAriaLabel="plus"
+                                                 widthChars={10}
++                                                validated={'mdbmaxdbs' in this.state.error &&
++                                                    this.state.error['mdbmaxdbs']
++                                                     ? ValidatedOptions.error
++                                                     : ValidatedOptions.default}
+                                             />
+                                         </GridItem>
+                                     </Grid>
+diff --git a/src/cockpit/389-console/src/lib/database/databaseModal.jsx b/src/cockpit/389-console/src/lib/database/databaseModal.jsx
+index a64235996..8d668494e 100644
+--- a/src/cockpit/389-console/src/lib/database/databaseModal.jsx
++++ b/src/cockpit/389-console/src/lib/database/databaseModal.jsx
+@@ -17,6 +17,7 @@ import {
+ import { LDIFTable } from "./databaseTables.jsx";
+ import PropTypes from "prop-types";
+ 
++
+ const _ = cockpit.gettext;
+ 
+ class CreateLinkModal extends React.Component {
+diff --git a/src/cockpit/389-console/src/lib/database/databaseTables.jsx b/src/cockpit/389-console/src/lib/database/databaseTables.jsx
+index 1c4b43716..3d0ce5e98 100644
+--- a/src/cockpit/389-console/src/lib/database/databaseTables.jsx
++++ b/src/cockpit/389-console/src/lib/database/databaseTables.jsx
+@@ -88,12 +88,12 @@ class ReferralTable extends React.Component {
+ 
+     handleSort(_event, index, direction) {
+         const sortedRefs = [...this.props.rows];
+-        
++
+         sortedRefs.sort();
+         if (direction !== 'asc') {
+             sortedRefs.reverse();
+         }
+-        
++
+         const rows = sortedRefs.map(refRow => [
+             refRow,
+             this.getDeleteButton(refRow)
+@@ -130,6 +130,7 @@ class ReferralTable extends React.Component {
+                                         onSort: this.handleSort,
+                                         columnIndex: idx
+                                     } : undefined}
++                                    textCenter={idx === 1}
+                                 >
+                                     {column.title}
+                                 </Th>
+@@ -140,7 +141,7 @@ class ReferralTable extends React.Component {
+                         {displayRows.map((row, rowIndex) => (
+                             <Tr key={rowIndex}>
+                                 {row.map((cell, cellIndex) => (
+-                                    <Td 
++                                    <Td
+                                         key={cellIndex}
+                                         textCenter={cellIndex === 1}
+                                     >
+@@ -203,10 +204,10 @@ class IndexTable extends React.Component {
+     }
+ 
+     handleSort(_event, index, direction) {
+-        const sortedRows = [...this.state.rows].sort((a, b) => 
++        const sortedRows = [...this.state.rows].sort((a, b) =>
+             (a[index] < b[index] ? -1 : a[index] > b[index] ? 1 : 0)
+         );
+-        
++
+         this.setState({
+             sortBy: {
+                 index,
+@@ -219,14 +220,15 @@ class IndexTable extends React.Component {
+     handleSearchChange(event, value) {
+         let rows = [];
+         const val = value.toLowerCase();
+-        
++
+         if (val === "") {
+             rows = [...this.props.rows];
+         } else {
+             for (const row of this.props.rows) {
++                const mr_row = row[2].length > 0 ? row[2] : "";
+                 if (row[0].toLowerCase().includes(val) ||
+                     row[1].toLowerCase().includes(val) ||
+-                    row[2].toLowerCase().includes(val)) {
++                    mr_row.toLowerCase().includes(val)) {
+                     rows.push([row[0], row[1], row[2]]);
+                 }
+             }
+@@ -281,14 +283,14 @@ class IndexTable extends React.Component {
+                     onChange={this.handleSearchChange}
+                     onClear={(evt) => this.handleSearchChange(evt, '')}
+                 />
+-                <Table 
++                <Table
+                     aria-label="index table"
+                     variant="compact"
+                 >
+                     <Thead>
+                         <Tr>
+                             {columns.map((column, idx) => (
+-                                <Th 
++                                <Th
+                                     key={idx}
+                                     sort={column.sortable ? {
+                                         sortBy: this.state.sortBy,
+@@ -309,7 +311,7 @@ class IndexTable extends React.Component {
+                                     // Handle array-type rows
+                                     row.map((cell, cellIndex) => (
+                                         <Td key={cellIndex}>
+-                                            {Array.isArray(cell) && cell.length === 0 ? 
++                                            {Array.isArray(cell) && cell.length === 0 ?
+                                                 '' : // Handle empty arrays
+                                                 String(cell) // Convert any value to string
+                                             }
+@@ -323,7 +325,7 @@ class IndexTable extends React.Component {
+                                 )}
+                                 {has_rows && this.props.editable && (
+                                     <Td isActionCell>
+-                                        <ActionsColumn 
++                                        <ActionsColumn
+                                             items={getActionsForRow(row)}
+                                         />
+                                     </Td>
+@@ -415,7 +417,7 @@ class EncryptedAttrTable extends React.Component {
+         if (direction !== 'asc') {
+             sortedAttrs.reverse();
+         }
+-        
++
+         const rows = sortedAttrs.map(attrRow => [
+             attrRow,
+             this.getDeleteButton(attrRow)
+@@ -452,6 +454,7 @@ class EncryptedAttrTable extends React.Component {
+                                         onSort: this.handleSort,
+                                         columnIndex: idx
+                                     } : undefined}
++                                    textCenter={idx === 1}
+                                 >
+                                     {column.title}
+                                 </Th>
+@@ -462,7 +465,7 @@ class EncryptedAttrTable extends React.Component {
+                         {displayRows.map((row, rowIndex) => (
+                             <Tr key={rowIndex}>
+                                 {row.map((cell, cellIndex) => (
+-                                    <Td 
++                                    <Td
+                                         key={cellIndex}
+                                         textCenter={cellIndex === 1}
+                                     >
+@@ -552,10 +555,10 @@ class LDIFTable extends React.Component {
+     }
+ 
+     handleSort(_event, index, direction) {
+-        const sortedRows = [...this.state.rows].sort((a, b) => 
++        const sortedRows = [...this.state.rows].sort((a, b) =>
+             (a[index] < b[index] ? -1 : a[index] > b[index] ? 1 : 0)
+         );
+-        
++
+         this.setState({
+             sortBy: {
+                 index,
+@@ -615,7 +618,7 @@ class LDIFTable extends React.Component {
+                                 {/* Only render the action column if we have rows */}
+                                 {hasRows && (
+                                     <Td isActionCell>
+-                                        <ActionsColumn 
++                                        <ActionsColumn
+                                             items={this.getActionsForRow(row)}
+                                         />
+                                     </Td>
+@@ -689,7 +692,7 @@ class LDIFManageTable extends React.Component {
+ 
+     handleSort(_event, index, direction) {
+         const sortedLDIF = [...this.state.rows];
+-        
++
+         sortedLDIF.sort((a, b) => {
+             const aValue = Array.isArray(a) ? a[index] : a.cells[index];
+             const bValue = Array.isArray(b) ? b[index] : b.cells[index];
+@@ -726,7 +729,7 @@ class LDIFManageTable extends React.Component {
+     render() {
+         const { columns, rows, perPage, page, sortBy } = this.state;
+         const hasRows = this.props.rows.length > 0;
+-        
++
+         // Calculate pagination
+         const startIdx = (perPage * page) - perPage;
+         const tableRows = [...rows].splice(startIdx, perPage);
+@@ -769,7 +772,7 @@ class LDIFManageTable extends React.Component {
+                                 )}
+                                 {hasRows && (
+                                     <Td isActionCell>
+-                                        <ActionsColumn 
++                                        <ActionsColumn
+                                             items={this.getActions(row)}
+                                         />
+                                     </Td>
+@@ -842,7 +845,7 @@ class BackupTable extends React.Component {
+ 
+     handleSort(_event, index, direction) {
+         const sortedBaks = [...this.state.rows];
+-        
++
+         sortedBaks.sort((a, b) => {
+             const aValue = Array.isArray(a) ? a[index] : a[0];
+             const bValue = Array.isArray(b) ? b[index] : b[0];
+@@ -879,7 +882,7 @@ class BackupTable extends React.Component {
+     render() {
+         const { columns, rows, perPage, page, sortBy } = this.state;
+         const hasRows = this.props.rows.length > 0;
+-        
++
+         // Calculate pagination
+         const startIdx = (perPage * page) - perPage;
+         const tableRows = [...rows].splice(startIdx, perPage);
+@@ -922,7 +925,7 @@ class BackupTable extends React.Component {
+                                 )}
+                                 {hasRows && (
+                                     <Td isActionCell>
+-                                        <ActionsColumn 
++                                        <ActionsColumn
+                                             items={this.getActions(row)}
+                                         />
+                                     </Td>
+@@ -995,7 +998,7 @@ class PwpTable extends React.Component {
+ 
+     handleSort(_event, index, direction) {
+         const sortedPwp = [...this.state.rows];
+-        
++
+         sortedPwp.sort((a, b) => {
+             const aValue = Array.isArray(a) ? a[index] : a.cells[index];
+             const bValue = Array.isArray(b) ? b[index] : b.cells[index];
+@@ -1032,7 +1035,7 @@ class PwpTable extends React.Component {
+     render() {
+         const { columns, rows, perPage, page, sortBy } = this.state;
+         const hasRows = this.props.rows.length > 0;
+-        
++
+         // Calculate pagination
+         const startIdx = (perPage * page) - perPage;
+         const tableRows = [...rows].splice(startIdx, perPage);
+@@ -1075,7 +1078,7 @@ class PwpTable extends React.Component {
+                                 )}
+                                 {hasRows && (
+                                     <Td isActionCell>
+-                                        <ActionsColumn 
++                                        <ActionsColumn
+                                             items={this.getActions(row)}
+                                         />
+                                     </Td>
+@@ -1313,7 +1316,7 @@ class VLVTable extends React.Component {
+ 
+         return (
+             <div className={(this.props.saving || this.props.updating) ? "ds-margin-top-lg ds-disabled" : "ds-margin-top-lg"}>
+-                <Table 
++                <Table
+                     aria-label="vlv table"
+                     variant='compact'
+                 >
+@@ -1321,7 +1324,7 @@ class VLVTable extends React.Component {
+                         <Tr>
+                             {!noRows && <Th screenReaderText="Row expansion" />}
+                             {columns.map((column, columnIndex) => (
+-                                <Th 
++                                <Th
+                                     key={columnIndex}
+                                     sort={column.sortable ? {
+                                         sortBy,
+@@ -1340,7 +1343,7 @@ class VLVTable extends React.Component {
+                             <React.Fragment key={rowIndex}>
+                                 <Tr>
+                                     {!noRows && (
+-                                        <Td 
++                                        <Td
+                                             expand={{
+                                                 rowIndex,
+                                                 isExpanded: row.isOpen,
+@@ -1353,7 +1356,7 @@ class VLVTable extends React.Component {
+                                     ))}
+                                     {!noRows && (
+                                         <Td isActionCell>
+-                                            <ActionsColumn 
++                                            <ActionsColumn
+                                                 items={this.getActions(row)}
+                                             />
+                                         </Td>
+@@ -1362,7 +1365,7 @@ class VLVTable extends React.Component {
+                                 {row.isOpen && row.originalData && (
+                                     <Tr isExpanded={true}>
+                                         <Td />
+-                                        <Td 
++                                        <Td
+                                             colSpan={columns.length + 1}
+                                             noPadding
+                                         >
+diff --git a/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx b/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx
+index 9a427ab8f..1ea66e809 100644
+--- a/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx
++++ b/src/cockpit/389-console/src/lib/ldap_editor/wizards/operations/aciNew.jsx
+@@ -1264,7 +1264,7 @@ class AddNewAci extends React.Component {
+                             className="ds-left-margin"
+                             time={this.state.timeOfDayStart}
+                             is24Hour
+-                            onChange={(val) => this.handleTimeChange(val, "timeOfDayStart")}
++                            onChange={(_event, time, hour, min, seconds, isValid) => this.handleTimeChange(time, "timeOfDayStart")}
+                         />
+                     </GridItem>
+                 </Grid>
+@@ -1292,7 +1292,7 @@ class AddNewAci extends React.Component {
+                             className="ds-left-margin"
+                             time={this.state.timeOfDayEnd}
+                             is24Hour
+-                            onChange={(val) => this.handleTimeChange(val, "timeOfDayEnd")}
++                            onChange={(_event, time, hour, min, seconds, isValid) => this.handleTimeChange(time, "timeOfDayEnd")}
+                         />
+                     </GridItem>
+                 </Grid>
+diff --git a/src/cockpit/389-console/src/lib/monitor/serverMonitor.jsx b/src/cockpit/389-console/src/lib/monitor/serverMonitor.jsx
+index 599595acd..0fe5f047d 100644
+--- a/src/cockpit/389-console/src/lib/monitor/serverMonitor.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/serverMonitor.jsx
+@@ -324,7 +324,7 @@ export class ServerMonitor extends React.Component {
+                         <TextContent>
+                             <Text component={TextVariants.h3}>
+                                 {_("Server Statistics")}
+-                                <Button 
++                                <Button
+                                     variant="plain"
+                                     aria-label={_("Refresh suffix monitor")}
+                                     onClick={this.props.handleReload}
+@@ -523,8 +523,8 @@ export class ServerMonitor extends React.Component {
+                                 <b>{uptime}</b>
+                             </GridItem>
+                             <hr />
+-                            <GridItem span={3}>
+-                                {_("Worker Threads")}
++                            <GridItem span={3} title="Active threads includes worker threads, listener threads, tasks, and persistent searches">
++                                {_("Active Threads")}
+                             </GridItem>
+                             <GridItem span={2}>
+                                 <b>{this.props.data.threads}</b>
+diff --git a/src/cockpit/389-console/src/lib/plugins/attributeUniqueness.jsx b/src/cockpit/389-console/src/lib/plugins/attributeUniqueness.jsx
+index 8ac1d10e8..a2ddae6a7 100644
+--- a/src/cockpit/389-console/src/lib/plugins/attributeUniqueness.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/attributeUniqueness.jsx
+@@ -1,16 +1,21 @@
+ import cockpit from "cockpit";
+ import React from "react";
+ import {
++    Bullseye,
+ 	Button,
+ 	Checkbox,
+ 	Form,
++    FormHelperText,
+ 	FormSelect,
+ 	FormSelectOption,
+ 	Grid,
+ 	GridItem,
++    HelperText,
++    HelperTextItem,
+ 	Modal,
+ 	ModalVariant,
+ 	TextInput,
++    Spinner,
+ 	Switch,
+ 	ValidatedOptions
+ } from '@patternfly/react-core';
+@@ -40,6 +45,8 @@ class AttributeUniqueness extends React.Component {
+         super(props);
+         this.state = {
+             firstLoad: true,
++            saving: false,
++            loading: true,
+             configRows: [],
+             modalChecked: false,
+             modalSpinning: false,
+@@ -52,6 +59,8 @@ class AttributeUniqueness extends React.Component {
+             attrNames: [],
+             subtrees: [],
+             subtreesOptions: [],
++            excludeSubtrees: [],
++            excludeSubtreesOptions: [],
+             acrossAllSubtrees: false,
+             topEntryOc: "",
+             subtreeEnriesOc: "",
+@@ -60,6 +69,8 @@ class AttributeUniqueness extends React.Component {
+             _attrNames: [],
+             _subtrees: [],
+             _subtreesOptions: [],
++            _excludeSubtrees: [],
++            _excludeSubtreesOptions: [],
+             _acrossAllSubtrees: false,
+             _topEntryOc: "",
+             _subtreeEnriesOc: "",
+@@ -70,6 +81,7 @@ class AttributeUniqueness extends React.Component {
+ 
+             isAttributeNameOpen: false,
+             isSubtreesOpen: false,
++            isExcludeSubtreesOpen: false,
+         };
+ 
+         this.handleSwitchChange = this.handleSwitchChange.bind(this);
+@@ -121,18 +133,22 @@ class AttributeUniqueness extends React.Component {
+ 
+         // Subtrees
+         this.handleSubtreesSelect = (event, selection) => {
++            if (selection === "") {
++                this.setState({isSubtreesOpen: false});
++                return;
++            }
+             if (this.state.subtrees.includes(selection)) {
+                 this.setState(
+                     (prevState) => ({
+                         subtrees: prevState.subtrees.filter((item) => item !== selection),
+-                        isAttributeNameOpen: false
++                        isSubtreesOpen: false
+                     }), () => { this.validateConfig() }
+                 );
+             } else {
+                 this.setState(
+                     (prevState) => ({
+                         subtrees: [...prevState.subtrees, selection],
+-                        isAttributeNameOpen: false
++                        isSubtreesOpen: false
+                     }), () => { this.validateConfig() }
+                 );
+             }
+@@ -145,14 +161,55 @@ class AttributeUniqueness extends React.Component {
+         this.handleSubtreesClear = () => {
+             this.setState({
+                 subtrees: [],
+-                isSubtreesOpen: false
++                isSubtreesOpen: false,
+             }, () => { this.validateConfig() });
+         };
+         this.handleSubtreesCreateOption = newValue => {
+-            if (!this.state.subtreesOptions.includes(newValue)) {
++            if (newValue && !this.state.subtreesOptions.includes(newValue)) {
+                 this.setState({
+                     subtreesOptions: [...this.state.subtreesOptions, newValue],
+-                    isSubtreesOpen: false
++                    isSubtreesOpen: false,
++                }, () => { this.validateConfig() });
++            }
++        };
++        // Exclude Subtrees
++        this.handleExcludeSubtreesSelect = (event, selection) => {
++            if (selection === "") {
++                this.setState({isExcludeSubtreesOpen: false});
++                return;
++            }
++            if (this.state.excludeSubtrees.includes(selection)) {
++                this.setState(
++                    (prevState) => ({
++                        excludeSubtrees: prevState.excludeSubtrees.filter((item) => item !== selection),
++                        isExcludeSubtreesOpen: false
++                    }), () => { this.validateConfig() }
++                );
++            } else {
++                this.setState(
++                    (prevState) => ({
++                        excludeSubtrees: [...prevState.excludeSubtrees, selection],
++                        isExcludeSubtreesOpen: false
++                    }), () => { this.validateConfig() }
++                );
++            }
++        };
++        this.handleExcludeSubtreesToggle = (_event, isExcludeSubtreesOpen) => {
++            this.setState({
++                isExcludeSubtreesOpen
++            }, () => { this.validateConfig() });
++        };
++        this.handleExcludeSubtreesClear = () => {
++            this.setState({
++                excludeSubtrees: [],
++                isExcludeSubtreesOpen: false
++            }, () => { this.validateConfig() });
++        };
++        this.handleExcludeSubtreesCreateOption = newValue => {
++            if (newValue && !this.state.excludeSubtreesOptions.includes(newValue)) {
++                this.setState({
++                    excludeSubtreesOptions: [...this.state.excludeSubtreesOptions, newValue],
++                    isExcludeSubtreesOpen: false,
+                 }, () => { this.validateConfig() });
+             }
+         };
+@@ -162,14 +219,21 @@ class AttributeUniqueness extends React.Component {
+         const errObj = {};
+         let all_good = true;
+ 
+-        // Must have a subtree and attribute set
+-        for (const attrList of ['attrNames', 'subtrees']) {
++        // Must have a attribute set and (subtrees or entry oc)
++        for (const attrList of ['attrNames']) {
+             if (this.state[attrList].length === 0) {
+                 errObj[attrList] = true;
+                 all_good = false;
+             }
+         }
+ 
++        if (this.state['subtrees'].length === 0 && this.state['subtreeEnriesOc'] === "") {
++            // Ok we need one or the other
++            errObj['subtrees'] = true;
++            errObj['subtreeEnriesOc'] = true;
++            all_good = false;
++        }
++
+         // Validate the subtree dn's
+         for (const dn of this.state.subtrees) {
+             if (!valid_dn(dn)) {
+@@ -178,6 +242,13 @@ class AttributeUniqueness extends React.Component {
+                 break;
+             }
+         }
++        for (const dn of this.state.excludeSubtrees) {
++            if (!valid_dn(dn)) {
++                errObj.excludeSubtrees = true;
++                all_good = false;
++                break;
++            }
++        }
+ 
+         if (this.state.configName === "") {
+             errObj.configName = true;
+@@ -188,7 +259,7 @@ class AttributeUniqueness extends React.Component {
+             // Check for value differences to see if the save btn should be enabled
+             all_good = false;
+             const attrLists = [
+-                'subtrees', 'attrNames'
++                'subtrees', 'excludeSubtrees', 'attrNames'
+             ];
+             for (const check_attr of attrLists) {
+                 if (!listsEqual(this.state[check_attr], this.state['_' + check_attr])) {
+@@ -272,7 +343,8 @@ class AttributeUniqueness extends React.Component {
+                     const tableKey = this.state.tableKey + 1;
+                     this.setState({
+                         configRows: myObject.items.map(item => item.attrs),
+-                        tableKey
++                        tableKey,
++                        loading: false
+                     });
+                 })
+                 .fail(err => {
+@@ -300,13 +372,16 @@ class AttributeUniqueness extends React.Component {
+                 configName: "",
+                 attrNames: [],
+                 subtrees: [],
++                excludeSubtrees: [],
+                 acrossAllSubtrees: false,
+                 topEntryOc: "",
+-                subtreeEnriesOc: ""
++                subtreeEnriesOc: "",
++                error: {},
+             });
+         } else {
+             let configAttrNamesList = [];
+             let configSubtreesList = [];
++            let configExcludeSubtreesList = [];
+             const cmd = [
+                 "dsconf",
+                 "-j",
+@@ -327,6 +402,8 @@ class AttributeUniqueness extends React.Component {
+                         const configEntry = JSON.parse(content).attrs;
+                         this.setState({
+                             configEntryModalShow: true,
++                            saveBtnDisabled: true,
++                            error: {},
+                             newEntry: false,
+                             configName: configEntry.cn === undefined ? "" : configEntry.cn[0],
+                             configEnabled: !(
+@@ -380,6 +457,14 @@ class AttributeUniqueness extends React.Component {
+                             }
+                             this.setState({ subtrees: configSubtreesList, _subtrees: [...configSubtreesList] });
+                         }
++                        if (configEntry["uniqueness-exclude-subtrees"] === undefined) {
++                            this.setState({ excludeSubtrees: [], _excludeSubtrees: [] });
++                        } else {
++                            for (const value of configEntry["uniqueness-exclude-subtrees"]) {
++                                configExcludeSubtreesList = [...configExcludeSubtreesList, value];
++                            }
++                            this.setState({ excludeSubtrees: configExcludeSubtreesList, _excludeSubtrees: [...configExcludeSubtreesList] });
++                        }
+                     })
+                     .fail(_ => {
+                         this.setState({
+@@ -388,6 +473,7 @@ class AttributeUniqueness extends React.Component {
+                             configName: "",
+                             attrNames: [],
+                             subtrees: [],
++                            excludeSubtrees: [],
+                             acrossAllSubtrees: false,
+                             topEntryOc: "",
+                             subtreeEnriesOc: "",
+@@ -407,6 +493,7 @@ class AttributeUniqueness extends React.Component {
+             configEnabled,
+             attrNames,
+             subtrees,
++            excludeSubtrees,
+             acrossAllSubtrees,
+             topEntryOc,
+             subtreeEnriesOc
+@@ -418,7 +505,7 @@ class AttributeUniqueness extends React.Component {
+             "ldapi://%2fvar%2frun%2fslapd-" + this.props.serverId + ".socket",
+             "plugin",
+             "attr-uniq",
+-            action,
++            action, // "add" or "set"
+             configName,
+             "--enabled",
+             configEnabled ? "on" : "off",
+@@ -427,7 +514,7 @@ class AttributeUniqueness extends React.Component {
+         ];
+ 
+         if (subtrees.length === 0 && subtreeEnriesOc.length === 0) {
+-            // There mustr a subtree or entry OC sets
++            // There must be a subtree or entry OC sets
+             this.props.addNotification(
+                 "error",
+                 _("There must be at least one Subtree or Subtree Entries OC set")
+@@ -439,49 +526,75 @@ class AttributeUniqueness extends React.Component {
+             saving: true
+         });
+ 
+-        // Delete attributes if the user set an empty value to the field
+-        if (!(action === "add" && attrNames.length === 0)) {
++        if (action === "add") {
+             cmd = [...cmd, "--attr-name"];
+             if (attrNames.length !== 0) {
+                 for (const value of attrNames) {
+                     cmd = [...cmd, value];
+                 }
+-            } else if (action === "add") {
+-                cmd = [...cmd, ""];
+-            } else {
+-                cmd = [...cmd, "delete"];
+             }
+-        }
+-
+-        if (!(action === "add" && subtrees.length === 0)) {
+-            cmd = [...cmd, "--subtree"];
+             if (subtrees.length !== 0) {
++                cmd = [...cmd, "--subtree"];
+                 for (const value of subtrees) {
+                     cmd = [...cmd, value];
+                 }
+-            } else if (action === "add") {
+-                cmd = [...cmd, ""];
+-            } else {
+-                cmd = [...cmd, "delete"];
+             }
+-        }
+-
+-        cmd = [...cmd, "--top-entry-oc"];
+-        if (topEntryOc.length !== 0) {
+-            cmd = [...cmd, topEntryOc];
+-        } else if (action === "add") {
+-            cmd = [...cmd, ""];
+-        } else {
+-            cmd = [...cmd, "delete"];
+-        }
+-
+-        cmd = [...cmd, "--subtree-entries-oc"];
+-        if (subtreeEnriesOc.length !== 0) {
+-            cmd = [...cmd, subtreeEnriesOc];
+-        } else if (action === "add") {
+-            cmd = [...cmd, ""];
++            if (excludeSubtrees.length !== 0) {
++                cmd = [...cmd, "--exclude-subtree"];
++                for (const value of excludeSubtrees) {
++                    cmd = [...cmd, value];
++                }
++            }
++            if (topEntryOc.length !== 0) {
++                cmd = [...cmd, "--top-entry-oc", topEntryOc];
++            }
++            if (subtreeEnriesOc.length !== 0) {
++                cmd = [...cmd, "--subtree-entries-oc", subtreeEnriesOc];
++            }
+         } else {
+-            cmd = [...cmd, "delete"];
++            // Set/edit
++            if (!listsEqual(this.state['attrNames'], this.state['_attrNames'])) {
++                cmd = [...cmd, "--attr-name"];
++                for (const value of attrNames) {
++                    cmd = [...cmd, value];
++                }
++            }
++            if (!listsEqual(this.state['subtrees'], this.state['_subtrees'])) {
++                cmd = [...cmd, "--subtree"];
++                if (subtrees.length === 0) {
++                    // Remove all values
++                    cmd = [...cmd, "delete"];
++                } else {
++                    for (const value of subtrees) {
++                        cmd = [...cmd, value];
++                    }
++                }
++            }
++            if (!listsEqual(this.state['excludeSubtrees'], this.state['_excludeSubtrees'])) {
++                cmd = [...cmd, "--exclude-subtree"];
++                if (excludeSubtrees.length === 0) {
++                    // Remove all values
++                    cmd = [...cmd, "delete"];
++                } else {
++                    for (const value of excludeSubtrees) {
++                        cmd = [...cmd, value];
++                    }
++                }
++            }
++            if (this.state['topEntryOc'] !== this.state['_topEntryOc']) {
++                if (topEntryOc.length !== 0) {
++                    cmd = [...cmd, "--top-entry-oc", topEntryOc];
++                } else {
++                    cmd = [...cmd, "--top-entry-oc", "delete"];
++                }
++            }
++            if (this.state['subtreeEnriesOc'] !== this.state['_subtreeEnriesOc']) {
++                if (subtreeEnriesOc.length !== 0) {
++                    cmd = [...cmd, "--subtree-entries-oc", subtreeEnriesOc];
++                } else {
++                    cmd = [...cmd, "--subtree-entries-oc", "delete"];
++                }
++            }
+         }
+ 
+         log_cmd(
+@@ -595,6 +708,7 @@ class AttributeUniqueness extends React.Component {
+             configName,
+             attrNames,
+             subtrees,
++            excludeSubtrees,
+             acrossAllSubtrees,
+             configEnabled,
+             topEntryOc,
+@@ -716,6 +830,44 @@ class AttributeUniqueness extends React.Component {
+                                         />
+                                     ))}
+                                 </Select>
++                                {this.state.error.subtrees &&
++                                    <FormHelperText >
++                                        <HelperText>
++                                            <HelperTextItem variant="error">
++                                                You must specify at least one Subtree, or a Subtree Entry Objectclass
++                                            </HelperTextItem>
++                                        </HelperText>
++                                    </FormHelperText >
++                                }
++                            </GridItem>
++                        </Grid>
++                        <Grid title="Sets subtrees that should be excluded from attribute uniqueness. This attribute is multi-valued (uniqueness-exclude-subtrees">
++                            <GridItem span={3} className="ds-label">
++                                Excluded Subtrees
++                            </GridItem>
++                            <GridItem span={9}>
++                                <Select
++                                    variant={SelectVariant.typeaheadMulti}
++                                    typeAheadAriaLabel="Type an exclude subtree DN"
++                                    onToggle={(event, isOpen) => this.handleExcludeSubtreesToggle(event, isOpen)}
++                                    onSelect={this.handleExcludeSubtreesSelect}
++                                    onClear={this.handleExcludeSubtreesClear}
++                                    selections={excludeSubtrees}
++                                    isOpen={this.state.isExcludeSubtreesOpen}
++                                    aria-labelledby="typeAhead-exclude-subtrees"
++                                    placeholderText={_("Type a subtree DN...")}
++                                    noResultsFoundText={_("There are no matching entries")}
++                                    isCreatable
++                                    onCreateOption={this.handleExcludeSubtreesCreateOption}
++                                    validated={this.state.error.excludeSubtrees ? "error" : "default"}
++                                >
++                                    {[""].map((dn, index) => (
++                                        <SelectOption
++                                            key={index}
++                                            value={dn}
++                                        />
++                                    ))}
++                                </Select>
+                             </GridItem>
+                         </Grid>
+                         <Grid title={_("Verifies that the value of the attribute set in uniqueness-attribute-name is unique in this subtree (uniqueness-top-entry-oc)")}>
+@@ -766,6 +918,15 @@ class AttributeUniqueness extends React.Component {
+                                         <FormSelectOption key={index} value={attr} label={attr} />
+                                     ))}
+                                 </FormSelect>
++                                {this.state.error.subtreeEnriesOc &&
++                                    <FormHelperText >
++                                        <HelperText>
++                                            <HelperTextItem variant="error">
++                                                You must specify at least one Subtree, or a Subtree Entry Objectclass
++                                            </HelperTextItem>
++                                        </HelperText>
++                                    </FormHelperText >
++                                }
+                             </GridItem>
+                         </Grid>
+                         <Grid className="ds-margin-bottom" title={_("Identifies whether or not the config is enabled.")}>
+@@ -800,12 +961,21 @@ class AttributeUniqueness extends React.Component {
+                 >
+                     <Grid>
+                         <GridItem span={12}>
+-                            <AttrUniqConfigTable
+-                                key={this.state.tableKey}
+-                                rows={this.state.configRows}
+-                                editConfig={this.showEditConfigModal}
+-                                deleteConfig={this.showConfirmDelete}
+-                            />
++                            {this.state.loading
++                                ?
++                                    <Bullseye>
++                                        <Spinner />
++                                    </Bullseye>
++                                :
++                                    <AttrUniqConfigTable
++                                        key={this.state.tableKey}
++                                        rows={this.state.configRows}
++                                        editConfig={this.showEditConfigModal}
++                                        deleteConfig={this.showConfirmDelete}
++                                    />
++                            }
++                        </GridItem>
++                        <GridItem>
+                             <Button
+                                 key="add-config"
+                                 variant="primary"
+diff --git a/src/cockpit/389-console/src/lib/plugins/memberOf.jsx b/src/cockpit/389-console/src/lib/plugins/memberOf.jsx
+index 715c1b872..7c1b02297 100644
+--- a/src/cockpit/389-console/src/lib/plugins/memberOf.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/memberOf.jsx
+@@ -225,6 +225,10 @@ class MemberOf extends React.Component {
+ 
+         // Handle scope subtree
+         this.handleSubtreeScopeSelect = (event, selection) => {
++            if (selection === "") {
++                this.setState({isSubtreeScopeOpen: false});
++                return;
++            }
+             if (this.state.memberOfEntryScope.includes(selection)) {
+                 this.setState(
+                     (prevState) => ({
+@@ -253,7 +257,7 @@ class MemberOf extends React.Component {
+             }, () => { this.validateConfig() });
+         };
+         this.handleSubtreeScopeCreateOption = newValue => {
+-            if (!this.state.memberOfEntryScopeOptions.includes(newValue)) {
++            if (newValue && !this.state.memberOfEntryScopeOptions.includes(newValue)) {
+                 this.setState({
+                     memberOfEntryScopeOptions: [...this.state.memberOfEntryScopeOptions, newValue],
+                     isSubtreeScopeOpen: false
+@@ -263,6 +267,10 @@ class MemberOf extends React.Component {
+ 
+         // Handle Exclude Scope subtree
+         this.handleExcludeScopeSelect = (event, selection) => {
++            if (selection === "") {
++                this.setState({isExcludeScopeOpen: false});
++                return;
++            }
+             if (this.state.memberOfEntryScopeExcludeSubtree.includes(selection)) {
+                 this.setState(
+                     (prevState) => ({
+@@ -291,7 +299,7 @@ class MemberOf extends React.Component {
+             }, () => { this.validateConfig() });
+         };
+         this.handleExcludeCreateOption = newValue => {
+-            if (!this.state.memberOfEntryScopeOptions.includes(newValue)) {
++            if (newValue && !this.state.memberOfEntryScopeOptions.includes(newValue)) {
+                 this.setState({
+                     memberOfEntryScopeExcludeOptions: [...this.state.memberOfEntryScopeExcludeOptions, newValue],
+                     isExcludeScopeOpen: false
+@@ -302,6 +310,10 @@ class MemberOf extends React.Component {
+         // Modal scope and exclude Scope
+         // Handle scope subtree
+         this.handleConfigScopeSelect = (event, selection) => {
++            if (selection === "") {
++                this.setState({isConfigSubtreeScopeOpen: false});
++                return;
++            }
+             if (this.state.configEntryScope.includes(selection)) {
+                 this.setState(
+                     (prevState) => ({
+@@ -330,7 +342,7 @@ class MemberOf extends React.Component {
+             }, () => { this.validateModal() });
+         };
+         this.handleConfigCreateOption = newValue => {
+-            if (!this.state.configEntryScopeOptions.includes(newValue)) {
++            if (newValue && !this.state.configEntryScopeOptions.includes(newValue)) {
+                 this.setState({
+                     configEntryScopeOptions: [...this.state.configEntryScopeOptions, newValue],
+                     isConfigSubtreeScopeOpen: false
+@@ -340,6 +352,10 @@ class MemberOf extends React.Component {
+ 
+         // Handle Exclude Scope subtree
+         this.handleConfigExcludeScopeSelect = (event, selection) => {
++            if (selection === "") {
++                this.setState({isConfigExcludeScopeOpen: false});
++                return;
++            }
+             if (this.state.configEntryScopeExcludeSubtree.includes(selection)) {
+                 this.setState(
+                     (prevState) => ({
+@@ -368,7 +384,7 @@ class MemberOf extends React.Component {
+             }, () => { this.validateModal() });
+         };
+         this.handleConfigExcludeCreateOption = newValue => {
+-            if (!this.state.configEntryScopeExcludeOptions.includes(newValue)) {
++            if (newValue && !this.state.configEntryScopeExcludeOptions.includes(newValue)) {
+                 this.setState({
+                     configEntryScopeExcludeOptions: [...this.state.configEntryScopeExcludeOptions, newValue],
+                     isConfigExcludeScopeOpen: false
+@@ -395,7 +411,7 @@ class MemberOf extends React.Component {
+         ];
+ 
+         const reqLists = [
+-            'memberOfGroupAttr', 'memberOfEntryScope',
++            'memberOfGroupAttr',
+         ];
+ 
+         const dnAttrs = [
+@@ -481,7 +497,7 @@ class MemberOf extends React.Component {
+         ];
+ 
+         const reqLists = [
+-            'configEntryScope', 'configGroupAttr'
++            'configGroupAttr'
+         ];
+ 
+         const dnAttrs = [
+diff --git a/src/cockpit/389-console/src/lib/plugins/rootDNAccessControl.jsx b/src/cockpit/389-console/src/lib/plugins/rootDNAccessControl.jsx
+index d7220d815..653260e93 100644
+--- a/src/cockpit/389-console/src/lib/plugins/rootDNAccessControl.jsx
++++ b/src/cockpit/389-console/src/lib/plugins/rootDNAccessControl.jsx
+@@ -633,7 +633,7 @@ class RootDNAccessControl extends React.Component {
+                             <GridItem span={10}>
+                                 <TimePicker
+                                     time={openTime}
+-                                    onChange={(str) => { this.handleTimeChange("openTime", str) }}
++                                    onChange={(_event, time, hour, min, seconds, isValid) => { this.handleTimeChange("openTime", time) }}
+                                     is24Hour
+                                 />
+                             </GridItem>
+@@ -645,7 +645,7 @@ class RootDNAccessControl extends React.Component {
+                             <GridItem span={10}>
+                                 <TimePicker
+                                     time={closeTime}
+-                                    onChange={(str) => { this.handleTimeChange("closeTime", str) }}
++                                    onChange={(_event, time, hour, min, seconds, isValid) => { this.handleTimeChange("closeTime", time) }}
+                                     is24Hour
+                                 />
+                             </GridItem>
+diff --git a/src/cockpit/389-console/src/lib/replication/replAgmts.jsx b/src/cockpit/389-console/src/lib/replication/replAgmts.jsx
+index de3bf137b..2541b859b 100644
+--- a/src/cockpit/389-console/src/lib/replication/replAgmts.jsx
++++ b/src/cockpit/389-console/src/lib/replication/replAgmts.jsx
+@@ -1569,7 +1569,8 @@ export class ReplAgmts extends React.Component {
+     onSearchChange(event, value) {
+         let rows = [];
+         const val = value.toLowerCase();
+-        for (const row of this.state.rows) {
++
++        for (const row of this.props.rows) {
+             if (val !== "" &&
+                 row[0].indexOf(val) === -1 &&
+                 row[1].indexOf(val) === -1 &&
+diff --git a/src/cockpit/389-console/src/lib/replication/replModals.jsx b/src/cockpit/389-console/src/lib/replication/replModals.jsx
+index 557537bd1..0dd6cf50a 100644
+--- a/src/cockpit/389-console/src/lib/replication/replModals.jsx
++++ b/src/cockpit/389-console/src/lib/replication/replModals.jsx
+@@ -292,8 +292,8 @@ export class WinsyncAgmtModal extends React.Component {
+                         <TimePicker
+                             time={startTime}
+                             id="agmtStartTime"
+-                            onChange={(val) => {
+-                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtStartTime", val);
++                            onChange={(_event, time, hour, min, seconds, isValid) => {
++                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtStartTime", time);
+                             }}
+                             stepMinutes={5}
+                             direction="up"
+@@ -312,8 +312,8 @@ export class WinsyncAgmtModal extends React.Component {
+                         <TimePicker
+                             time={endTime}
+                             id="agmtEndTime"
+-                            onChange={(val) => {
+-                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtEndTime", val);
++                            onChange={(_event, time, hour, min, seconds, isValid) => {
++                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtEndTime", time);
+                             }}
+                             stepMinutes={5}
+                             direction="up"
+@@ -1066,8 +1066,8 @@ export class ReplAgmtModal extends React.Component {
+                         <TimePicker
+                             time={startTime}
+                             id="agmtStartTime"
+-                            onChange={(val) => {
+-                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtStartTime", val);
++                            onChange={(_event, time, hour, min, seconds, isValid) => {
++                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtStartTime", time);
+                             }}
+                             stepMinutes={5}
+                             is24Hour
+@@ -1085,8 +1085,8 @@ export class ReplAgmtModal extends React.Component {
+                         <TimePicker
+                             time={endTime}
+                             id="agmtEndTime"
+-                            onChange={(val) => {
+-                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtEndTime", val);
++                            onChange={(_event, time, hour, min, seconds, isValid) => {
++                                handleTimeChange(this.props.edit ? "edit" : "create", "agmtEndTime", time);
+                             }}
+                             stepMinutes={5}
+                             is24Hour
+diff --git a/src/cockpit/389-console/src/lib/replication/replTables.jsx b/src/cockpit/389-console/src/lib/replication/replTables.jsx
+index 94375c585..296de9464 100644
+--- a/src/cockpit/389-console/src/lib/replication/replTables.jsx
++++ b/src/cockpit/389-console/src/lib/replication/replTables.jsx
+@@ -126,7 +126,7 @@ class ReplAgmtTable extends React.Component {
+                     onChange={this.props.handleSearch}
+                     onClear={(evt) => this.props.search(evt, '')}
+                 />
+-                <Table 
++                <Table
+                     className="ds-margin-top-lg"
+                     aria-label="agmt table"
+                     variant="compact"
+@@ -134,7 +134,7 @@ class ReplAgmtTable extends React.Component {
+                     <Thead>
+                         <Tr>
+                             {columns.map((column, idx) => (
+-                                <Th 
++                                <Th
+                                     key={idx}
+                                     sort={column.sortable ? {
+                                         sortBy: this.props.sortBy,
+@@ -162,7 +162,7 @@ class ReplAgmtTable extends React.Component {
+                                 )}
+                                 {has_rows && (
+                                     <Td isActionCell>
+-                                        <ActionsColumn 
++                                        <ActionsColumn
+                                             items={this.getActionsForRow(row)}
+                                         />
+                                     </Td>
+@@ -193,11 +193,11 @@ class ManagerTable extends React.Component {
+             sortBy: {},
+             rows: [],
+             columns: [
+-                { 
+-                    title: 'Manager Name', 
+-                    sortable: true 
++                {
++                    title: 'Manager Name',
++                    sortable: true
+                 },
+-                { 
++                {
+                     title: 'Actions',
+                     screenReaderText: 'Manager actions'
+                 }
+@@ -211,19 +211,19 @@ class ManagerTable extends React.Component {
+     componentDidMount() {
+         let rows = [];
+         let columns = this.state.columns;
+-        
++
+         for (const managerRow of this.props.rows) {
+             rows.push([
+                 managerRow,
+                 this.getDeleteButton(managerRow)
+             ]);
+         }
+-        
++
+         if (rows.length === 0) {
+             rows = [[_("No Replication Managers")]];
+             columns = [{ title: '' }];
+         }
+-        
++
+         this.setState({
+             rows,
+             columns
+@@ -231,7 +231,7 @@ class ManagerTable extends React.Component {
+     }
+ 
+     handleSort(_event, columnIndex, sortDirection) {
+-        const sortedRows = [...this.state.rows].sort((a, b) => 
++        const sortedRows = [...this.state.rows].sort((a, b) =>
+             (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)
+         );
+ 
+@@ -275,6 +275,7 @@ class ManagerTable extends React.Component {
+                                     columnIndex
+                                 } : undefined}
+                                 screenReaderText={column.screenReaderText}
++                                textCenter={columnIndex === 1}
+                             >
+                                 {column.title}
+                             </Th>
+@@ -285,7 +286,7 @@ class ManagerTable extends React.Component {
+                     {this.state.rows.map((row, rowIndex) => (
+                         <Tr key={rowIndex}>
+                             {row.map((cell, cellIndex) => (
+-                                <Td 
++                                <Td
+                                     key={cellIndex}
+                                     textCenter={cellIndex === 1}
+                                 >
+@@ -341,7 +342,7 @@ class RUVTable extends React.Component {
+     }
+ 
+     handleSort(_event, index, direction) {
+-        const sortedRows = [...this.state.rows].sort((a, b) => 
++        const sortedRows = [...this.state.rows].sort((a, b) =>
+             (a[index] < b[index] ? -1 : a[index] > b[index] ? 1 : 0)
+         );
+         this.setState({
+@@ -399,7 +400,7 @@ class RUVTable extends React.Component {
+                         {tableRows.map((row, rowIndex) => (
+                             <Tr key={rowIndex}>
+                                 {row.cells.map((cell, cellIndex) => (
+-                                    <Td 
++                                    <Td
+                                         key={cellIndex}
+                                         textCenter={cellIndex === row.cells.length - 1}
+                                     >
+@@ -462,7 +463,7 @@ class ReplicaLDIFTable extends React.Component {
+     }
+ 
+     handleSort(_event, index, direction) {
+-        const sortedRows = [...this.state.rows].sort((a, b) => 
++        const sortedRows = [...this.state.rows].sort((a, b) =>
+             (a[index] < b[index] ? -1 : a[index] > b[index] ? 1 : 0)
+         );
+ 
+@@ -487,7 +488,7 @@ class ReplicaLDIFTable extends React.Component {
+                 <Thead>
+                     <Tr>
+                         {columns.map((column, idx) => (
+-                            <Th 
++                            <Th
+                                 key={idx}
+                                 sort={column.sortable ? {
+                                     sortBy: sortBy,
+diff --git a/src/cockpit/389-console/src/lib/replication/winsyncAgmts.jsx b/src/cockpit/389-console/src/lib/replication/winsyncAgmts.jsx
+index 5ed5d0d44..0b9df5130 100644
+--- a/src/cockpit/389-console/src/lib/replication/winsyncAgmts.jsx
++++ b/src/cockpit/389-console/src/lib/replication/winsyncAgmts.jsx
+@@ -1178,7 +1178,7 @@ export class WinsyncAgmts extends React.Component {
+     onSearchChange(event, value) {
+         let rows = [];
+         const val = value.toLowerCase();
+-        for (const row of this.state.rows) {
++        for (const row of this.props.rows) {
+             if (val !== "" &&
+                 row[0].indexOf(val) === -1 &&
+                 row[1].indexOf(val) === -1 &&
+diff --git a/src/cockpit/389-console/src/lib/schema/schemaTables.jsx b/src/cockpit/389-console/src/lib/schema/schemaTables.jsx
+index f52b90bd7..609d4af15 100644
+--- a/src/cockpit/389-console/src/lib/schema/schemaTables.jsx
++++ b/src/cockpit/389-console/src/lib/schema/schemaTables.jsx
+@@ -40,9 +40,9 @@ class ObjectClassesTable extends React.Component {
+                     title: _("Objectclass Name"),
+                     sortable: true
+                 },
+-                { 
+-                    title: _("OID"), 
+-                    sortable: true 
++                {
++                    title: _("OID"),
++                    sortable: true
+                 },
+             ],
+         };
+@@ -67,7 +67,7 @@ class ObjectClassesTable extends React.Component {
+ 
+     handleSort(_event, columnIndex, direction) {
+         const rows = [...this.state.rows];
+-        
++
+         rows.sort((a, b) => (a.cells[columnIndex].content > b.cells[columnIndex].content) ? 1 : -1);
+         if (direction !== SortByDirection.asc) {
+             rows.reverse();
+@@ -96,7 +96,7 @@ class ObjectClassesTable extends React.Component {
+ 
+         for (const row of this.props.rows) {
+             // Check for matches of all the parts
+-            if (val !== "" && 
++            if (val !== "" &&
+                 row.name[0].toLowerCase().indexOf(val) === -1 &&
+                 row.oid[0].toLowerCase().indexOf(val) === -1) {
+                 continue;
+@@ -218,7 +218,7 @@ class ObjectClassesTable extends React.Component {
+                             />
+                         </GridItem>
+                     </Grid>
+-                    <Table 
++                    <Table
+                         aria-label="objectclasses table"
+                         variant='compact'
+                     >
+@@ -257,7 +257,7 @@ class ObjectClassesTable extends React.Component {
+                                             </Td>
+                                         ))}
+                                         <Td isActionCell>
+-                                            <ActionsColumn 
++                                            <ActionsColumn
+                                                 items={this.getActionsForRow(row)}
+                                                 isDisabled={row.disableActions}
+                                             />
+@@ -422,6 +422,15 @@ class AttributesTable extends React.Component {
+         );
+     }
+ 
++    getOIDContent(oid) {
++        for (const syntax of this.props.syntaxes) {
++            if (oid == syntax.id) {
++                return oid + " (" + syntax.label + ")";
++            }
++        }
++        return oid + " (Unknown)";
++    }
++
+     componentDidMount() {
+         let rows = [];
+         let columns = this.state.columns;
+@@ -434,7 +443,7 @@ class AttributesTable extends React.Component {
+                 cells: [
+                     { content: row.name[0] },
+                     { content: row.oid[0] },
+-                    { content: row.syntax[0] }
++                    { content: this.getOIDContent(row.syntax[0]) }
+                 ],
+                 disableActions: !user_defined,
+                 originalData: row
+@@ -465,11 +474,11 @@ class AttributesTable extends React.Component {
+ 
+     handleSearchChange(event, value) {
+         const rows = [];
++        const val = value.toLowerCase();
+         let count = 0;
+ 
+         for (const row of this.props.rows) {
+             let user_defined = false;
+-            const val = value.toLowerCase();
+ 
+             // Check for matches of all the parts
+             if (val !== "" && row.name[0].toLowerCase().indexOf(val) === -1 &&
+@@ -486,16 +495,15 @@ class AttributesTable extends React.Component {
+             rows.push(
+                 {
+                     isOpen: false,
+-                    cells: [row.name[0], row.oid[0], row.syntax[0]],
+-                    disableActions: !user_defined
+-                },
+-                {
+-                    parent: count,
+-                    fullWidth: true,
+-                    cells: [{ title: this.getExpandedRow(row) }]
++                    cells: [
++                        { content: row.name[0] },
++                        { content: row.oid[0] },
++                        { content: this.getOIDContent(row.syntax[0]) },
++                    ],
++                    disableActions: !user_defined,
++                    originalData: row
+                 },
+             );
+-            count += 2;
+         }
+ 
+         this.setState({
+@@ -545,7 +553,7 @@ class AttributesTable extends React.Component {
+                             />
+                         </GridItem>
+                     </Grid>
+-                    <Table 
++                    <Table
+                         aria-label="attributes table"
+                         variant='compact'
+                     >
+@@ -584,7 +592,7 @@ class AttributesTable extends React.Component {
+                                             </Td>
+                                         ))}
+                                         <Td isActionCell>
+-                                            <ActionsColumn 
++                                            <ActionsColumn
+                                                 items={this.getActionsForRow(row)}
+                                                 isDisabled={row.disableActions}
+                                             />
+diff --git a/src/cockpit/389-console/src/lib/server/accessLog.jsx b/src/cockpit/389-console/src/lib/server/accessLog.jsx
+index 827029509..250fe48ca 100644
+--- a/src/cockpit/389-console/src/lib/server/accessLog.jsx
++++ b/src/cockpit/389-console/src/lib/server/accessLog.jsx
+@@ -81,7 +81,7 @@ export class ServerAccessLog extends React.Component {
+         this.refLevel = <>{_("Entry Access and Referrals")} <font size="1" className="ds-info-color">(level 512)</font></>;
+ 
+         this.state = {
+-            loading: true,
++            loading: false,
+             loaded: false,
+             activeTabKey: 0,
+             saveSettingsDisabled: true,
+@@ -218,11 +218,9 @@ export class ServerAccessLog extends React.Component {
+         });
+     }
+ 
+-    handleTimeChange(time_str) {
++    handleTimeChange = (_event, time, hour, min, seconds, isValid) => {
+         let disableSaveBtn = true;
+-        const time_parts = time_str.split(":");
+-        let hour = time_parts[0];
+-        let min = time_parts[1];
++
+         if (hour.length === 2 && hour[0] === "0") {
+             hour = hour[1];
+         }
+@@ -304,19 +302,25 @@ export class ServerAccessLog extends React.Component {
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "success",
+                         _("Successfully updated Access Log settings")
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 })
+                 .fail(err => {
+                     const errMsg = JSON.parse(err);
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "error",
+                         cockpit.format(_("Error saving Access Log settings - $0"), errMsg.desc)
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 });
+     }
+ 
+@@ -427,6 +431,10 @@ export class ServerAccessLog extends React.Component {
+         const level_val = parseInt(attrs['nsslapd-accesslog-level'][0]);
+         const rows = [...this.state.rows];
+ 
++        this.setState({
++            loading: true
++        });
++
+         if (attrs['nsslapd-accesslog-logging-enabled'][0] === "on") {
+             enabled = true;
+         }
+diff --git a/src/cockpit/389-console/src/lib/server/auditLog.jsx b/src/cockpit/389-console/src/lib/server/auditLog.jsx
+index 0e34b89c0..0a566bccb 100644
+--- a/src/cockpit/389-console/src/lib/server/auditLog.jsx
++++ b/src/cockpit/389-console/src/lib/server/auditLog.jsx
+@@ -71,7 +71,7 @@ export class ServerAuditLog extends React.Component {
+     constructor(props) {
+         super(props);
+         this.state = {
+-            loading: true,
++            loading: false,
+             loaded: false,
+             activeTabKey: 0,
+             saveSettingsDisabled: true,
+@@ -220,11 +220,9 @@ export class ServerAuditLog extends React.Component {
+         });
+     }
+ 
+-    handleTimeChange(time_str) {
++    handleTimeChange = (_event, time, hour, min, seconds, isValid) => {
+         let disableSaveBtn = true;
+-        const time_parts = time_str.split(":");
+-        let hour = time_parts[0];
+-        let min = time_parts[1];
++
+         if (hour.length === 2 && hour[0] === "0") {
+             hour = hour[1];
+         }
+@@ -309,19 +307,26 @@ export class ServerAuditLog extends React.Component {
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "success",
+                         _("Successfully updated Audit Log settings")
+                     );
++                    this.setState({
++                        loading: false
++                    });
++
+                 })
+                 .fail(err => {
+                     const errMsg = JSON.parse(err);
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "error",
+                         cockpit.format(_("Error saving Audit Log settings - $0"), errMsg.desc)
+                     );
++                    this.setState({
++                        loading: false,
++                    });
+                 });
+     }
+ 
+@@ -330,6 +335,7 @@ export class ServerAuditLog extends React.Component {
+             loading: true,
+             loaded: false,
+         });
++
+         const cmd = [
+             "dsconf", "-j", "ldapi://%2fvar%2frun%2fslapd-" + this.props.serverId + ".socket",
+             "config", "get"
+@@ -432,6 +438,11 @@ export class ServerAuditLog extends React.Component {
+         let display_attrs = [];
+         let displayAllAttrs = this.state.displayAllAttrs;
+ 
++        this.setState({
++            loading: true,
++            loaded: false,
++        });
++
+         if (attrs['nsslapd-auditlog-logging-enabled'][0] === "on") {
+             enabled = true;
+         }
+@@ -908,7 +919,7 @@ export class ServerAuditLog extends React.Component {
+                         <TextContent>
+                             <Text component={TextVariants.h3}>
+                                 {_("Audit Log Settings")}
+-                                <Button 
++                                <Button
+                                     variant="plain"
+                                     aria-label={_("Refresh log settings")}
+                                     onClick={() => {
+diff --git a/src/cockpit/389-console/src/lib/server/auditfailLog.jsx b/src/cockpit/389-console/src/lib/server/auditfailLog.jsx
+index 4ebf4cd6a..0e5ae0a88 100644
+--- a/src/cockpit/389-console/src/lib/server/auditfailLog.jsx
++++ b/src/cockpit/389-console/src/lib/server/auditfailLog.jsx
+@@ -62,7 +62,7 @@ export class ServerAuditFailLog extends React.Component {
+     constructor(props) {
+         super(props);
+         this.state = {
+-            loading: true,
++            loading: false,
+             loaded: false,
+             activeTabKey: 0,
+             saveSettingsDisabled: true,
+@@ -172,11 +172,9 @@ export class ServerAuditFailLog extends React.Component {
+         });
+     }
+ 
+-    handleTimeChange(time_str) {
++    handleTimeChange = (_event, time, hour, min, seconds, isValid) => {
+         let disableSaveBtn = true;
+-        const time_parts = time_str.split(":");
+-        let hour = time_parts[0];
+-        let min = time_parts[1];
++
+         if (hour.length === 2 && hour[0] === "0") {
+             hour = hour[1];
+         }
+@@ -245,19 +243,25 @@ export class ServerAuditFailLog extends React.Component {
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "success",
+                         _("Successfully updated Audit Fail Log settings")
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 })
+                 .fail(err => {
+                     const errMsg = JSON.parse(err);
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "error",
+                         cockpit.format(_("Error saving Audit Fail Log settings - $0"), errMsg.desc)
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 });
+     }
+ 
+@@ -344,6 +348,10 @@ export class ServerAuditFailLog extends React.Component {
+         let enabled = false;
+         let compressed = false;
+ 
++        this.setState({
++            loading: true
++        });
++
+         if (attrs['nsslapd-auditfaillog-logging-enabled'][0] === "on") {
+             enabled = true;
+         }
+@@ -709,7 +717,7 @@ export class ServerAuditFailLog extends React.Component {
+                         <TextContent>
+                             <Text component={TextVariants.h3}>
+                                 {_("Audit Fail Log Settings")}
+-                                <Button 
++                                <Button
+                                     variant="plain"
+                                     aria-label={_("Refresh log settings")}
+                                     onClick={() => {
+diff --git a/src/cockpit/389-console/src/lib/server/errorLog.jsx b/src/cockpit/389-console/src/lib/server/errorLog.jsx
+index 2ede1336b..0922a80ff 100644
+--- a/src/cockpit/389-console/src/lib/server/errorLog.jsx
++++ b/src/cockpit/389-console/src/lib/server/errorLog.jsx
+@@ -91,7 +91,7 @@ export class ServerErrorLog extends React.Component {
+         this.pwdpolicyLevel = <>{_("Password Policy")} <font size="1" className="ds-info-color">{_("(level 1048576)")}</font></>;
+ 
+         this.state = {
+-            loading: true,
++            loading: false,
+             loaded: false,
+             activeTabKey: 0,
+             saveSettingsDisabled: true,
+@@ -241,11 +241,9 @@ export class ServerErrorLog extends React.Component {
+         });
+     }
+ 
+-    handleTimeChange(time_str) {
++    handleTimeChange = (_event, time, hour, min, seconds, isValid) => {
+         let disableSaveBtn = true;
+-        const time_parts = time_str.split(":");
+-        let hour = time_parts[0];
+-        let min = time_parts[1];
++
+         if (hour.length === 2 && hour[0] === "0") {
+             hour = hour[1];
+         }
+@@ -327,19 +325,25 @@ export class ServerErrorLog extends React.Component {
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+-                    this.handleRefreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "success",
+                         _("Successfully updated Error Log settings")
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 })
+                 .fail(err => {
+                     const errMsg = JSON.parse(err);
+-                    this.handleRefreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "error",
+                         cockpit.format(_("Error saving Error Log settings - $0"), errMsg.desc)
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 });
+     }
+ 
+@@ -442,6 +446,10 @@ export class ServerErrorLog extends React.Component {
+         const level_val = parseInt(attrs['nsslapd-errorlog-level'][0]);
+         const rows = [...this.state.rows];
+ 
++        this.setState({
++            loading: true
++        });
++
+         if (attrs['nsslapd-errorlog-logging-enabled'][0] === "on") {
+             enabled = true;
+         }
+@@ -501,7 +509,7 @@ export class ServerErrorLog extends React.Component {
+     handleOnSelect = (_event, isSelected, rowIndex) => {
+         let disableSaveBtn = true;
+         const rows = [...this.state.rows];
+-        
++
+         // Update the selected row
+         rows[rowIndex].selected = isSelected;
+ 
+@@ -610,7 +618,7 @@ export class ServerErrorLog extends React.Component {
+                                             <Td
+                                                 select={{
+                                                     rowIndex,
+-                                                    onSelect: (_event, isSelecting) => 
++                                                    onSelect: (_event, isSelecting) =>
+                                                         this.handleOnSelect(_event, isSelecting, rowIndex),
+                                                     isSelected: row.selected
+                                                 }}
+@@ -888,7 +896,7 @@ export class ServerErrorLog extends React.Component {
+                         <TextContent>
+                             <Text component={TextVariants.h3}>
+                                 {_("Error Log Settings")}
+-                                <Button 
++                                <Button
+                                     variant="plain"
+                                     aria-label={_("Refresh log settings")}
+                                     onClick={() => {
+diff --git a/src/cockpit/389-console/src/lib/server/securityLog.jsx b/src/cockpit/389-console/src/lib/server/securityLog.jsx
+index 4b8cc55d3..01adcca0c 100644
+--- a/src/cockpit/389-console/src/lib/server/securityLog.jsx
++++ b/src/cockpit/389-console/src/lib/server/securityLog.jsx
+@@ -64,7 +64,7 @@ export class ServerSecurityLog extends React.Component {
+     constructor(props) {
+         super(props);
+         this.state = {
+-            loading: true,
++            loading: false,
+             loaded: false,
+             activeTabKey: 0,
+             saveSettingsDisabled: true,
+@@ -173,11 +173,9 @@ export class ServerSecurityLog extends React.Component {
+         });
+     }
+ 
+-    handleTimeChange(time_str) {
++    handleTimeChange = (_event, time, hour, min, seconds, isValid) => {
+         let disableSaveBtn = true;
+-        const time_parts = time_str.split(":");
+-        let hour = time_parts[0];
+-        let min = time_parts[1];
++
+         if (hour.length === 2 && hour[0] === "0") {
+             hour = hour[1];
+         }
+@@ -246,19 +244,25 @@ export class ServerSecurityLog extends React.Component {
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "success",
+                         _("Successfully updated Security Log settings")
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 })
+                 .fail(err => {
+                     const errMsg = JSON.parse(err);
+-                    this.refreshConfig();
++                    this.props.reload();
+                     this.props.addNotification(
+                         "error",
+                         cockpit.format(_("Error saving Security Log settings - $0"), errMsg.desc)
+                     );
++                    this.setState({
++                        loading: false
++                    });
+                 });
+     }
+ 
+@@ -350,6 +354,10 @@ export class ServerSecurityLog extends React.Component {
+         let buffering = false;
+         let compress = false;
+ 
++        this.setState({
++            loading: true
++        });
++
+         if (attrs['nsslapd-securitylog-logging-enabled'][0] === "on") {
+             enabled = true;
+         }
+@@ -732,7 +740,7 @@ export class ServerSecurityLog extends React.Component {
+                         <TextContent>
+                             <Text component={TextVariants.h3}>
+                                 {_("Security Log Settings")}
+-                                <Button 
++                                <Button
+                                     variant="plain"
+                                     aria-label={_("Refresh log settings")}
+                                     onClick={() => {
+diff --git a/src/cockpit/389-console/src/lib/tools.jsx b/src/cockpit/389-console/src/lib/tools.jsx
+index c7460f88a..39904b051 100644
+--- a/src/cockpit/389-console/src/lib/tools.jsx
++++ b/src/cockpit/389-console/src/lib/tools.jsx
+@@ -243,9 +243,48 @@ export function valid_dn(dn) {
+     if (dn === "" || dn.endsWith(",")) {
+         return false;
+     }
+-    const dn_regex = /^([A-Za-z])+=\S.*/;
+-    const result = dn_regex.test(dn);
+-    return result;
++
++    // For validation purposes we can simply replace any escaped sequences with
++    // generic characters
++    if (dn.includes("\\,")) {
++        dn = dn.replace("\\,","ZZ");
++    }
++    if (dn.includes("\\<")) {
++        dn = dn.replace("\\<","ZZ");
++    }
++    if (dn.includes("\\>")) {
++        dn = dn.replace("\\>","ZZ");
++    }
++    if (dn.includes('\\"')) {
++        dn = dn.replace('\\"',"ZZ");
++    }
++    if (dn.includes("\\;")) {
++        dn = dn.replace("\\;","ZZ");
++    }
++    if (dn.includes("\\=")) {
++        dn = dn.replace("\\=","ZZ");
++    }
++    if (dn.includes("\\+")) {
++        dn = dn.replace("\\+","ZZ");
++    }
++    const dn_regex = /^([A-Za-z])+=([A-Za-z0-9 _\-$^*!~.])+$/;
++    const parts = dn.split(",");
++    for (const part of parts) {
++        if (!dn_regex.test(part)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++export function valid_db_name(name) {
++    // Validate name is a valid backend name
++    if (name === "") {
++        return false;
++    }
++
++    const name_regex = /^[A-Za-z][A-Za-z_\-0-9]+$/;
++    return name_regex.test(name);
+ }
+ 
+ export function valid_filter(filter) {
+diff --git a/src/cockpit/389-console/src/monitor.jsx b/src/cockpit/389-console/src/monitor.jsx
+index d4ee265ed..7119baff9 100644
+--- a/src/cockpit/389-console/src/monitor.jsx
++++ b/src/cockpit/389-console/src/monitor.jsx
+@@ -17,6 +17,7 @@ import ReplAgmtWinsync from "./lib/monitor/replMonWinsync.jsx";
+ import ReplMonTasks from "./lib/monitor/replMonTasks.jsx";
+ import ReplMonConflict from "./lib/monitor/replMonConflict.jsx";
+ import {
++    Card,
+     Spinner,
+     TreeView,
+     Text,
+@@ -1149,18 +1150,16 @@ export class Monitor extends React.Component {
+             monitorPage = (
+                 <div className="container-fluid">
+                     <div className="ds-container">
+-                        <div>
+-                            <div className="ds-tree">
+-                                <div className={disabled} id="monitor-tree">
+-                                    <TreeView
+-                                        hasSelectableNodes
+-                                        data={nodes}
+-                                        activeItems={this.state.activeItems}
+-                                        onSelect={this.handleTreeClick}
+-                                    />
+-                                </div>
++                        <Card className="ds-tree">
++                            <div className={disabled} id="monitor-tree">
++                                <TreeView
++                                    hasSelectableNodes
++                                    data={nodes}
++                                    activeItems={this.state.activeItems}
++                                    onSelect={this.handleTreeClick}
++                                />
+                             </div>
+-                        </div>
++                        </Card>
+                         <div className="ds-tree-content">
+                             {monitor_element}
+                         </div>
+diff --git a/src/cockpit/389-console/src/replication.jsx b/src/cockpit/389-console/src/replication.jsx
+index 581e2b759..fa492fd2a 100644
+--- a/src/cockpit/389-console/src/replication.jsx
++++ b/src/cockpit/389-console/src/replication.jsx
+@@ -4,6 +4,7 @@ import { log_cmd } from "./lib/tools.jsx";
+ import { ReplSuffix } from "./lib/replication/replSuffix.jsx";
+ import PropTypes from "prop-types";
+ import {
++    Card,
+     Spinner,
+     TreeView,
+     Text,
+@@ -1061,17 +1062,15 @@ export class Replication extends React.Component {
+             repl_page = (
+                 <div className="container-fluid">
+                     <div className="ds-container">
+-                        <div>
+-                            <div className="ds-tree">
+-                                <div className={disabled} id="repl-tree">
+-                                    <TreeView
+-                                        data={nodes}
+-                                        activeItems={this.state.activeItems}
+-                                        onSelect={this.handleTreeClick}
+-                                    />
+-                                </div>
++                        <Card className="ds-tree">
++                            <div className={disabled} id="repl-tree">
++                                <TreeView
++                                    data={nodes}
++                                    activeItems={this.state.activeItems}
++                                    onSelect={this.handleTreeClick}
++                                />
+                             </div>
+-                        </div>
++                        </Card>
+                         <div className="ds-tree-content">
+                             {repl_element}
+                         </div>
+diff --git a/src/cockpit/389-console/src/server.jsx b/src/cockpit/389-console/src/server.jsx
+index e824771ee..009d21304 100644
+--- a/src/cockpit/389-console/src/server.jsx
++++ b/src/cockpit/389-console/src/server.jsx
+@@ -13,6 +13,7 @@ import { ServerErrorLog } from "./lib/server/errorLog.jsx";
+ import { ServerSecurityLog } from "./lib/server/securityLog.jsx";
+ import { Security } from "./security.jsx";
+ import {
++    Card,
+     Spinner,
+     TreeView,
+     Text,
+@@ -306,6 +307,7 @@ export class Server extends React.Component {
+                         attrs={this.state.attrs}
+                         enableTree={this.enableTree}
+                         addNotification={this.props.addNotification}
++                        reload={this.reloadConfig}
+                     />
+                 );
+             } else if (this.state.node_name === "audit-log-config") {
+@@ -316,6 +318,7 @@ export class Server extends React.Component {
+                         displayAttrs={this.state.displayAttrs}
+                         enableTree={this.enableTree}
+                         addNotification={this.props.addNotification}
++                        reload={this.reloadConfig}
+                     />
+                 );
+             } else if (this.state.node_name === "auditfail-log-config") {
+@@ -325,6 +328,7 @@ export class Server extends React.Component {
+                         attrs={this.state.attrs}
+                         enableTree={this.enableTree}
+                         addNotification={this.props.addNotification}
++                        reload={this.reloadConfig}
+                     />
+                 );
+             } else if (this.state.node_name === "error-log-config") {
+@@ -334,6 +338,7 @@ export class Server extends React.Component {
+                         attrs={this.state.attrs}
+                         enableTree={this.enableTree}
+                         addNotification={this.props.addNotification}
++                        reload={this.reloadConfig}
+                     />
+                 );
+             } else if (this.state.node_name === "security-log-config") {
+@@ -343,6 +348,7 @@ export class Server extends React.Component {
+                         attrs={this.state.attrs}
+                         enableTree={this.enableTree}
+                         addNotification={this.props.addNotification}
++                        reload={this.reloadConfig}
+                     />
+                 );
+             }
+@@ -350,7 +356,7 @@ export class Server extends React.Component {
+             serverPage = (
+                 <div className="container-fluid">
+                     <div className="ds-container">
+-                        <div className="ds-tree">
++                        <Card className="ds-tree">
+                             <div
+                                 className={disabled}
+                                 id="server-tree"
+@@ -361,7 +367,7 @@ export class Server extends React.Component {
+                                     onSelect={this.handleTreeClick}
+                                 />
+                             </div>
+-                        </div>
++                        </Card>
+                         <div className="ds-tree-content">
+                             {server_element}
+                         </div>
+diff --git a/src/lib389/lib389/cli_conf/plugins/attruniq.py b/src/lib389/lib389/cli_conf/plugins/attruniq.py
+index 0c398b944..bc925eb1c 100644
+--- a/src/lib389/lib389/cli_conf/plugins/attruniq.py
++++ b/src/lib389/lib389/cli_conf/plugins/attruniq.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2019 Red Hat, Inc.
++# Copyright (C) 2025 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -16,6 +16,7 @@ arg_to_attr = {
+     'enabled': 'nsslapd-pluginenabled',
+     'attr_name': 'uniqueness-attribute-name',
+     'subtree': 'uniqueness-subtrees',
++    'exclude_subtree': 'uniqueness-exclude-subtrees',
+     'across_all_subtrees': 'uniqueness-across-all-subtrees',
+     'top_entry_oc': 'uniqueness-top-entry-oc',
+     'subtree_entries_oc': 'uniqueness-subtree-entries-oc'
+@@ -23,6 +24,7 @@ arg_to_attr = {
+ 
+ PLUGIN_DN = "cn=plugins,cn=config"
+ 
++
+ def attruniq_list(inst, basedn, log, args):
+     log = log.getChild('attruniq_list')
+     plugins = AttributeUniquenessPlugins(inst)
+@@ -124,6 +126,9 @@ def _add_parser_args(parser):
+     parser.add_argument('--subtree', nargs='+',
+                         help='Sets the DN under which the plug-in checks for uniqueness of '
+                              'the attributes value. This attribute is multi-valued (uniqueness-subtrees)')
++    parser.add_argument('--exclude-subtree', nargs='+',
++                        help='Sets subtrees that should not excludedfrom attribute uniqueness. '
++                             'This attribute is multi-valued (uniqueness-exclude-subtrees)')
+     parser.add_argument('--across-all-subtrees', choices=['on', 'off'], type=str.lower,
+                         help='If enabled (on), the plug-in checks that the attribute is unique across all subtrees '
+                              'set. If you set the attribute to off, uniqueness is only enforced within the subtree '
+diff --git a/src/lib389/lib389/cli_conf/schema.py b/src/lib389/lib389/cli_conf/schema.py
+index 577b4cea0..7a06c91bc 100644
+--- a/src/lib389/lib389/cli_conf/schema.py
++++ b/src/lib389/lib389/cli_conf/schema.py
+@@ -220,8 +220,8 @@ def get_syntaxes(inst, basedn, log, args):
+     if args.json:
+         print(dump_json(result, indent=4))
+     else:
+-        for id, name in result.items():
+-            print("%s (%s)", name, id)
++        for oid, name in result.items():
++            print(f"{name} ({oid})")
+ 
+ 
+ def import_openldap_schema_file(inst, basedn, log, args):
+-- 
+2.48.1
+

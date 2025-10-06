@@ -1,0 +1,533 @@
+From 2a8dc5efe710b34e6c515f157e49b7e15d631b73 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Thu, 27 Mar 2025 12:02:19 +0100
+Subject: [PATCH] Issue 6693 - Fix error messages inconsistencies (#6694)
+
+Fix missing function names and missing new lines in error message.
+Sometime the newline was moved back from message arguments to the message
+to have a better consistency and to avoid that the tool detects a false positive
+
+Issue: #6693
+
+Reviewed by: @droideck (Thanks!)
+
+(cherry picked from commit b550579365b2dfd2ea0b057dea980111973aff12)
+---
+ .../plugins/replication/repl5_inc_protocol.c  |  2 +-
+ .../slapd/back-ldbm/db-bdb/bdb_config.c       |  4 +-
+ .../back-ldbm/db-bdb/bdb_import_threads.c     |  4 +-
+ .../servers/slapd/back-ldbm/db-bdb/bdb_misc.c |  8 ++--
+ ldap/servers/slapd/back-ldbm/idl.c            |  2 +-
+ ldap/servers/slapd/back-ldbm/ldbm_add.c       |  2 +-
+ ldap/servers/slapd/back-ldbm/ldbm_usn.c       |  2 +-
+ ldap/servers/slapd/back-ldbm/vlv.c            |  2 +-
+ ldap/servers/slapd/daemon.c                   |  2 +-
+ ldap/servers/slapd/entry.c                    |  4 +-
+ ldap/servers/slapd/filterentry.c              |  2 +-
+ ldap/servers/slapd/ldaputil.c                 |  2 +-
+ ldap/servers/slapd/libglobs.c                 |  4 +-
+ ldap/servers/slapd/log.c                      |  2 +-
+ ldap/servers/slapd/modrdn.c                   |  4 +-
+ ldap/servers/slapd/passwd_extop.c             | 48 +++++++++----------
+ ldap/servers/slapd/pw.c                       |  4 +-
+ ldap/servers/slapd/schema.c                   |  2 +-
+ ldap/servers/slapd/util.c                     |  2 +-
+ 19 files changed, 51 insertions(+), 51 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/repl5_inc_protocol.c b/ldap/servers/plugins/replication/repl5_inc_protocol.c
+index 68d93e1b0..41a20c370 100644
+--- a/ldap/servers/plugins/replication/repl5_inc_protocol.c
++++ b/ldap/servers/plugins/replication/repl5_inc_protocol.c
+@@ -1724,7 +1724,7 @@ send_updates(Private_Repl_Protocol *prp, RUV *remote_update_vector, PRUint32 *nu
+                         } else {
+                             agmt_inc_last_update_changecount(prp->agmt, csn_get_replicaid(entry.op->csn), 1 /*skipped*/);
+                         }
+-                        slapi_log_err(finished ? SLAPI_LOG_WARNING : slapi_log_urp,
++                        slapi_log_err(finished ? SLAPI_LOG_WARNING : slapi_log_urp, repl_plugin_name,
+                                       "send_updates - %s: Failed to send update operation to receiver (uniqueid %s, CSN %s): %s. %s.\n",
+                                       (char *)agmt_get_long_name(prp->agmt),
+                                       entry.op->target_address.uniqueid, csn_str,
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_config.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_config.c
+index 8f847f418..a1d6c6af1 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_config.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_config.c
+@@ -284,7 +284,7 @@ bdb_config_db_lock_pause_set(void *arg, void *value, char *errorbuf, int phase _
+ 
+     if (val == 0) {
+         slapi_log_err(SLAPI_LOG_NOTICE, "bdb_config_db_lock_pause_set",
+-                      "%s was set to '0'. The default value will be used (%s)",
++                      "%s was set to '0'. The default value will be used (%s)\n",
+                       CONFIG_DB_LOCKS_PAUSE, DEFAULT_DBLOCK_PAUSE_STR);
+         val = DEFAULT_DBLOCK_PAUSE;
+     }
+@@ -315,7 +315,7 @@ bdb_config_db_lock_threshold_set(void *arg, void *value, char *errorbuf, int pha
+                               "%s: \"%d\" is invalid, threshold is indicated as a percentage and it must lie in range of 70 and 95",
+                               CONFIG_DB_LOCKS_THRESHOLD, val);
+         slapi_log_err(SLAPI_LOG_ERR, "bdb_config_db_lock_threshold_set",
+-                      "%s: \"%d\" is invalid, threshold is indicated as a percentage and it must lie in range of 70 and 95",
++                      "%s: \"%d\" is invalid, threshold is indicated as a percentage and it must lie in range of 70 and 95\n",
+                       CONFIG_DB_LOCKS_THRESHOLD, val);
+         retval = LDAP_OPERATIONS_ERROR;
+         return retval;
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+index dec2bac9e..b0c60581a 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+@@ -1768,7 +1768,7 @@ bdb_upgradedn_producer(void *param)
+                                                   inst->inst_name, dn_id);
+                         }
+                         slapi_log_err(SLAPI_LOG_ERR, "bdb_upgradedn_producer",
+-                                      "%s: Error: failed to write a line \"%s\"",
++                                      "%s: Error: failed to write a line \"%s\"\n",
+                                       inst->inst_name, dn_id);
+                         slapi_ch_free_string(&dn_id);
+                         goto error;
+@@ -3725,7 +3725,7 @@ bdb_dse_conf_verify_core(struct ldbminfo *li, char *src_dir, char *file_name, ch
+         slapi_ch_free_string(&estr);
+         if (!e) {
+             slapi_log_err(SLAPI_LOG_WARNING, "bdb_dse_conf_verify_core",
+-                          "Skipping bad LDIF entry ending line %d of file \"%s\"",
++                          "Skipping bad LDIF entry ending line %d of file \"%s\"\n",
+                           curr_lineno, filename);
+             continue;
+         }
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_misc.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_misc.c
+index eeafbf995..4cea7b879 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_misc.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_misc.c
+@@ -192,13 +192,13 @@ bdb_start_autotune(struct ldbminfo *li)
+         /* First, set our message. In the case autosize is 0, we calculate some
+          * sane defaults and populate these values, but it's only on first run.
+          */
+-        msg = "This can be corrected by altering the values of nsslapd-dbcachesize, nsslapd-cachememsize and nsslapd-dncachememsize\n";
++        msg = "This can be corrected by altering the values of nsslapd-dbcachesize, nsslapd-cachememsize and nsslapd-dncachememsize";
+         autosize_percentage = 25;
+     } else {
+         /* In this case we really are setting the values each start up, so
+          * change the msg.
+          */
+-        msg = "This can be corrected by altering the values of nsslapd-cache-autosize, nsslapd-cache-autosize-split and nsslapd-dncachememsize\n";
++        msg = "This can be corrected by altering the values of nsslapd-cache-autosize, nsslapd-cache-autosize-split and nsslapd-dncachememsize";
+         autosize_percentage = li->li_cache_autosize;
+     }
+     /* Has to be less than 0, 0 means to disable I think */
+@@ -240,7 +240,7 @@ bdb_start_autotune(struct ldbminfo *li)
+     issane = util_is_cachesize_sane(mi, &zone_size);
+     if (issane == UTIL_CACHESIZE_REDUCED) {
+         slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "Your autosized cache values have been reduced. Likely your nsslapd-cache-autosize percentage is too high.\n");
+-        slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "%s", msg);
++        slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "%s\n", msg);
+     }
+     /* It's valid, lets divide it up and set according to user prefs */
+     db_size = (autosize_db_percentage_split * zone_size) / 100;
+@@ -382,7 +382,7 @@ bdb_start_autotune(struct ldbminfo *li)
+         slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "In a future release this WILL prevent server start up. You MUST alter your configuration.\n");
+         slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "Total entry cache size: %" PRIu64 " B; dbcache size: %" PRIu64 " B; available memory size: %" PRIu64 " B; \n",
+                       total_cache_size, (uint64_t)li->li_dbcachesize, mi->system_available_bytes);
+-        slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "%s", msg);
++        slapi_log_err(SLAPI_LOG_WARNING, "bdb_start_autotune", "%s\n", msg);
+         /* WB 2016 - This should be UNCOMMENTED in a future release */
+         /* return SLAPI_FAIL_GENERAL; */
+     }
+diff --git a/ldap/servers/slapd/back-ldbm/idl.c b/ldap/servers/slapd/back-ldbm/idl.c
+index f690827b5..5574f840a 100644
+--- a/ldap/servers/slapd/back-ldbm/idl.c
++++ b/ldap/servers/slapd/back-ldbm/idl.c
+@@ -1370,7 +1370,7 @@ idl_old_delete_key(
+     if ((idl = idl_fetch_one(be, db, key, txn, &rc)) == NULL) {
+         idl_unlock_list(a->ai_idl, key);
+         if (rc != 0 && rc != DBI_RC_NOTFOUND && rc != DBI_RC_RETRY) {
+-            slapi_log_err(SLAPI_LOG_ERR, "idl_old_delete_key - (%s) 0 BAD %d %s\n",
++            slapi_log_err(SLAPI_LOG_ERR, "idl_old_delete_key", "(%s) 0 BAD %d %s\n",
+                           (char *)key->dptr, rc, (msg = dblayer_strerror(rc)) ? msg : "");
+         }
+         if (0 == rc || DBI_RC_NOTFOUND == rc)
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_add.c b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+index dec3a0c6d..42454c890 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_add.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+@@ -637,7 +637,7 @@ ldbm_back_add(Slapi_PBlock *pb)
+                 if ((addingentry->ep_id = next_id(be)) >= MAXID) {
+                     slapi_log_err(SLAPI_LOG_ERR, "ldbm_back_add ",
+                                   "Maximum ID reached, cannot add entry to "
+-                                  "backend '%s'",
++                                  "backend '%s'\n",
+                                   be->be_name);
+                     ldap_result_code = LDAP_OPERATIONS_ERROR;
+                     goto error_return;
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_usn.c b/ldap/servers/slapd/back-ldbm/ldbm_usn.c
+index d002e3e4f..fd4e264fe 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_usn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_usn.c
+@@ -123,7 +123,7 @@ usn_get_last_usn(Slapi_Backend *be, PRUint64 *last_usn)
+     rc = dblayer_new_cursor(be, db, NULL, &dbc);
+     if (0 != rc) {
+         slapi_log_err(SLAPI_LOG_ERR, "usn_get_last_usn",
+-                      "Failed to create a cursor: %d", rc);
++                      "Failed to create a cursor: %d\n", rc);
+         goto bail;
+     }
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/vlv.c b/ldap/servers/slapd/back-ldbm/vlv.c
+index c504b4bd2..fd592b8a9 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv.c
++++ b/ldap/servers/slapd/back-ldbm/vlv.c
+@@ -1670,7 +1670,7 @@ vlv_trim_candidates_byvalue(backend *be, const IDList *candidates, const sort_sp
+             slapi_attr_values2keys(&sort_control->sattr, invalue, &typedown_value, LDAP_FILTER_EQUALITY); /* JCM SLOW FUNCTION */
+             if (compare_fn == NULL) {
+                 slapi_log_err(SLAPI_LOG_WARNING, "vlv_trim_candidates_byvalue",
+-                              "Attempt to compare an unordered attribute");
++                              "Attempt to compare an unordered attribute\n");
+                 compare_fn = slapi_berval_cmp;
+             }
+         }
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index a9922958a..a43fc9285 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -582,7 +582,7 @@ disk_monitoring_thread(void *nothing __attribute__((unused)))
+                 {
+                     if (be_list_count == BE_LIST_SIZE) { /* error - too many backends */
+                         slapi_log_err(SLAPI_LOG_ERR, "disk_monitoring_thread",
+-                                      "Too many backends match search request - cannot proceed");
++                                      "Too many backends match search request - cannot proceed\n");
+                     } else {
+                         slapi_log_err(SLAPI_LOG_ALERT, "disk_monitoring_thread",
+                                       "Putting the backend '%s' to read-only mode\n", be->be_name);
+diff --git a/ldap/servers/slapd/entry.c b/ldap/servers/slapd/entry.c
+index 658b9b279..235410e45 100644
+--- a/ldap/servers/slapd/entry.c
++++ b/ldap/servers/slapd/entry.c
+@@ -887,8 +887,8 @@ str2entry_dupcheck(const char *rawdn, const char *s, int flags, int read_statein
+         if (strcasecmp(type, "dn") == 0) {
+             if (slapi_entry_get_dn_const(e) != NULL) {
+                 char ebuf[BUFSIZ];
+-                slapi_log_err(SLAPI_LOG_TRACE, "str2entry_dupcheck"
+-                                               "Entry has multiple dns \"%s\" and \"%s\" (second ignored)\n",
++                slapi_log_err(SLAPI_LOG_TRACE, "str2entry_dupcheck",
++                              "Entry has multiple dns \"%s\" and \"%s\" (second ignored)\n",
+                               (char *)slapi_entry_get_dn_const(e),
+                               escape_string(valuecharptr, ebuf));
+                 /* the memory below was not allocated by the slapi_ch_ functions */
+diff --git a/ldap/servers/slapd/filterentry.c b/ldap/servers/slapd/filterentry.c
+index f5604161d..c3737eb9e 100644
+--- a/ldap/servers/slapd/filterentry.c
++++ b/ldap/servers/slapd/filterentry.c
+@@ -828,7 +828,7 @@ slapi_vattr_filter_test_ext(
+ 
+     if (only_check_access != 0) {
+         slapi_log_err(SLAPI_LOG_ERR, "slapi_vattr_filter_test_ext",
+-            "⚠️  DANGER ⚠️  - only_check_access mode is BROKEN!!! YOU MUST CHECK ACCESS WITH FILTER MATCHING");
++            "⚠️  DANGER ⚠️  - only_check_access mode is BROKEN!!! YOU MUST CHECK ACCESS WITH FILTER MATCHING\n");
+     }
+     PR_ASSERT(only_check_access == 0);
+ 
+diff --git a/ldap/servers/slapd/ldaputil.c b/ldap/servers/slapd/ldaputil.c
+index 3910bdf7f..e59d22893 100644
+--- a/ldap/servers/slapd/ldaputil.c
++++ b/ldap/servers/slapd/ldaputil.c
+@@ -1305,7 +1305,7 @@ slapi_add_auth_response_control(Slapi_PBlock *pb, const char *binddn)
+ 
+     if (slapi_pblock_set(pb, SLAPI_ADD_RESCONTROL, &arctrl) != 0) {
+         slapi_log_err(SLAPI_LOG_ERR, "slapi_add_auth_response_control",
+-                      "Unable to add authentication response control");
++                      "Unable to add authentication response control\n");
+     }
+ 
+     if (NULL != dnbuf_dynamic) {
+diff --git a/ldap/servers/slapd/libglobs.c b/ldap/servers/slapd/libglobs.c
+index d08267426..a57d704d3 100644
+--- a/ldap/servers/slapd/libglobs.c
++++ b/ldap/servers/slapd/libglobs.c
+@@ -1758,13 +1758,13 @@ FrontendConfig_init(void)
+     /* initialize the read/write configuration lock */
+     if ((cfg->cfg_rwlock = slapi_new_rwlock()) == NULL) {
+         slapi_log_err(SLAPI_LOG_EMERG, "FrontendConfig_init",
+-                      "Failed to initialize cfg_rwlock. Exiting now.");
++                      "Failed to initialize cfg_rwlock. Exiting now.\n");
+         exit(-1);
+     }
+ #else
+     if ((cfg->cfg_lock = PR_NewLock()) == NULL) {
+         slapi_log_err(SLAPI_LOG_EMERG, "FrontendConfig_init",
+-                      "Failed to initialize cfg_lock. Exiting now.");
++                      "Failed to initialize cfg_lock. Exiting now.\n");
+         exit(-1);
+     }
+ #endif
+diff --git a/ldap/servers/slapd/log.c b/ldap/servers/slapd/log.c
+index 3344894d1..c4aa99332 100644
+--- a/ldap/servers/slapd/log.c
++++ b/ldap/servers/slapd/log.c
+@@ -1245,7 +1245,7 @@ log_set_numlogsperdir(const char *attrname, char *numlogs_str, int logtype, char
+         default:
+             rv = LDAP_OPERATIONS_ERROR;
+             slapi_log_err(SLAPI_LOG_ERR, "log_set_numlogsperdir",
+-                          "Invalid log type %d", logtype);
++                          "Invalid log type %d\n", logtype);
+         }
+     }
+     return rv;
+diff --git a/ldap/servers/slapd/modrdn.c b/ldap/servers/slapd/modrdn.c
+index e1ba086d2..784060284 100644
+--- a/ldap/servers/slapd/modrdn.c
++++ b/ldap/servers/slapd/modrdn.c
+@@ -566,13 +566,13 @@ op_shared_rename(Slapi_PBlock *pb, int passin_args)
+                       "Syntax check of newSuperior failed\n");
+         if (!internal_op) {
+             slapi_log_err(SLAPI_LOG_ARGS, "op_shared_rename",
+-                          "conn=%" PRIu64 " op=%d MODRDN invalid new superior (\"%s\")",
++                          "conn=%" PRIu64 " op=%d MODRDN invalid new superior (\"%s\")\n",
+                           pb_conn->c_connid,
+                           operation->o_opid,
+                           newsuperior ? newsuperior : "(null)");
+         } else {
+             slapi_log_err(SLAPI_LOG_ARGS, "op_shared_rename",
+-                          "conn=%s op=%d MODRDN invalid new superior (\"%s\")",
++                          "conn=%s op=%d MODRDN invalid new superior (\"%s\")\n",
+                           LOG_INTERNAL_OP_CON_ID,
+                           LOG_INTERNAL_OP_OP_ID,
+                           newsuperior ? newsuperior : "(null)");
+diff --git a/ldap/servers/slapd/passwd_extop.c b/ldap/servers/slapd/passwd_extop.c
+index 8fad2ee96..f758ac018 100644
+--- a/ldap/servers/slapd/passwd_extop.c
++++ b/ldap/servers/slapd/passwd_extop.c
+@@ -470,10 +470,10 @@ passwd_modify_extop(Slapi_PBlock *pb)
+      * match this very plugin's OID: EXTOP_PASSWD_OID. */
+     slapi_pblock_get(pb, SLAPI_EXT_OP_REQ_OID, &oid);
+     if (oid == NULL) {
+-        errMesg = "Could not get OID value from request.\n";
++        errMesg = "Could not get OID value from request.";
+         rc = LDAP_OPERATIONS_ERROR;
+         slapi_log_err(SLAPI_LOG_PLUGIN, "passwd_modify_extop",
+-                      "%s", errMesg);
++                      "%s\n", errMesg);
+         goto free_and_return;
+     } else {
+         slapi_log_err(SLAPI_LOG_PLUGIN, "passwd_modify_extop",
+@@ -481,7 +481,7 @@ passwd_modify_extop(Slapi_PBlock *pb)
+     }
+ 
+     if (strcasecmp(oid, EXTOP_PASSWD_OID) != 0) {
+-        errMesg = "Request OID does not match Passwd OID.\n";
++        errMesg = "Request OID does not match Passwd OID.";
+         rc = LDAP_OPERATIONS_ERROR;
+         goto free_and_return;
+     } else {
+@@ -500,24 +500,24 @@ passwd_modify_extop(Slapi_PBlock *pb)
+         goto free_and_return;
+     }
+     if (slapi_pblock_get(pb, SLAPI_CONN_SASL_SSF, &sasl_ssf) != 0) {
+-        errMesg = "Could not get SASL SSF from connection\n";
++        errMesg = "Could not get SASL SSF from connection";
+         rc = LDAP_OPERATIONS_ERROR;
+         slapi_log_err(SLAPI_LOG_PLUGIN, "passwd_modify_extop",
+-                      "%s", errMesg);
++                      "%s\n", errMesg);
+         goto free_and_return;
+     }
+ 
+     if (slapi_pblock_get(pb, SLAPI_CONN_LOCAL_SSF, &local_ssf) != 0) {
+-        errMesg = "Could not get local SSF from connection\n";
++        errMesg = "Could not get local SSF from connection";
+         rc = LDAP_OPERATIONS_ERROR;
+         slapi_log_err(SLAPI_LOG_PLUGIN, "passwd_modify_extop",
+-                      "%s", errMesg);
++                      "%s\n", errMesg);
+         goto free_and_return;
+     }
+ 
+     if (((conn->c_flags & CONN_FLAG_SSL) != CONN_FLAG_SSL) &&
+         (sasl_ssf <= 1) && (local_ssf <= 1)) {
+-        errMesg = "Operation requires a secure connection.\n";
++        errMesg = "Operation requires a secure connection.";
+         rc = LDAP_CONFIDENTIALITY_REQUIRED;
+         goto free_and_return;
+     }
+@@ -536,7 +536,7 @@ passwd_modify_extop(Slapi_PBlock *pb)
+     }
+ 
+     if ((ber = ber_init(extop_value)) == NULL) {
+-        errMesg = "PasswdModify Request decode failed.\n";
++        errMesg = "PasswdModify Request decode failed.";
+         rc = LDAP_PROTOCOL_ERROR;
+         goto free_and_return;
+     }
+@@ -571,7 +571,7 @@ passwd_modify_extop(Slapi_PBlock *pb)
+         if (ber_scanf(ber, "a", &rawdn) == LBER_ERROR) {
+             slapi_ch_free_string(&rawdn);
+             slapi_log_err(SLAPI_LOG_ERR, "passwd_modify_extop", "ber_scanf failed :{\n");
+-            errMesg = "ber_scanf failed at userID parse.\n";
++            errMesg = "ber_scanf failed at userID parse.";
+             rc = LDAP_PROTOCOL_ERROR;
+             goto free_and_return;
+         }
+@@ -583,7 +583,7 @@ passwd_modify_extop(Slapi_PBlock *pb)
+             if (rc) { /* syntax check failed */
+                 op_shared_log_error_access(pb, "EXT", rawdn ? rawdn : "",
+                                            "strict: invalid target dn");
+-                errMesg = "invalid target dn.\n";
++                errMesg = "invalid target dn.";
+                 slapi_ch_free_string(&rawdn);
+                 rc = LDAP_INVALID_SYNTAX;
+                 goto free_and_return;
+@@ -597,7 +597,7 @@ passwd_modify_extop(Slapi_PBlock *pb)
+         if (ber_scanf(ber, "a", &oldPasswd) == LBER_ERROR) {
+             slapi_ch_free_string(&oldPasswd);
+             slapi_log_err(SLAPI_LOG_ERR, "passwd_modify_extop", "ber_scanf failed :{\n");
+-            errMesg = "ber_scanf failed at oldPasswd parse.\n";
++            errMesg = "ber_scanf failed at oldPasswd parse.";
+             rc = LDAP_PROTOCOL_ERROR;
+             goto free_and_return;
+         }
+@@ -609,7 +609,7 @@ passwd_modify_extop(Slapi_PBlock *pb)
+         if (ber_scanf(ber, "a", &newPasswd) == LBER_ERROR) {
+             slapi_ch_free_string(&newPasswd);
+             slapi_log_err(SLAPI_LOG_ERR, "passwd_modify_extop", "ber_scanf failed :{\n");
+-            errMesg = "ber_scanf failed at newPasswd parse.\n";
++            errMesg = "ber_scanf failed at newPasswd parse.";
+             rc = LDAP_PROTOCOL_ERROR;
+             goto free_and_return;
+         }
+@@ -626,7 +626,7 @@ parse_req_done:
+     /* If the connection is bound anonymously, we must refuse to process this operation. */
+     if (bindDN == NULL || *bindDN == '\0') {
+         /* Refuse the operation because they're bound anonymously */
+-        errMesg = "Anonymous Binds are not allowed.\n";
++        errMesg = "Anonymous Binds are not allowed.";
+         rc = LDAP_INSUFFICIENT_ACCESS;
+         goto free_and_return;
+     }
+@@ -640,7 +640,7 @@ parse_req_done:
+     dn = slapi_sdn_get_ndn(target_sdn);
+     if (dn == NULL || *dn == '\0') {
+         /* Refuse the operation because they're bound anonymously */
+-        errMesg = "Invalid dn.\n";
++        errMesg = "Invalid dn.";
+         rc = LDAP_INVALID_DN_SYNTAX;
+         goto free_and_return;
+     }
+@@ -657,7 +657,7 @@ parse_req_done:
+          * the bind operation (or used sasl or client cert auth or OS creds) */
+         slapi_pblock_get(pb, SLAPI_CONN_AUTHMETHOD, &authmethod);
+         if (!authmethod || !strcmp(authmethod, SLAPD_AUTH_NONE)) {
+-            errMesg = "User must be authenticated to the directory server.\n";
++            errMesg = "User must be authenticated to the directory server.";
+             rc = LDAP_INSUFFICIENT_ACCESS;
+             goto free_and_return;
+         }
+@@ -680,14 +680,14 @@ parse_req_done:
+ 
+         if (rval != LDAP_SUCCESS) {
+             if (!errMesg)
+-                errMesg = "Error generating new password.\n";
++                errMesg = "Error generating new password.";
+             rc = LDAP_OPERATIONS_ERROR;
+             goto free_and_return;
+         }
+ 
+         /* Make sure a passwd was actually generated */
+         if (newPasswd == NULL || *newPasswd == '\0') {
+-            errMesg = "Error generating new password.\n";
++            errMesg = "Error generating new password.";
+             rc = LDAP_OPERATIONS_ERROR;
+             goto free_and_return;
+         }
+@@ -723,7 +723,7 @@ parse_req_done:
+     /* If we can't find the entry, then that's an error */
+     if (ret) {
+         /* Couldn't find the entry, fail */
+-        errMesg = "No such Entry exists.\n";
++        errMesg = "No such Entry exists.";
+         rc = LDAP_NO_SUCH_OBJECT;
+         goto free_and_return;
+     }
+@@ -767,7 +767,7 @@ parse_req_done:
+         if (need_pwpolicy_ctrl) {
+             slapi_pwpolicy_make_response_control(pb, -1, -1, LDAP_PWPOLICY_PWDMODNOTALLOWED);
+         }
+-        errMesg = "Insufficient access rights\n";
++        errMesg = "Insufficient access rights";
+         rc = LDAP_INSUFFICIENT_ACCESS;
+         goto free_and_return;
+     }
+@@ -780,7 +780,7 @@ parse_req_done:
+         ret = passwd_check_pwd(targetEntry, oldPasswd);
+         if (ret) {
+             /* No, then we fail this operation */
+-            errMesg = "Invalid oldPasswd value.\n";
++            errMesg = "Invalid oldPasswd value.";
+             rc = ret;
+             goto free_and_return;
+         }
+@@ -801,7 +801,7 @@ parse_req_done:
+             if (need_pwpolicy_ctrl) {
+                 slapi_pwpolicy_make_response_control(pb, -1, -1, LDAP_PWPOLICY_PWDMODNOTALLOWED);
+             }
+-            errMesg = "User is not allowed to change password\n";
++            errMesg = "User is not allowed to change password";
+             rc = LDAP_UNWILLING_TO_PERFORM;
+             goto free_and_return;
+         }
+@@ -823,7 +823,7 @@ parse_req_done:
+ 
+     if (ret != LDAP_SUCCESS) {
+         /* Failed to modify the password, e.g. because password policy, etc. */
+-        errMesg = "Failed to update password\n";
++        errMesg = "Failed to update password";
+         rc = ret;
+         goto free_and_return;
+     }
+@@ -838,7 +838,7 @@ parse_req_done:
+ /* Free anything that we allocated above */
+ free_and_return:
+     slapi_log_err(SLAPI_LOG_PLUGIN, "passwd_modify_extop",
+-                  "%s", errMesg ? errMesg : "success");
++                  "%s\n", errMesg ? errMesg : "success");
+ 
+     if ((rc == LDAP_REFERRAL) && (referrals)) {
+         send_referrals_from_entry(pb, referrals);
+diff --git a/ldap/servers/slapd/pw.c b/ldap/servers/slapd/pw.c
+index 493907e78..65e491590 100644
+--- a/ldap/servers/slapd/pw.c
++++ b/ldap/servers/slapd/pw.c
+@@ -243,8 +243,8 @@ slapi_encode_ext(Slapi_PBlock *pb, const Slapi_DN *sdn, char *value, char *alg)
+                 slapi_ch_free((void **)&scheme_list);
+             } else {
+                 slapi_log_err(SLAPI_LOG_ERR, "slapi_encode_ext",
+-                              "Invalid scheme - %s\n"
+-                              "no pwdstorage scheme plugin loaded",
++                              "Invalid scheme: %s ==> "
++                              "no pwdstorage scheme plugin loaded\n",
+                               alg);
+             }
+             return NULL;
+diff --git a/ldap/servers/slapd/schema.c b/ldap/servers/slapd/schema.c
+index 9dee642b9..9ef4ee4bf 100644
+--- a/ldap/servers/slapd/schema.c
++++ b/ldap/servers/slapd/schema.c
+@@ -6563,7 +6563,7 @@ supplier_get_new_definitions(struct berval **objectclasses, struct berval **attr
+                  * it and look for objectclasses
+                  */
+         slapi_log_err(SLAPI_LOG_ERR, "supplier_get_new_definitions",
+-                      "Not able to build an attributes list from the consumer schema");
++                      "Not able to build an attributes list from the consumer schema\n");
+     }
+     schema_dse_unlock();
+     *new_oc = oc2learn_list;
+diff --git a/ldap/servers/slapd/util.c b/ldap/servers/slapd/util.c
+index bf065261f..cc89d3226 100644
+--- a/ldap/servers/slapd/util.c
++++ b/ldap/servers/slapd/util.c
+@@ -1544,7 +1544,7 @@ util_is_cachesize_sane(slapi_pal_meminfo *mi, uint64_t *cachesize)
+          */
+         uint64_t adjust_cachesize = (mi->system_available_bytes * 0.5);
+         if (adjust_cachesize > *cachesize) {
+-            slapi_log_err(SLAPI_LOG_CRIT, "util_is_cachesize_sane", "Invalid adjusted cachesize is greater than request %" PRIu64, adjust_cachesize);
++            slapi_log_err(SLAPI_LOG_CRIT, "util_is_cachesize_sane", "Invalid adjusted cachesize is greater than request %" PRIu64 "\n", adjust_cachesize);
+             return UTIL_CACHESIZE_ERROR;
+         }
+         if (adjust_cachesize < (16 * mi->pagesize_bytes)) {
+-- 
+2.49.0
+

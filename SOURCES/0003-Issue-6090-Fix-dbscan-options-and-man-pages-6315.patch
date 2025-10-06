@@ -1,0 +1,72 @@
+From 6b80ba631161219093267e8e4c885bfc392d3d61 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Fri, 6 Sep 2024 14:45:06 +0200
+Subject: [PATCH] Issue 6090 - Fix dbscan options and man pages (#6315)
+
+* Issue 6090 - Fix dbscan options and man pages
+
+dbscan -d option is dangerously confusing as it removes a database instance while in db_stat it identify the database
+(cf issue #5609 ).
+This fix implements long options in dbscan, rename -d in --remove, and requires a new --do-it option for action that change the database content.
+The fix should also align both the usage and the dbscan man page with the new set of options
+
+Issue: #6090
+
+Reviewed by: @tbordaz, @droideck (Thanks!)
+
+(cherry picked from commit 25e1d16887ebd299dfe0088080b9ee0deec1e41f)
+---
+ ldap/servers/slapd/back-ldbm/dbimpl.c |  5 ++++-
+ src/lib389/lib389/cli_ctl/dblib.py    | 13 ++++++++++++-
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/dbimpl.c b/ldap/servers/slapd/back-ldbm/dbimpl.c
+index f3bf68a9f..83662df8c 100644
+--- a/ldap/servers/slapd/back-ldbm/dbimpl.c
++++ b/ldap/servers/slapd/back-ldbm/dbimpl.c
+@@ -481,7 +481,10 @@ int dblayer_private_close(Slapi_Backend **be, dbi_env_t **env, dbi_db_t **db)
+         slapi_ch_free_string(&li->li_directory);
+         slapi_ch_free((void**)&li->li_dblayer_private);
+         slapi_ch_free((void**)&li->li_dblayer_config);
+-        ldbm_config_destroy(li);
++        if (dblayer_is_lmdb(*be)) {
++            /* Generate use after free and double free in bdb case */
++            ldbm_config_destroy(li);
++        }
+         slapi_ch_free((void**)&(*be)->be_database);
+         slapi_ch_free((void**)&(*be)->be_instance_info);
+         slapi_ch_free((void**)be);
+diff --git a/src/lib389/lib389/cli_ctl/dblib.py b/src/lib389/lib389/cli_ctl/dblib.py
+index 053a72d61..318ae5ae9 100644
+--- a/src/lib389/lib389/cli_ctl/dblib.py
++++ b/src/lib389/lib389/cli_ctl/dblib.py
+@@ -199,6 +199,14 @@ def run_dbscan(args):
+     return output
+ 
+ 
++def does_dbscan_need_do_it():
++    prefix = os.environ.get('PREFIX', "")
++    prog = f'{prefix}/bin/dbscan'
++    args = [ prog, '-h' ]
++    output = subprocess.run(args, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
++    return '--do-it' in output.stdout
++
++
+ def export_changelog(be, dblib):
+     # Export backend changelog
+     if not be['has_changelog']:
+@@ -217,7 +225,10 @@ def import_changelog(be, dblib):
+     try:
+         cl5dbname = be['eccl5dbname'] if dblib == "bdb" else be['cl5dbname']
+         _log.info(f"Importing changelog {cl5dbname} from {be['cl5name']}")
+-        run_dbscan(['-D', dblib, '-f', cl5dbname, '--import', be['cl5name'], '--do-it'])
++        if does_dbscan_need_do_it():
++            run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name'], '--do-it'])
++        else:
++            run_dbscan(['-D', dblib, '-f', cl5dbname, '-I', be['cl5name']])
+         return True
+     except subprocess.CalledProcessError as e:
+         return False
+-- 
+2.48.0
+

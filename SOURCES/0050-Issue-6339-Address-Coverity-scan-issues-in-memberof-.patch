@@ -1,0 +1,76 @@
+From ef25a3d11026d1b12353aa8faff2c0d5827282d4 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Fri, 4 Oct 2024 08:55:11 -0700
+Subject: [PATCH] Issue 6339 - Address Coverity scan issues in memberof and
+ bdb_layer (#6353)
+
+Description: Add null check for memberof attribute in memberof.c
+Fix memory leak by freeing 'cookie' in memberof.c
+Add null check for database environment in bdb_layer.c
+Fix race condition by adding mutex lock/unlock in bdb_layer.c
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6339
+
+Reviewed by: @progier389, @tbordaz (Thanks!)
+---
+ ldap/servers/plugins/memberof/memberof.c        |  1 +
+ ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c | 17 ++++++++++++++---
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index 16dae2195..3775e52c9 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -931,6 +931,7 @@ perform_needed_fixup(void)
+         }
+         be = slapi_get_next_backend(cookie);
+     }
++    slapi_ch_free_string(&cookie);
+     slapi_ch_free_string(&td.bind_dn);
+     slapi_ch_free_string(&td.filter_str);
+     memberof_free_config(&config);
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+index 7c3a7dcc9..f2b380f9b 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+@@ -6925,6 +6925,7 @@ bdb_public_private_open(backend *be, const char *db_filename, int rw, dbi_env_t
+     bdb_config *conf = (bdb_config *)li->li_dblayer_config;
+     bdb_db_env **ppEnv = (bdb_db_env**)&priv->dblayer_env;
+     char dbhome[MAXPATHLEN];
++    bdb_db_env *pEnv = NULL;
+     DB_ENV *bdb_env = NULL;
+     DB *bdb_db = NULL;
+     struct stat st = {0};
+@@ -6974,7 +6975,13 @@ bdb_public_private_open(backend *be, const char *db_filename, int rw, dbi_env_t
+         conf->bdb_tx_max = 50;
+         rc = bdb_start(li, DBLAYER_NORMAL_MODE);
+         if (rc == 0) {
+-            bdb_env = ((struct bdb_db_env*)(priv->dblayer_env))->bdb_DB_ENV;
++            pEnv = (bdb_db_env *)priv->dblayer_env;
++            if (pEnv == NULL) {
++                fprintf(stderr, "bdb_public_private_open: dbenv is not available (0x%p) for database %s\n",
++                        (void *)pEnv, db_filename ? db_filename : "unknown");
++                return EINVAL;
++            }
++            bdb_env = pEnv->bdb_DB_ENV;
+         }
+     } else {
+         /* Setup minimal environment */
+@@ -7018,8 +7025,12 @@ bdb_public_private_close(struct ldbminfo *li, dbi_env_t **env, dbi_db_t **db)
+     if (priv) {
+         /* Detect if db is fully set up in read write mode */
+         bdb_db_env *pEnv = (bdb_db_env *)priv->dblayer_env;
+-        if (pEnv && pEnv->bdb_thread_count>0) {
+-            rw = 1;
++        if (pEnv) {
++            pthread_mutex_lock(&pEnv->bdb_thread_count_lock);
++            if (pEnv->bdb_thread_count > 0) {
++                rw = 1;
++            }
++            pthread_mutex_unlock(&pEnv->bdb_thread_count_lock);
+         }
+     }
+     if (rw == 0) {
+-- 
+2.49.0
+

@@ -1,0 +1,77 @@
+From e638e801afd51ca44523222a90a9f69f4be82ae3 Mon Sep 17 00:00:00 2001
+From: Firstyear <william@blackhats.net.au>
+Date: Fri, 7 Feb 2025 14:47:29 +1000
+Subject: [PATCH] Issue 6596 - BUG - Compilation Regresion (#6597)
+
+Bug Description: The addition of the json auditlog feature caused
+a regresion in compilation due to the use of labels in a declaration.
+
+Fix Description: Enclose the switch/case in braces to resolve the
+compilation issue.
+
+fixes: https://github.com/389ds/389-ds-base/issues/6596
+
+Author: William Brown <william@blackhats.net.au>
+
+Review by: @droideck Thanks!
+---
+ ldap/servers/slapd/auditlog.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/ldap/servers/slapd/auditlog.c b/ldap/servers/slapd/auditlog.c
+index c288a1a7f..ff9a6fdde 100644
+--- a/ldap/servers/slapd/auditlog.c
++++ b/ldap/servers/slapd/auditlog.c
+@@ -456,7 +456,7 @@ write_audit_file_json(Slapi_PBlock *pb, Slapi_Entry *entry, int logtype,
+     add_entry_attrs_json(entry, log_json);
+ 
+     switch (optype) {
+-        case SLAPI_OPERATION_MODIFY:
++        case SLAPI_OPERATION_MODIFY: {
+             json_object *mod_list = json_object_new_array();
+             mods = change;
+             for (size_t j = 0; (mods != NULL) && (mods[j] != NULL); j++) {
+@@ -511,8 +511,8 @@ write_audit_file_json(Slapi_PBlock *pb, Slapi_Entry *entry, int logtype,
+             /* Add entire mod list to the main object */
+             json_object_object_add(log_json, "modify", mod_list);
+             break;
+-
+-        case SLAPI_OPERATION_ADD:
++        }
++        case SLAPI_OPERATION_ADD: {
+             int len;
+             e = change;
+             tmp = slapi_entry2str(e, &len);
+@@ -526,8 +526,8 @@ write_audit_file_json(Slapi_PBlock *pb, Slapi_Entry *entry, int logtype,
+             json_object_object_add(log_json, "add", json_object_new_string(tmp));
+             slapi_ch_free_string(&tmpsave);
+             break;
+-
+-        case SLAPI_OPERATION_DELETE:
++        }
++        case SLAPI_OPERATION_DELETE: {
+             tmp = change;
+             del_obj = json_object_new_object();
+             if (tmp && tmp[0]) {
+@@ -538,8 +538,8 @@ write_audit_file_json(Slapi_PBlock *pb, Slapi_Entry *entry, int logtype,
+                 json_object_object_add(log_json, "delete", del_obj);
+             }
+             break;
+-
+-        case SLAPI_OPERATION_MODDN:
++        }
++        case SLAPI_OPERATION_MODDN: {
+             newrdn = ((char **)change)[0];
+             modrdn_obj = json_object_new_object();
+             json_object_object_add(modrdn_obj, attr_newrdn, json_object_new_string(newrdn));
+@@ -551,6 +551,7 @@ write_audit_file_json(Slapi_PBlock *pb, Slapi_Entry *entry, int logtype,
+             }
+             json_object_object_add(log_json, "modrdn", modrdn_obj);
+             break;
++        }
+     }
+ 
+     msg = (char *)json_object_to_json_string_ext(log_json, log_format);
+-- 
+2.48.0
+

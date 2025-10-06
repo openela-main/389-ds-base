@@ -1,0 +1,1188 @@
+From 3819c599d9000afa34d1fa7379b8d8fc7f1a2e51 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Fri, 7 Mar 2025 12:18:38 -0800
+Subject: [PATCH] Issue 6656 - UI - Enhance Monitor Log Viewer with Patternfly
+ LogViewer component (#6657)
+
+Description: The current monitor's log tabs implementation uses a basic textarea
+which lacks modern features like search capability and text wrapping.
+
+Replace monitor logging component tabs (Error, Access, Audit, Audit Failure,
+and Security) with Patternfly's dedicated LogViewer.
+Add search functionality, text wrapping option, and a "No Limit" option
+for viewing entire log files.
+Reorganize the UI controls using Patternfly's Toolbar component.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6656
+
+Reviewed by: @mreynolds389 (Thanks!)
+---
+ src/cockpit/389-console/package-lock.json     |  37 +++++
+ src/cockpit/389-console/package.json          |   7 +-
+ .../389-console/src/lib/monitor/accesslog.jsx | 138 ++++++++++-------
+ .../src/lib/monitor/auditfaillog.jsx          | 137 ++++++++++-------
+ .../389-console/src/lib/monitor/auditlog.jsx  | 138 ++++++++++-------
+ .../389-console/src/lib/monitor/errorlog.jsx  | 144 ++++++++++--------
+ .../src/lib/monitor/securitylog.jsx           | 138 ++++++++++-------
+ 7 files changed, 448 insertions(+), 291 deletions(-)
+
+diff --git a/src/cockpit/389-console/package-lock.json b/src/cockpit/389-console/package-lock.json
+index 9f3afc656..8f9df06f9 100644
+--- a/src/cockpit/389-console/package-lock.json
++++ b/src/cockpit/389-console/package-lock.json
+@@ -16,6 +16,7 @@
+         "@patternfly/react-charts": "7.4.3",
+         "@patternfly/react-core": "5.4.1",
+         "@patternfly/react-icons": "5.4.0",
++        "@patternfly/react-log-viewer": "5.3.0",
+         "@patternfly/react-styles": "5.4.0",
+         "@patternfly/react-table": "5.4.1",
+         "@patternfly/react-tokens": "5.4.0",
+@@ -542,6 +543,21 @@
+         "react-dom": "^17 || ^18"
+       }
+     },
++    "node_modules/@patternfly/react-log-viewer": {
++      "version": "5.3.0",
++      "resolved": "https://registry.npmjs.org/@patternfly/react-log-viewer/-/react-log-viewer-5.3.0.tgz",
++      "integrity": "sha512-6jzhxwJwllLdX3jpoGdzIhvhPTfYuC6B+KuN2Laf7Iuioeig8bOMzJZFh6VXg+aBGd9j4JGv2dYryDsbDsTLvw==",
++      "dependencies": {
++        "@patternfly/react-core": "^5.0.0",
++        "@patternfly/react-icons": "^5.0.0",
++        "@patternfly/react-styles": "^5.0.0",
++        "memoize-one": "^5.1.0"
++      },
++      "peerDependencies": {
++        "react": "^17 || ^18",
++        "react-dom": "^17 || ^18"
++      }
++    },
+     "node_modules/@patternfly/react-styles": {
+       "version": "5.4.0",
+       "resolved": "https://registry.npmjs.org/@patternfly/react-styles/-/react-styles-5.4.0.tgz",
+@@ -4443,6 +4459,11 @@
+       "integrity": "sha512-GaqWWShW4kv/G9IEucWScBx9G1/vsFZZJUO+tD26M8J8z3Kw5RDQjaoZe03YAClgeS/SWPOcb4nkFBTEi5DUEA==",
+       "dev": true
+     },
++    "node_modules/memoize-one": {
++      "version": "5.2.1",
++      "resolved": "https://registry.npmjs.org/memoize-one/-/memoize-one-5.2.1.tgz",
++      "integrity": "sha512-zYiwtZUcYyXKo/np96AGZAckk+FWWsUdJ3cHGGmld7+AhvcWmQyGCYUh1hc4Q/pkOhb65dQR/pqCyK0cOaHz4Q=="
++    },
+     "node_modules/meow": {
+       "version": "13.2.0",
+       "resolved": "https://registry.npmjs.org/meow/-/meow-13.2.0.tgz",
+@@ -7636,6 +7657,17 @@
+       "integrity": "sha512-2M3qN/naultvRHeG2laJMmoIroFCGAyfwTVrnCjSkG6/KnRoXV0+dqd+Xrh7xzpzvIJB1klvifC0oX42cEkDrA==",
+       "requires": {}
+     },
++    "@patternfly/react-log-viewer": {
++      "version": "5.3.0",
++      "resolved": "https://registry.npmjs.org/@patternfly/react-log-viewer/-/react-log-viewer-5.3.0.tgz",
++      "integrity": "sha512-6jzhxwJwllLdX3jpoGdzIhvhPTfYuC6B+KuN2Laf7Iuioeig8bOMzJZFh6VXg+aBGd9j4JGv2dYryDsbDsTLvw==",
++      "requires": {
++        "@patternfly/react-core": "^5.0.0",
++        "@patternfly/react-icons": "^5.0.0",
++        "@patternfly/react-styles": "^5.0.0",
++        "memoize-one": "^5.1.0"
++      }
++    },
+     "@patternfly/react-styles": {
+       "version": "5.4.0",
+       "resolved": "https://registry.npmjs.org/@patternfly/react-styles/-/react-styles-5.4.0.tgz",
+@@ -10467,6 +10499,11 @@
+       "integrity": "sha512-GaqWWShW4kv/G9IEucWScBx9G1/vsFZZJUO+tD26M8J8z3Kw5RDQjaoZe03YAClgeS/SWPOcb4nkFBTEi5DUEA==",
+       "dev": true
+     },
++    "memoize-one": {
++      "version": "5.2.1",
++      "resolved": "https://registry.npmjs.org/memoize-one/-/memoize-one-5.2.1.tgz",
++      "integrity": "sha512-zYiwtZUcYyXKo/np96AGZAckk+FWWsUdJ3cHGGmld7+AhvcWmQyGCYUh1hc4Q/pkOhb65dQR/pqCyK0cOaHz4Q=="
++    },
+     "meow": {
+       "version": "13.2.0",
+       "resolved": "https://registry.npmjs.org/meow/-/meow-13.2.0.tgz",
+diff --git a/src/cockpit/389-console/package.json b/src/cockpit/389-console/package.json
+index 7dbf0ca3f..e9c90ea64 100644
+--- a/src/cockpit/389-console/package.json
++++ b/src/cockpit/389-console/package.json
+@@ -66,9 +66,12 @@
+     "@patternfly/react-charts": "7.4.3",
+     "@patternfly/react-core": "5.4.1",
+     "@patternfly/react-icons": "5.4.0",
++    "@patternfly/react-log-viewer": "5.3.0",
+     "@patternfly/react-styles": "5.4.0",
+     "@patternfly/react-table": "5.4.1",
+     "@patternfly/react-tokens": "5.4.0",
++    "@xterm/addon-canvas": "0.7.0",
++    "@xterm/xterm": "5.5.0",
+     "dequal": "2.0.3",
+     "eslint-plugin-react-hooks": "^4.2.0",
+     "gettext-parser": "^2.0.0",
+@@ -81,8 +84,6 @@
+     "react-dom": "18.3.1",
+     "remarkable": "2.0.1",
+     "throttle-debounce": "5.0.2",
+-    "uuid": "10.0.0",
+-    "@xterm/xterm": "5.5.0",
+-    "@xterm/addon-canvas": "0.7.0"
++    "uuid": "10.0.0"
+   }
+ }
+diff --git a/src/cockpit/389-console/src/lib/monitor/accesslog.jsx b/src/cockpit/389-console/src/lib/monitor/accesslog.jsx
+index 1024d42f8..f49f9ab1c 100644
+--- a/src/cockpit/389-console/src/lib/monitor/accesslog.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/accesslog.jsx
+@@ -6,15 +6,16 @@ import {
+     Checkbox,
+     FormSelect,
+     FormSelectOption,
+-    Grid,
+-    GridItem,
++    Toolbar,
++    ToolbarContent,
++    ToolbarItem,
+     Spinner,
+-    TextArea,
+     Text,
+     TextContent,
+     TextVariants,
+ } from "@patternfly/react-core";
+ import { SyncAltIcon } from '@patternfly/react-icons';
++import { LogViewer, LogViewerSearch } from '@patternfly/react-log-viewer';
+ 
+ const _ = cockpit.gettext;
+ 
+@@ -27,17 +28,13 @@ export class AccessLogMonitor extends React.Component {
+             accesslog_cont_refresh: "",
+             accessRefreshing: false,
+             accessLines: "50",
++            isTextWrapped: false,
+         };
+ 
+         this.handleRefreshAccessLog = this.handleRefreshAccessLog.bind(this);
+         this.handleAccessChange = this.handleAccessChange.bind(this);
+         this.accessRefreshCont = this.accessRefreshCont.bind(this);
+-    }
+-
+-    componentDidUpdate () {
+-        // Set the textarea to be scrolled down to the bottom
+-        const textarea = document.getElementById('accesslog-area');
+-        textarea.scrollTop = textarea.scrollHeight;
++        this.handleTextWrappedChange = this.handleTextWrappedChange.bind(this);
+     }
+ 
+     componentDidMount() {
+@@ -73,11 +70,25 @@ export class AccessLogMonitor extends React.Component {
+         ), this.handleRefreshAccessLog);
+     }
+ 
++    handleTextWrappedChange(_event, checked) {
++        this.setState({
++            isTextWrapped: checked
++        });
++    }
++
+     handleRefreshAccessLog () {
+         this.setState({
+             accessReloading: true
+         });
+-        const cmd = ["tail", "-" + this.state.accessLines, this.props.logLocation];
++        
++        // Use different command when "no-limit" is selected
++        let cmd;
++        if (this.state.accessLines === "no-limit") {
++            cmd = ["cat", this.props.logLocation];
++        } else {
++            cmd = ["tail", "-" + this.state.accessLines, this.props.logLocation];
++        }
++        
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+@@ -95,46 +106,31 @@ export class AccessLogMonitor extends React.Component {
+     }
+ 
+     render() {
+-        let spinner = "";
++        let spinner = null;
+         if (this.state.accessReloading) {
+             spinner = (
+-                <div>
+-                    <Spinner  size="sm" />
++                <ToolbarItem>
++                    <Spinner size="sm" />
+                     {_("Reloading access log...")}
+-                </div>
++                </ToolbarItem>
+             );
+         }
+ 
+-        return (
+-            <div id="monitor-log-access-page">
+-                <Grid>
+-                    <GridItem span={3}>
+-                        <TextContent>
+-                            <Text component={TextVariants.h3}>
+-                                {_("Access Log")}
+-                                <Button 
+-                                    variant="plain"
+-                                    aria-label={_("Refresh access log")}
+-                                    onClick={this.handleRefreshAccessLog}
+-                                >
+-                                    <SyncAltIcon />
+-                                </Button>
+-                            </Text>
+-                        </TextContent>
+-                    </GridItem>
+-                    <GridItem span={9} className="ds-float-left">
+-                        {spinner}
+-                    </GridItem>
+-                </Grid>
+-                <Grid className="ds-margin-top-lg ds-indent">
+-                    <GridItem span={2}>
++        const logViewerToolbar = (
++            <Toolbar>
++                <ToolbarContent>
++                    <ToolbarItem>
++                        <LogViewerSearch placeholder={_("Search")} />
++                    </ToolbarItem>
++                    <ToolbarItem>
+                         <FormSelect
+                             id="accessLines"
+                             value={this.state.accessLines}
+-                            onChange={(event, value) => {
++                            onChange={(event) => {
+                                 this.handleAccessChange(event);
+                             }}
+-                            aria-label="FormSelect Input"
++                            aria-label={_("Lines to display")}
++                            style={{ minWidth: '150px', width: 'auto' }}
+                         >
+                             <FormSelectOption key="50" value="50" label="50" />
+                             <FormSelectOption key="100" value="100" label="100" />
+@@ -147,26 +143,54 @@ export class AccessLogMonitor extends React.Component {
+                             <FormSelectOption key="5000" value="5000" label="5000" />
+                             <FormSelectOption key="10000" value="10000" label="10000" />
+                             <FormSelectOption key="50000" value="50000" label="50000" />
++                            <FormSelectOption key="no-limit" value="no-limit" label={_("No Limit")} />
+                         </FormSelect>
+-                    </GridItem>
+-                    <GridItem span={10}>
+-                        <div className="ds-float-right">
+-                            <Checkbox
+-                                id="accessRefreshing"
+-                                isChecked={this.state.accessRefreshing}
+-                                onChange={(e, checked) => { this.accessRefreshCont(e) }}
+-                                label={_("Continuously Refresh")}
+-                            />
+-                        </div>
+-                    </GridItem>
+-                    <TextArea
+-                        id="accesslog-area"
+-                        resizeOrientation="vertical"
+-                        className="ds-logarea ds-margin-top-lg"
+-                        value={this.state.accesslogData}
+-                        aria-label="text area example"
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center" className="ds-float-right">
++                        <Checkbox
++                            id="accessRefreshing"
++                            isChecked={this.state.accessRefreshing}
++                            onChange={(e) => { this.accessRefreshCont(e) }}
++                            label={_("Continuously Refresh")}
++                        />
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center">
++                        <Checkbox
++                            id="wrapText"
++                            isChecked={this.state.isTextWrapped}
++                            onChange={this.handleTextWrappedChange}
++                            label={_("Wrap text")}
++                            aria-label="wrap text checkbox"
++                        />
++                    </ToolbarItem>
++                    {spinner}
++                </ToolbarContent>
++            </Toolbar>
++        );
++
++        return (
++            <div id="monitor-log-access-page">
++                <TextContent>
++                    <Text component={TextVariants.h3}>
++                        {_("Access Log")}
++                        <Button 
++                            variant="plain"
++                            aria-label={_("Refresh access log")}
++                            onClick={this.handleRefreshAccessLog}
++                        >
++                            <SyncAltIcon />
++                        </Button>
++                    </Text>
++                </TextContent>
++                <div className="ds-margin-top-lg">
++                    <LogViewer
++                        data={this.state.accesslogData}
++                        isTextWrapped={this.state.isTextWrapped}
++                        toolbar={logViewerToolbar}
++                        scrollToRow={this.state.accesslogData.split('\n').length}
++                        height="600px"
+                     />
+-                </Grid>
++                </div>
+             </div>
+         );
+     }
+diff --git a/src/cockpit/389-console/src/lib/monitor/auditfaillog.jsx b/src/cockpit/389-console/src/lib/monitor/auditfaillog.jsx
+index c09b0ff67..794896912 100644
+--- a/src/cockpit/389-console/src/lib/monitor/auditfaillog.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/auditfaillog.jsx
+@@ -6,15 +6,16 @@ import {
+     Checkbox,
+     FormSelect,
+     FormSelectOption,
+-    Grid,
+-    GridItem,
++    Toolbar,
++    ToolbarContent,
++    ToolbarItem,
+     Spinner,
+-    TextArea,
+     Text,
+     TextContent,
+     TextVariants,
+ } from "@patternfly/react-core";
+ import { SyncAltIcon } from '@patternfly/react-icons';
++import { LogViewer, LogViewerSearch } from '@patternfly/react-log-viewer';
+ 
+ const _ = cockpit.gettext;
+ 
+@@ -27,11 +28,13 @@ export class AuditFailLogMonitor extends React.Component {
+             auditfaillog_cont_refresh: "",
+             auditfailRefreshing: false,
+             auditfailLines: "50",
++            isTextWrapped: false,
+         };
+ 
+         this.handleRefreshAuditFailLog = this.handleRefreshAuditFailLog.bind(this);
+         this.handleAuditFailChange = this.handleAuditFailChange.bind(this);
+         this.auditFailRefreshCont = this.auditFailRefreshCont.bind(this);
++        this.handleTextWrappedChange = this.handleTextWrappedChange.bind(this);
+     }
+ 
+     componentWillUnmount() {
+@@ -39,12 +42,6 @@ export class AuditFailLogMonitor extends React.Component {
+         clearInterval(this.state.auditfaillog_cont_refresh);
+     }
+ 
+-    componentDidUpdate () {
+-        // Set the textarea to be scrolled down to the bottom
+-        const textarea = document.getElementById('auditfaillog-area');
+-        textarea.scrollTop = textarea.scrollHeight;
+-    }
+-
+     componentDidMount() {
+         this.props.enableTree();
+         this.handleRefreshAuditFailLog();
+@@ -54,7 +51,15 @@ export class AuditFailLogMonitor extends React.Component {
+         this.setState({
+             auditfailReloading: true
+         });
+-        const cmd = ["tail", "-" + this.state.auditfailLines, this.props.logLocation];
++        
++        // Use different command when "no-limit" is selected
++        let cmd;
++        if (this.state.auditfailLines === "no-limit") {
++            cmd = ["cat", this.props.logLocation];
++        } else {
++            cmd = ["tail", "-" + this.state.auditfailLines, this.props.logLocation];
++        }
++        
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+@@ -88,48 +93,38 @@ export class AuditFailLogMonitor extends React.Component {
+         ), this.handleRefreshAuditFailLog);
+     }
+ 
++    handleTextWrappedChange(_event, checked) {
++        this.setState({
++            isTextWrapped: checked
++        });
++    }
++
+     render() {
+-        let spinner = "";
++        let spinner = null;
+         if (this.state.auditfailReloading) {
+             spinner = (
+-                <div>
++                <ToolbarItem>
+                     <Spinner size="sm" />
+                     {_("Reloading audit failure log...")}
+-                </div>
++                </ToolbarItem>
+             );
+         }
+ 
+-        return (
+-            <div id="monitor-log-auditfail-page">
+-                <Grid>
+-                    <GridItem span={3}>
+-                        <TextContent>
+-                            <Text component={TextVariants.h3}>
+-                                {_("Audit Failure Log")}
+-                                <Button 
+-                                    variant="plain"
+-                                    aria-label={_("Refresh audit failure log")}
+-                                    onClick={this.handleRefreshAuditFailLog}
+-                                >
+-                                    <SyncAltIcon />
+-                                </Button>
+-                            </Text>
+-                        </TextContent>
+-                    </GridItem>
+-                    <GridItem span={9} className="ds-float-left">
+-                        {spinner}
+-                    </GridItem>
+-                </Grid>
+-
+-                <Grid className="ds-margin-top-lg ds-indent">
+-                    <GridItem span={2}>
++        const logViewerToolbar = (
++            <Toolbar>
++                <ToolbarContent>
++                    <ToolbarItem>
++                        <LogViewerSearch placeholder={_("Search")} />
++                    </ToolbarItem>
++                    <ToolbarItem>
+                         <FormSelect
+                             id="auditfailLines"
+                             value={this.state.auditfailLines}
+-                            onChange={(event, value) => {
++                            onChange={(event) => {
+                                 this.handleAuditFailChange(event);
+                             }}
+-                            aria-label="FormSelect Input"
++                            aria-label={_("Lines to display")}
++                            style={{ minWidth: '150px', width: 'auto' }}
+                         >
+                             <FormSelectOption key="50" value="50" label="50" />
+                             <FormSelectOption key="100" value="100" label="100" />
+@@ -142,26 +137,54 @@ export class AuditFailLogMonitor extends React.Component {
+                             <FormSelectOption key="5000" value="5000" label="5000" />
+                             <FormSelectOption key="10000" value="10000" label="10000" />
+                             <FormSelectOption key="50000" value="50000" label="50000" />
++                            <FormSelectOption key="no-limit" value="no-limit" label={_("No Limit")} />
+                         </FormSelect>
+-                    </GridItem>
+-                    <GridItem span={10}>
+-                        <div className="ds-float-right">
+-                            <Checkbox
+-                                id="auditfailRefreshing"
+-                                isChecked={this.state.auditfailRefreshing}
+-                                onChange={(e, checked) => { this.auditFailRefreshCont(e) }}
+-                                label={_("Continuously Refresh")}
+-                            />
+-                        </div>
+-                    </GridItem>
+-                    <TextArea
+-                        id="auditfaillog-area"
+-                        resizeOrientation="vertical"
+-                        className="ds-logarea ds-margin-top-lg"
+-                        value={this.state.auditfaillogData}
+-                        aria-label="text area example"
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center" className="ds-float-right">
++                        <Checkbox
++                            id="auditfailRefreshing"
++                            isChecked={this.state.auditfailRefreshing}
++                            onChange={(e) => { this.auditFailRefreshCont(e) }}
++                            label={_("Continuously Refresh")}
++                        />
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center">
++                        <Checkbox
++                            id="wrapText"
++                            isChecked={this.state.isTextWrapped}
++                            onChange={this.handleTextWrappedChange}
++                            label={_("Wrap text")}
++                            aria-label="wrap text checkbox"
++                        />
++                    </ToolbarItem>
++                    {spinner}
++                </ToolbarContent>
++            </Toolbar>
++        );
++
++        return (
++            <div id="monitor-log-auditfail-page">
++                <TextContent>
++                    <Text component={TextVariants.h3}>
++                        {_("Audit Failure Log")}
++                        <Button 
++                            variant="plain"
++                            aria-label={_("Refresh audit failure log")}
++                            onClick={this.handleRefreshAuditFailLog}
++                        >
++                            <SyncAltIcon />
++                        </Button>
++                    </Text>
++                </TextContent>
++                <div className="ds-margin-top-lg">
++                    <LogViewer
++                        data={this.state.auditfaillogData}
++                        isTextWrapped={this.state.isTextWrapped}
++                        toolbar={logViewerToolbar}
++                        scrollToRow={this.state.auditfaillogData.split('\n').length}
++                        height="600px"
+                     />
+-                </Grid>
++                </div>
+             </div>
+         );
+     }
+diff --git a/src/cockpit/389-console/src/lib/monitor/auditlog.jsx b/src/cockpit/389-console/src/lib/monitor/auditlog.jsx
+index 9b5b643af..c3e2e79b3 100644
+--- a/src/cockpit/389-console/src/lib/monitor/auditlog.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/auditlog.jsx
+@@ -6,15 +6,16 @@ import {
+     Checkbox,
+     FormSelect,
+     FormSelectOption,
+-    Grid,
+-    GridItem,
++    Toolbar,
++    ToolbarContent,
++    ToolbarItem,
+     Spinner,
+-    TextArea,
+     Text,
+     TextContent,
+     TextVariants,
+ } from "@patternfly/react-core";
+ import { SyncAltIcon } from '@patternfly/react-icons';
++import { LogViewer, LogViewerSearch } from '@patternfly/react-log-viewer';
+ 
+ const _ = cockpit.gettext;
+ 
+@@ -27,10 +28,12 @@ export class AuditLogMonitor extends React.Component {
+             auditlog_cont_refresh: "",
+             auditRefreshing: false,
+             auditLines: "50",
++            isTextWrapped: false,
+         };
+         this.handleRefreshAuditLog = this.handleRefreshAuditLog.bind(this);
+         this.handleAuditChange = this.handleAuditChange.bind(this);
+         this.auditRefreshCont = this.auditRefreshCont.bind(this);
++        this.handleTextWrappedChange = this.handleTextWrappedChange.bind(this);
+     }
+ 
+     componentWillUnmount() {
+@@ -38,12 +41,6 @@ export class AuditLogMonitor extends React.Component {
+         clearInterval(this.state.auditlog_cont_refresh);
+     }
+ 
+-    componentDidUpdate () {
+-        // Set the textarea to be scrolled down to the bottom
+-        const textarea = document.getElementById('auditlog-area');
+-        textarea.scrollTop = textarea.scrollHeight;
+-    }
+-
+     componentDidMount() {
+         this.props.enableTree();
+         this.handleRefreshAuditLog();
+@@ -53,7 +50,15 @@ export class AuditLogMonitor extends React.Component {
+         this.setState({
+             auditReloading: true
+         });
+-        const cmd = ["tail", "-" + this.state.auditLines, this.props.logLocation];
++        
++        // Use different command when "no-limit" is selected
++        let cmd;
++        if (this.state.auditLines === "no-limit") {
++            cmd = ["cat", this.props.logLocation];
++        } else {
++            cmd = ["tail", "-" + this.state.auditLines, this.props.logLocation];
++        }
++        
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+@@ -87,47 +92,38 @@ export class AuditLogMonitor extends React.Component {
+         ), this.handleRefreshAuditLog);
+     }
+ 
++    handleTextWrappedChange(_event, checked) {
++        this.setState({
++            isTextWrapped: checked
++        });
++    }
++
+     render() {
+-        let spinner = "";
++        let spinner = null;
+         if (this.state.auditReloading) {
+             spinner = (
+-                <div>
++                <ToolbarItem>
+                     <Spinner size="sm" />
+                     {_("Reloading audit log...")}
+-                </div>
++                </ToolbarItem>
+             );
+         }
+ 
+-        return (
+-            <div id="monitor-log-audit-page">
+-                <Grid>
+-                    <GridItem span={3}>
+-                        <TextContent>
+-                            <Text component={TextVariants.h3}>
+-                                {_("Audit Log")}
+-                                <Button 
+-                                    variant="plain"
+-                                    aria-label={_("Refresh audit log")}
+-                                    onClick={this.handleRefreshAuditLog}
+-                                >
+-                                    <SyncAltIcon />
+-                                </Button>
+-                            </Text>
+-                        </TextContent>
+-                    </GridItem>
+-                    <GridItem span={9} className="ds-float-left">
+-                        {spinner}
+-                    </GridItem>
+-                </Grid>
+-                <Grid className="ds-margin-top-lg ds-indent">
+-                    <GridItem span={2}>
++        const logViewerToolbar = (
++            <Toolbar>
++                <ToolbarContent>
++                    <ToolbarItem>
++                        <LogViewerSearch placeholder={_("Search")} />
++                    </ToolbarItem>
++                    <ToolbarItem>
+                         <FormSelect
+-                            id="accessLines"
++                            id="auditLines"
+                             value={this.state.auditLines}
+-                            onChange={(event, value) => {
++                            onChange={(event) => {
+                                 this.handleAuditChange(event);
+                             }}
+-                            aria-label="FormSelect Input"
++                            aria-label={_("Lines to display")}
++                            style={{ minWidth: '150px', width: 'auto' }}
+                         >
+                             <FormSelectOption key="50" value="50" label="50" />
+                             <FormSelectOption key="100" value="100" label="100" />
+@@ -140,26 +136,54 @@ export class AuditLogMonitor extends React.Component {
+                             <FormSelectOption key="5000" value="5000" label="5000" />
+                             <FormSelectOption key="10000" value="10000" label="10000" />
+                             <FormSelectOption key="50000" value="50000" label="50000" />
++                            <FormSelectOption key="no-limit" value="no-limit" label={_("No Limit")} />
+                         </FormSelect>
+-                    </GridItem>
+-                    <GridItem span={10}>
+-                        <div className="ds-float-right">
+-                            <Checkbox
+-                                id="auditRefreshing"
+-                                isChecked={this.state.auditRefreshing}
+-                                onChange={(e, checked) => { this.auditRefreshCont(e) }}
+-                                label={_("Continuously Refresh")}
+-                            />
+-                        </div>
+-                    </GridItem>
+-                    <TextArea
+-                        id="auditlog-area"
+-                        resizeOrientation="vertical"
+-                        className="ds-logarea ds-margin-top-lg"
+-                        value={this.state.auditlogData}
+-                        aria-label="text area example"
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center" className="ds-float-right">
++                        <Checkbox
++                            id="auditRefreshing"
++                            isChecked={this.state.auditRefreshing}
++                            onChange={(e) => { this.auditRefreshCont(e) }}
++                            label={_("Continuously Refresh")}
++                        />
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center">
++                        <Checkbox
++                            id="wrapText"
++                            isChecked={this.state.isTextWrapped}
++                            onChange={this.handleTextWrappedChange}
++                            label={_("Wrap text")}
++                            aria-label="wrap text checkbox"
++                        />
++                    </ToolbarItem>
++                    {spinner}
++                </ToolbarContent>
++            </Toolbar>
++        );
++
++        return (
++            <div id="monitor-log-audit-page">
++                <TextContent>
++                    <Text component={TextVariants.h3}>
++                        {_("Audit Log")}
++                        <Button 
++                            variant="plain"
++                            aria-label={_("Refresh audit log")}
++                            onClick={this.handleRefreshAuditLog}
++                        >
++                            <SyncAltIcon />
++                        </Button>
++                    </Text>
++                </TextContent>
++                <div className="ds-margin-top-lg">
++                    <LogViewer
++                        data={this.state.auditlogData}
++                        isTextWrapped={this.state.isTextWrapped}
++                        toolbar={logViewerToolbar}
++                        scrollToRow={this.state.auditlogData.split('\n').length}
++                        height="600px"
+                     />
+-                </Grid>
++                </div>
+             </div>
+         );
+     }
+diff --git a/src/cockpit/389-console/src/lib/monitor/errorlog.jsx b/src/cockpit/389-console/src/lib/monitor/errorlog.jsx
+index 5d6c94909..770c2bfcc 100644
+--- a/src/cockpit/389-console/src/lib/monitor/errorlog.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/errorlog.jsx
+@@ -6,15 +6,16 @@ import {
+     Checkbox,
+     FormSelect,
+     FormSelectOption,
+-    Grid,
+-    GridItem,
++    Toolbar,
++    ToolbarContent,
++    ToolbarItem,
+     Spinner,
+-    TextArea,
+     Text,
+     TextContent,
+     TextVariants,
+ } from "@patternfly/react-core";
+ import { SyncAltIcon } from '@patternfly/react-icons';
++import { LogViewer, LogViewerSearch } from '@patternfly/react-log-viewer';
+ 
+ const _ = cockpit.gettext;
+ 
+@@ -28,6 +29,7 @@ export class ErrorLogMonitor extends React.Component {
+             errorRefreshing: false,
+             errorSevLevel: "Everything",
+             errorLines: "50",
++            isTextWrapped: false,
+         };
+ 
+         // Build the log severity sev_levels
+@@ -56,12 +58,7 @@ export class ErrorLogMonitor extends React.Component {
+         this.errorRefreshCont = this.errorRefreshCont.bind(this);
+         this.handleErrorChange = this.handleErrorChange.bind(this);
+         this.handleSevChange = this.handleSevChange.bind(this);
+-    }
+-
+-    componentDidUpdate () {
+-        // Set the textarea to be scrolled down to the bottom
+-        const textarea = document.getElementById('errorslog-area');
+-        textarea.scrollTop = textarea.scrollHeight;
++        this.handleTextWrappedChange = this.handleTextWrappedChange.bind(this);
+     }
+ 
+     componentDidMount() {
+@@ -79,7 +76,14 @@ export class ErrorLogMonitor extends React.Component {
+             errorReloading: true
+         });
+ 
+-        const cmd = ["tail", "-" + this.state.errorLines, this.props.logLocation];
++        // Use different command when "no-limit" is selected
++        let cmd;
++        if (this.state.errorLines === "no-limit") {
++            cmd = ["cat", this.props.logLocation];
++        } else {
++            cmd = ["tail", "-" + this.state.errorLines, this.props.logLocation];
++        }
++        
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(data => {
+@@ -148,47 +152,38 @@ export class ErrorLogMonitor extends React.Component {
+         }, this.handleRefreshErrorLog);
+     }
+ 
++    handleTextWrappedChange(_event, checked) {
++        this.setState({
++            isTextWrapped: checked
++        });
++    }
++
+     render() {
+-        let spinner = "";
++        let spinner = null;
+         if (this.state.errorReloading) {
+             spinner = (
+-                <div>
++                <ToolbarItem>
+                     <Spinner size="sm" />
+                     {_("Reloading errors log...")}
+-                </div>
++                </ToolbarItem>
+             );
+         }
+ 
+-        return (
+-            <div id="monitor-log-errors-page">
+-                <Grid>
+-                    <GridItem span={3}>
+-                        <TextContent>
+-                            <Text component={TextVariants.h3}>
+-                                {_("Errors Log")}
+-                                <Button 
+-                                    variant="plain"
+-                                    aria-label={_("Refresh error log")}
+-                                    onClick={this.handleRefreshErrorLog}
+-                                >
+-                                    <SyncAltIcon />
+-                                </Button>
+-                            </Text>
+-                        </TextContent>
+-                    </GridItem>
+-                    <GridItem span={9} className="ds-float-left">
+-                        {spinner}
+-                    </GridItem>
+-                </Grid>
+-                <Grid className="ds-margin-top-lg ds-indent">
+-                    <GridItem span={2}>
++        const logViewerToolbar = (
++            <Toolbar>
++                <ToolbarContent>
++                    <ToolbarItem>
++                        <LogViewerSearch placeholder={_("Search")} />
++                    </ToolbarItem>
++                    <ToolbarItem>
+                         <FormSelect
+                             id="errorLines"
+                             value={this.state.errorLines}
+-                            onChange={(event, value) => {
++                            onChange={(event) => {
+                                 this.handleErrorChange(event);
+                             }}
+-                            aria-label="FormSelect Input"
++                            aria-label={_("Lines to display")}
++                            style={{ minWidth: '150px', width: 'auto' }}
+                         >
+                             <FormSelectOption key="50" value="50" label="50" />
+                             <FormSelectOption key="100" value="100" label="100" />
+@@ -201,9 +196,10 @@ export class ErrorLogMonitor extends React.Component {
+                             <FormSelectOption key="5000" value="5000" label="5000" />
+                             <FormSelectOption key="10000" value="10000" label="10000" />
+                             <FormSelectOption key="50000" value="50000" label="50000" />
++                            <FormSelectOption key="no-limit" value="no-limit" label={_("No Limit")} />
+                         </FormSelect>
+-                    </GridItem>
+-                    <GridItem offset={4} span={4}>
++                    </ToolbarItem>
++                    <ToolbarItem>
+                         <div className="ds-container">
+                             <div className="ds-label">
+                                 {_("Filter")}
+@@ -211,10 +207,11 @@ export class ErrorLogMonitor extends React.Component {
+                             <FormSelect
+                                 className="ds-left-margin"
+                                 value={this.state.errorSevLevel}
+-                                onChange={(event, value) => {
++                                onChange={(event) => {
+                                     this.handleSevChange(event);
+                                 }}
+-                                aria-label="FormSelect Input"
++                                aria-label={_("Filter by severity")}
++                                style={{ minWidth: '150px', width: 'auto' }}
+                             >
+                                 <FormSelectOption key="Everything" value="Everything" label={_("Everything")} />
+                                 <FormSelectOption key="Error Messages" value="Error Messages" label={_("Error Messages")} />
+@@ -229,25 +226,52 @@ export class ErrorLogMonitor extends React.Component {
+                                 <FormSelectOption key="Debug" value="Debug" label="Debug" />
+                             </FormSelect>
+                         </div>
+-                    </GridItem>
+-                    <GridItem span={4}>
+-                        <div className="ds-float-right">
+-                            <Checkbox
+-                                id="errorRefreshing"
+-                                isChecked={this.state.errorRefreshing}
+-                                onChange={(e, checked) => { this.errorRefreshCont(e) }}
+-                                label={_("Continuously Refresh")}
+-                            />
+-                        </div>
+-                    </GridItem>
+-                    <TextArea
+-                        id="errorslog-area"
+-                        resizeOrientation="vertical"
+-                        className="ds-logarea ds-margin-top-lg"
+-                        value={this.state.errorlogData}
+-                        aria-label="text area example"
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center" className="ds-float-right">
++                        <Checkbox
++                            id="errorRefreshing"
++                            isChecked={this.state.errorRefreshing}
++                            onChange={(e) => { this.errorRefreshCont(e) }}
++                            label={_("Continuously Refresh")}
++                        />
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center">
++                        <Checkbox
++                            id="wrapText"
++                            isChecked={this.state.isTextWrapped}
++                            onChange={this.handleTextWrappedChange}
++                            label={_("Wrap text")}
++                            aria-label="wrap text checkbox"
++                        />
++                    </ToolbarItem>
++                    {spinner}
++                </ToolbarContent>
++            </Toolbar>
++        );
++
++        return (
++            <div id="monitor-log-errors-page">
++                <TextContent>
++                    <Text component={TextVariants.h3}>
++                        {_("Errors Log")}
++                        <Button 
++                            variant="plain"
++                            aria-label={_("Refresh error log")}
++                            onClick={this.handleRefreshErrorLog}
++                        >
++                            <SyncAltIcon />
++                        </Button>
++                    </Text>
++                </TextContent>
++                <div className="ds-margin-top-lg">
++                    <LogViewer
++                        data={this.state.errorlogData}
++                        isTextWrapped={this.state.isTextWrapped}
++                        toolbar={logViewerToolbar}
++                        scrollToRow={this.state.errorlogData.split('\n').length}
++                        height="600px"
+                     />
+-                </Grid>
++                </div>
+             </div>
+         );
+     }
+diff --git a/src/cockpit/389-console/src/lib/monitor/securitylog.jsx b/src/cockpit/389-console/src/lib/monitor/securitylog.jsx
+index 7ef0721c9..2c420b88c 100644
+--- a/src/cockpit/389-console/src/lib/monitor/securitylog.jsx
++++ b/src/cockpit/389-console/src/lib/monitor/securitylog.jsx
+@@ -6,15 +6,16 @@ import {
+     Checkbox,
+     FormSelect,
+     FormSelectOption,
+-    Grid,
+-    GridItem,
++    Toolbar,
++    ToolbarContent,
++    ToolbarItem,
+     Spinner,
+-    TextArea,
+     Text,
+     TextContent,
+     TextVariants,
+ } from "@patternfly/react-core";
+ import { SyncAltIcon } from '@patternfly/react-icons';
++import { LogViewer, LogViewerSearch } from '@patternfly/react-log-viewer';
+ 
+ const _ = cockpit.gettext;
+ 
+@@ -27,17 +28,13 @@ export class SecurityLogMonitor extends React.Component {
+             securitylog_cont_refresh: "",
+             securityRefreshing: false,
+             securityLines: "50",
++            isTextWrapped: false,
+         };
+ 
+         this.handleRefreshSecurityLog = this.handleRefreshSecurityLog.bind(this);
+         this.handleSecurityChange = this.handleSecurityChange.bind(this);
+         this.securityRefreshCont = this.securityRefreshCont.bind(this);
+-    }
+-
+-    componentDidUpdate () {
+-        // Set the textarea to be scrolled down to the bottom
+-        const textarea = document.getElementById('securitylog-area');
+-        textarea.scrollTop = textarea.scrollHeight;
++        this.handleTextWrappedChange = this.handleTextWrappedChange.bind(this);
+     }
+ 
+     componentDidMount() {
+@@ -73,11 +70,25 @@ export class SecurityLogMonitor extends React.Component {
+         ), this.handleRefreshSecurityLog);
+     }
+ 
++    handleTextWrappedChange(_event, checked) {
++        this.setState({
++            isTextWrapped: checked
++        });
++    }
++
+     handleRefreshSecurityLog () {
+         this.setState({
+             securityReloading: true
+         });
+-        const cmd = ["tail", "-" + this.state.securityLines, this.props.logLocation];
++        
++        // Use different command when "no-limit" is selected
++        let cmd;
++        if (this.state.securityLines === "no-limit") {
++            cmd = ["cat", this.props.logLocation];
++        } else {
++            cmd = ["tail", "-" + this.state.securityLines, this.props.logLocation];
++        }
++        
+         cockpit
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+@@ -95,46 +106,31 @@ export class SecurityLogMonitor extends React.Component {
+     }
+ 
+     render() {
+-        let spinner = "";
++        let spinner = null;
+         if (this.state.securityReloading) {
+             spinner = (
+-                <div>
+-                    <Spinner  size="sm" />
++                <ToolbarItem>
++                    <Spinner size="sm" />
+                     {_("Reloading security log...")}
+-                </div>
++                </ToolbarItem>
+             );
+         }
+ 
+-        return (
+-            <div id="monitor-log-security-page">
+-                <Grid>
+-                    <GridItem span={3}>
+-                        <TextContent>
+-                            <Text component={TextVariants.h3}>
+-                                {_("Security Log")}
+-                                <Button 
+-                                    variant="plain"
+-                                    aria-label={_("Refresh security log")}
+-                                    onClick={this.handleRefreshSecurityLog}
+-                                >
+-                                    <SyncAltIcon />
+-                                </Button>
+-                            </Text>
+-                        </TextContent>
+-                    </GridItem>
+-                    <GridItem span={9} className="ds-float-left">
+-                        {spinner}
+-                    </GridItem>
+-                </Grid>
+-                <Grid className="ds-margin-top-lg ds-indent">
+-                    <GridItem span={2}>
++        const logViewerToolbar = (
++            <Toolbar>
++                <ToolbarContent>
++                    <ToolbarItem>
++                        <LogViewerSearch placeholder={_("Search")} />
++                    </ToolbarItem>
++                    <ToolbarItem>
+                         <FormSelect
+                             id="securityLines"
+                             value={this.state.securityLines}
+-                            onChange={(event, value) => {
++                            onChange={(event) => {
+                                 this.handleSecurityChange(event);
+                             }}
+-                            aria-label="FormSelect Input"
++                            aria-label={_("Lines to display")}
++                            style={{ minWidth: '150px', width: 'auto' }}
+                         >
+                             <FormSelectOption key="50" value="50" label="50" />
+                             <FormSelectOption key="100" value="100" label="100" />
+@@ -147,26 +143,54 @@ export class SecurityLogMonitor extends React.Component {
+                             <FormSelectOption key="5000" value="5000" label="5000" />
+                             <FormSelectOption key="10000" value="10000" label="10000" />
+                             <FormSelectOption key="50000" value="50000" label="50000" />
++                            <FormSelectOption key="no-limit" value="no-limit" label={_("No Limit")} />
+                         </FormSelect>
+-                    </GridItem>
+-                    <GridItem span={10}>
+-                        <div className="ds-float-right">
+-                            <Checkbox
+-                                id="securityRefreshing"
+-                                isChecked={this.state.securityRefreshing}
+-                                onChange={(e, checked) => { this.securityRefreshCont(e) }}
+-                                label={_("Continuously Refresh")}
+-                            />
+-                        </div>
+-                    </GridItem>
+-                    <TextArea
+-                        id="securitylog-area"
+-                        resizeOrientation="vertical"
+-                        className="ds-logarea ds-margin-top-lg"
+-                        value={this.state.securitylogData}
+-                        aria-label="text area example"
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center" className="ds-float-right">
++                        <Checkbox
++                            id="securityRefreshing"
++                            isChecked={this.state.securityRefreshing}
++                            onChange={(e) => { this.securityRefreshCont(e) }}
++                            label={_("Continuously Refresh")}
++                        />
++                    </ToolbarItem>
++                    <ToolbarItem alignSelf="center">
++                        <Checkbox
++                            id="wrapText"
++                            isChecked={this.state.isTextWrapped}
++                            onChange={this.handleTextWrappedChange}
++                            label={_("Wrap text")}
++                            aria-label="wrap text checkbox"
++                        />
++                    </ToolbarItem>
++                    {spinner}
++                </ToolbarContent>
++            </Toolbar>
++        );
++
++        return (
++            <div id="monitor-log-security-page">
++                <TextContent>
++                    <Text component={TextVariants.h3}>
++                        {_("Security Log")}
++                        <Button 
++                            variant="plain"
++                            aria-label={_("Refresh security log")}
++                            onClick={this.handleRefreshSecurityLog}
++                        >
++                            <SyncAltIcon />
++                        </Button>
++                    </Text>
++                </TextContent>
++                <div className="ds-margin-top-lg">
++                    <LogViewer
++                        data={this.state.securitylogData}
++                        isTextWrapped={this.state.isTextWrapped}
++                        toolbar={logViewerToolbar}
++                        scrollToRow={this.state.securitylogData.split('\n').length}
++                        height="600px"
+                     />
+-                </Grid>
++                </div>
+             </div>
+         );
+     }
+-- 
+2.48.1
+

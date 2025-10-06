@@ -1,0 +1,138 @@
+From d3693c35f38632825f217e8bbb141cf42f6869da Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Wed, 19 Feb 2025 12:18:59 +0000
+Subject: [PATCH] Issue 6623 - UI - Generic updates (#6624)
+
+Bug description:
+Missing dot in warning alert when changing suffix backend state.
+No success alert upon deleting local password policy.
+Tool tips for part of Syntax Settings for local password policies do not show.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6623
+
+Reviewed by: @mreynolds389 (Thank you)
+---
+ .../389-console/src/lib/database/localPwp.jsx | 29 +++++++++++--------
+ .../389-console/src/lib/database/suffix.jsx   |  4 +--
+ 2 files changed, 19 insertions(+), 14 deletions(-)
+
+diff --git a/src/cockpit/389-console/src/lib/database/localPwp.jsx b/src/cockpit/389-console/src/lib/database/localPwp.jsx
+index b933b043c..e9148e2a1 100644
+--- a/src/cockpit/389-console/src/lib/database/localPwp.jsx
++++ b/src/cockpit/389-console/src/lib/database/localPwp.jsx
+@@ -542,10 +542,10 @@ class CreatePolicy extends React.Component {
+                                             isDisabled={!this.props.passwordchecksyntax}
+                                         />
+                                     </GridItem>
+-                                    <GridItem className="ds-label" offset={5} span={3} title={_("Reject passwords with fewer than this many alpha characters (passwordMinAlphas).")}>
++                                    <GridItem className="ds-label" offset={5} span={3}>
+                                         {_("Minimum Alpha's")}
+                                     </GridItem>
+-                                    <GridItem span={1}>
++                                    <GridItem span={1} title={_("Reject passwords with fewer than this many alpha characters (passwordMinAlphas).")}>
+                                         <TextInput
+                                             type="number"
+                                             id="create_passwordminalphas"
+@@ -574,10 +574,10 @@ class CreatePolicy extends React.Component {
+                                             isDisabled={!this.props.passwordchecksyntax}
+                                         />
+                                     </GridItem>
+-                                    <GridItem className="ds-label" offset={5} span={3} title={_("Reject passwords with fewer than this many special non-alphanumeric characters (passwordMinSpecials).")}>
++                                    <GridItem className="ds-label" offset={5} span={3}>
+                                         {_("Minimum Special")}
+                                     </GridItem>
+-                                    <GridItem span={1}>
++                                    <GridItem span={1} title={_("Reject passwords with fewer than this many special non-alphanumeric characters (passwordMinSpecials).")}>
+                                         <TextInput
+                                             type="number"
+                                             id="create_passwordminspecials"
+@@ -606,10 +606,10 @@ class CreatePolicy extends React.Component {
+                                             isDisabled={!this.props.passwordchecksyntax}
+                                         />
+                                     </GridItem>
+-                                    <GridItem className="ds-label" offset={5} span={3} title={_("Reject passwords with fewer than this many lowercase characters (passwordMinLowers).")}>
++                                    <GridItem className="ds-label" offset={5} span={3}>
+                                         {_("Minimum Lowercase")}
+                                     </GridItem>
+-                                    <GridItem span={1}>
++                                    <GridItem span={1} title={_("Reject passwords with fewer than this many lowercase characters (passwordMinLowers).")}>
+                                         <TextInput
+                                             type="number"
+                                             id="create_passwordminlowers"
+@@ -638,10 +638,10 @@ class CreatePolicy extends React.Component {
+                                             isDisabled={!this.props.passwordchecksyntax}
+                                         />
+                                     </GridItem>
+-                                    <GridItem className="ds-label" offset={5} span={3} title={_("The minimum number of character categories that a password must contain (categories are upper, lower, digit, special, and 8-bit) (passwordMinCategories).")}>
++                                    <GridItem className="ds-label" offset={5} span={3}>
+                                         {_("Minimum Categories")}
+                                     </GridItem>
+-                                    <GridItem span={1}>
++                                    <GridItem span={1} title={_("The minimum number of character categories that a password must contain (categories are upper, lower, digit, special, and 8-bit) (passwordMinCategories).")}>
+                                         <TextInput
+                                             type="number"
+                                             id="create_passwordmincategories"
+@@ -670,10 +670,10 @@ class CreatePolicy extends React.Component {
+                                             isDisabled={!this.props.passwordchecksyntax}
+                                         />
+                                     </GridItem>
+-                                    <GridItem className="ds-label" offset={5} span={3} title={_("The maximum number of times the same character can sequentially appear in a password (passwordMaxRepeats).")}>
++                                    <GridItem className="ds-label" offset={5} span={3}>
+                                         {_("Max Repeated Chars")}
+                                     </GridItem>
+-                                    <GridItem span={1}>
++                                    <GridItem span={1} title={_("The maximum number of times the same character can sequentially appear in a password (passwordMaxRepeats).")}>
+                                         <TextInput
+                                             type="number"
+                                             id="create_passwordmaxrepeats"
+@@ -702,10 +702,10 @@ class CreatePolicy extends React.Component {
+                                             isDisabled={!this.props.passwordchecksyntax}
+                                         />
+                                     </GridItem>
+-                                    <GridItem className="ds-label" offset={5} span={3} title={_("The maximum number of times the same character can sequentially appear in a password (passwordMaxRepeats).")}>
++                                    <GridItem className="ds-label" offset={5} span={3}>
+                                         {_("Max Sequence Sets")}
+                                     </GridItem>
+-                                    <GridItem span={1}>
++                                    <GridItem span={1} title={_("The maximum number of times the same character can sequentially appear in a password (passwordMaxRepeats).")}>
+                                         <TextInput
+                                             type="number"
+                                             id="create_passwordmaxseqsets"
+@@ -1855,7 +1855,12 @@ export class LocalPwPolicy extends React.Component {
+                 .spawn(cmd, { superuser: true, err: "message" })
+                 .done(content => {
+                     this.handleLoadPolicies();
++                    this.props.addNotification(
++                        "success",
++                        "Successfully deleted password policy"
++                    )
+                 })
++
+                 .fail(err => {
+                     const errMsg = JSON.parse(err);
+                     this.handleLoadPolicies();
+diff --git a/src/cockpit/389-console/src/lib/database/suffix.jsx b/src/cockpit/389-console/src/lib/database/suffix.jsx
+index c6f19e640..bd59653dd 100644
+--- a/src/cockpit/389-console/src/lib/database/suffix.jsx
++++ b/src/cockpit/389-console/src/lib/database/suffix.jsx
+@@ -812,7 +812,7 @@ export class Suffix extends React.Component {
+                 savingConfig: true
+             });
+             log_cmd("saveSuffixConfig", "Save suffix config", cmd);
+-            const msg = "Successfully updated suffix configuration";
++            const msg = "Successfully updated suffix configuration.";
+             cockpit
+                     .spawn(cmd, { superuser: true, err: "message" })
+                     .done(content => {
+@@ -821,7 +821,7 @@ export class Suffix extends React.Component {
+                         if (requireRestart) {
+                             this.props.addNotification(
+                                 "warning",
+-                                msg + _("You must restart the Directory Server for these changes to take effect.")
++                                msg + _(" You must restart the Directory Server for these changes to take effect.")
+                             );
+                         }
+                         this.setState({
+-- 
+2.48.1
+
