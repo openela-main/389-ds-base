@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.6.1
-Release:          11%{?dist}
+Release:          12%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -157,6 +157,7 @@ Provides:  bundled(crate(zeroize)) = 1.8.1
 Provides:  bundled(crate(zeroize_derive)) = 1.4.2
 ##### Bundled cargo crates list - END #####
 
+BuildRequires:    git
 BuildRequires:    nspr-devel >= 4.32
 BuildRequires:    nss-devel >= 3.67.0-7
 
@@ -350,7 +351,17 @@ Patch:            0057-Issue-6693-Fix-error-messages-inconsistencies-6694.patch
 Patch:            0058-Issue-6893-Log-user-that-is-updated-during-password-.patch
 Patch:            0059-Issue-6822-Backend-creation-cleanup-and-Database-UI-.patch
 Patch:            0060-Issue-6321-lib389-get_db_lib-function-may-returns-th.patch
-
+Patch:            0061-Issue-6594-Add-test-for-numSubordinates-replication-.patch
+Patch:            0062-Issue-6919-numSubordinates-tombstoneNumSubordinates-.patch
+Patch:            0063-Issue-6865-AddressSanitizer-leak-in-agmt_update_init.patch
+Patch:            0064-Issue-6500-Fix-covscan-and-ASAN-issue.patch
+Patch:            0065-Issue-6910-Fix-latest-coverity-issues.patch
+Patch:            0066-Issue-7014-memberOf-ignored-deferred-updates-with-LM.patch
+Patch:            0067-Issue-6933-When-deferred-memberof-update-is-enabled-.patch
+Patch:            0068-Issue-6838-lib389-replica.py-is-using-nonexistent-da.patch
+Patch:            0069-Issue-6928-The-parentId-attribute-is-indexed-with-im.patch
+Patch:            0070-Issue-6940-dsconf-monitor-server-fails-with-ldapi-du.patch
+Patch:            0071-Issue-6936-Make-user-subtree-policy-creation-idempot.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -452,7 +463,7 @@ A cockpit UI Plugin for configuring and administering the 389 Directory Server
 
 %prep
 
-%autosetup -p1 -n %{name}-%{version}
+%autosetup -S git -p1 -n %{name}-%{version}
 rm -rf vendor
 tar xzf %{SOURCE5}
 cp %{SOURCE6} src/Cargo.lock
@@ -795,6 +806,19 @@ exit 0
 %endif
 
 %changelog
+* Fri Sep 26 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-12
+- Resolves: RHEL-104590 - RHDS12: Web console doesn't show Server Version [rhel-9.6.z]
+- Resolves: RHEL-104592 - The numSubordinates value is not matching the number of direct children. [rhel-9.6.z]
+- Resolves: RHEL-111227 - Error showing local password policy on web UI [rhel-9.6.z]
+- Resolves: RHEL-112678 - Statistics about index lookup report a wrong duration [rhel-9.6.z]
+- Resolves: RHEL-112692 - Crash if repl keep alive entry can not be created [rhel-9.6.z]
+- Resolves: RHEL-112725 - Exception thrown by dsconf instance repl get_ruv [rhel-9.6.z]
+- Resolves: RHEL-113979 - AddressSanitizer: memory leak in memberof_add_memberof_attr [rhel-9.6.z]
+- Resolves: RHEL-114952 - lib389/replica.py is using unexisting datetime.UTC in python3.9 [rhel-9.6.z]
+- Resolves: RHEL-117048 - Replication online reinitialization of a large database gets stalled. [rhel-9.6.z]
+- Resolves: RHEL-117769 - When the server restarts after a crash, the RFE assumes memberof should be recomputed. It triggers a memberof fixup task, dirsrv became unresponsive. [rhel-9.6.z]
+- Resolves: RHEL-117778 - Ignore the memberOfDeferredUpdate setting when LMDB is used.  [rhel-9.6.z]
+
 * Tue Aug 19 2025 Viktor Ashirov <vashirov@redhat.com> - 2.6.1-11
 - Resolves: RHEL-18333 - Can't rename users member of automember rule [rhel-9.6.z]
 - Resolves: RHEL-81140 - Healthcheck tool should warn admin about creating a substring index on membership attribute [rhel-9.6.z]
