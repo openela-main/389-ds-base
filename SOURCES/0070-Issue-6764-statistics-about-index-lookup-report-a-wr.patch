@@ -1,0 +1,225 @@
+From 19b26e46c8b1ba730e7e420bdcb6a2ec542fee29 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Tue, 6 May 2025 16:09:36 +0200
+Subject: [PATCH] Issue 6764 - statistics about index lookup report a wrong
+ duration (#6765)
+
+Bug description:
+	During a SRCH statistics about indexes lookup
+	(when nsslapd-statlog-level=1) reports a duration.
+	It is wrong because it should report a duration per filter
+	component.
+
+Fix description:
+	Record a index lookup duration per key
+	using key_lookup_start/key_lookup_end
+
+fixes: #6764
+
+Reviewed by: Pierre Rogier (Thanks !)
+---
+ ldap/servers/slapd/back-ldbm/filterindex.c |  7 +++--
+ ldap/servers/slapd/back-ldbm/ldbm_search.c | 31 +++++++++++++++-------
+ ldap/servers/slapd/result.c                | 12 +++++----
+ ldap/servers/slapd/slapi-plugin.h          |  9 +++++++
+ ldap/servers/slapd/slapi-private.h         |  2 ++
+ ldap/servers/slapd/time.c                  | 13 +++++++++
+ 6 files changed, 57 insertions(+), 17 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/filterindex.c b/ldap/servers/slapd/back-ldbm/filterindex.c
+index 52f51713b..778bc73e4 100644
+--- a/ldap/servers/slapd/back-ldbm/filterindex.c
++++ b/ldap/servers/slapd/back-ldbm/filterindex.c
+@@ -1105,11 +1105,14 @@ keys2idl(
+         struct component_keys_lookup *key_stat;
+         int key_len;
+ 
+-        idl2 = index_read_ext_allids(pb, be, type, indextype, slapi_value_get_berval(ivals[i]), txn, err, unindexed, allidslimit);
+         if (op_stat) {
+             /* gather the index lookup statistics */
+             key_stat = (struct component_keys_lookup *) slapi_ch_calloc(1, sizeof (struct component_keys_lookup));
+-
++            clock_gettime(CLOCK_MONOTONIC, &(key_stat->key_lookup_start));
++        }
++        idl2 = index_read_ext_allids(pb, be, type, indextype, slapi_value_get_berval(ivals[i]), txn, err, unindexed, allidslimit);
++        if (op_stat) {
++            clock_gettime(CLOCK_MONOTONIC, &(key_stat->key_lookup_end));
+             /* indextype e.g. "eq" or "sub" (see index.c) */
+             if (indextype) {
+                 key_stat->index_type = slapi_ch_strdup(indextype);
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_search.c b/ldap/servers/slapd/back-ldbm/ldbm_search.c
+index 97702d5a6..424d3aecb 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_search.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_search.c
+@@ -35,7 +35,7 @@ static IDList *onelevel_candidates(Slapi_PBlock *pb, backend *be, const char *ba
+ static back_search_result_set *new_search_result_set(IDList *idl, int vlv, int lookthroughlimit);
+ static void delete_search_result_set(Slapi_PBlock *pb, back_search_result_set **sr);
+ static int can_skip_filter_test(Slapi_PBlock *pb, struct slapi_filter *f, int scope, IDList *idl);
+-static void stat_add_srch_lookup(Op_stat *op_stat, char * attribute_type, const char* index_type, char *key_value, int lookup_cnt);
++static void stat_add_srch_lookup(Op_stat *op_stat,  struct component_keys_lookup *key_stat, char * attribute_type, const char* index_type, char *key_value, int lookup_cnt);
+ 
+ /* This is for performance testing, allows us to disable ACL checking altogether */
+ #if defined(DISABLE_ACL_CHECK)
+@@ -1249,17 +1249,12 @@ create_subtree_filter(Slapi_Filter *filter, int managedsait)
+ }
+ 
+ static void
+-stat_add_srch_lookup(Op_stat *op_stat, char * attribute_type, const char* index_type, char *key_value, int lookup_cnt)
++stat_add_srch_lookup(Op_stat *op_stat, struct component_keys_lookup *key_stat, char * attribute_type, const char* index_type, char *key_value, int lookup_cnt)
+ {
+-    struct component_keys_lookup *key_stat;
+-
+-    if ((op_stat == NULL) || (op_stat->search_stat == NULL)) {
++    if ((op_stat == NULL) || (op_stat->search_stat == NULL) || (key_stat == NULL)) {
+         return;
+     }
+ 
+-    /* gather the index lookup statistics */
+-    key_stat = (struct component_keys_lookup *) slapi_ch_calloc(1, sizeof (struct component_keys_lookup));
+-
+     /* indextype is "eq" */
+     if (index_type) {
+         key_stat->index_type = slapi_ch_strdup(index_type);
+@@ -1349,23 +1344,39 @@ subtree_candidates(
+ 
+         slapi_pblock_get(pb, SLAPI_TXN, &txn.back_txn_txn);
+         if (entryrdn_get_noancestorid()) {
++            struct component_keys_lookup *key_stat;
++
++            if (op_stat) {
++                /* gather the index lookup statistics */
++                key_stat = (struct component_keys_lookup *) slapi_ch_calloc(1, sizeof (struct component_keys_lookup));
++                clock_gettime(CLOCK_MONOTONIC, &key_stat->key_lookup_start);
++            }
+             /* subtree-rename: on && no ancestorid */
+             *err = entryrdn_get_subordinates(be,
+                                              slapi_entry_get_sdn_const(e->ep_entry),
+                                              e->ep_id, &descendants, &txn, 0);
+             if (op_stat) {
++                clock_gettime(CLOCK_MONOTONIC, &key_stat->key_lookup_end);
+                 /* record entryrdn lookups */
+-                stat_add_srch_lookup(op_stat, LDBM_ENTRYRDN_STR, indextype_EQUALITY, key_value, descendants ? descendants->b_nids : 0);
++                stat_add_srch_lookup(op_stat, key_stat, LDBM_ENTRYRDN_STR, indextype_EQUALITY, key_value, descendants ? descendants->b_nids : 0);
+             }
+             idl_insert(&descendants, e->ep_id);
+             candidates = idl_intersection(be, candidates, descendants);
+             idl_free(&tmp);
+             idl_free(&descendants);
+         } else if (!has_tombstone_filter && !is_bulk_import) {
++            struct component_keys_lookup *key_stat;
++
++            if (op_stat) {
++                /* gather the index lookup statistics */
++                key_stat = (struct component_keys_lookup *) slapi_ch_calloc(1, sizeof (struct component_keys_lookup));
++                clock_gettime(CLOCK_MONOTONIC, &key_stat->key_lookup_start);
++            }
+             *err = ldbm_ancestorid_read_ext(be, &txn, e->ep_id, &descendants, allidslimit);
+             if (op_stat) {
++                clock_gettime(CLOCK_MONOTONIC, &key_stat->key_lookup_end);
+                 /* records ancestorid lookups */
+-                stat_add_srch_lookup(op_stat, LDBM_ANCESTORID_STR, indextype_EQUALITY, key_value, descendants ? descendants->b_nids : 0);
++                stat_add_srch_lookup(op_stat, key_stat, LDBM_ANCESTORID_STR, indextype_EQUALITY, key_value, descendants ? descendants->b_nids : 0);
+             }
+             idl_insert(&descendants, e->ep_id);
+             candidates = idl_intersection(be, candidates, descendants);
+diff --git a/ldap/servers/slapd/result.c b/ldap/servers/slapd/result.c
+index c0abbeef1..afd454d4f 100644
+--- a/ldap/servers/slapd/result.c
++++ b/ldap/servers/slapd/result.c
+@@ -2098,6 +2098,8 @@ log_op_stat(Slapi_PBlock *pb, uint64_t connid, int32_t op_id, int32_t op_interna
+                 logpb.op_id = op_id;
+ 
+                 for (key_info = op_stat->search_stat->keys_lookup; key_info; key_info = key_info->next) {
++                    slapi_timespec_diff(&key_info->key_lookup_end, &key_info->key_lookup_start, &duration);
++                    snprintf(stat_etime, ETIME_BUFSIZ, "%" PRId64 ".%.09" PRId64 "", (int64_t)duration.tv_sec, (int64_t)duration.tv_nsec);
+                     if (internal_op) {
+                         if (log_format != LOG_FORMAT_DEFAULT) {
+                             /* JSON logging */
+@@ -2110,11 +2112,11 @@ log_op_stat(Slapi_PBlock *pb, uint64_t connid, int32_t op_id, int32_t op_interna
+                             slapd_log_access_stat(&logpb);
+                         } else {
+                             slapi_log_stat(LDAP_STAT_READ_INDEX,
+-                                           connid == 0 ? STAT_LOG_CONN_OP_FMT_INT_INT "STAT read index: attribute=%s key(%s)=%s --> count %d\n":
+-                                                         STAT_LOG_CONN_OP_FMT_EXT_INT "STAT read index: attribute=%s key(%s)=%s --> count %d\n",
++                                           connid == 0 ? STAT_LOG_CONN_OP_FMT_INT_INT "STAT read index: attribute=%s key(%s)=%s --> count %d (duration %s)\n":
++                                                         STAT_LOG_CONN_OP_FMT_EXT_INT "STAT read index: attribute=%s key(%s)=%s --> count %d (duration %s)\n",
+                                            connid, op_id, op_internal_id, op_nested_count,
+                                            key_info->attribute_type, key_info->index_type, key_info->key,
+-                                           key_info->id_lookup_cnt);
++                                           key_info->id_lookup_cnt, stat_etime);
+                         }
+                     } else {
+                         if (log_format != LOG_FORMAT_DEFAULT) {
+@@ -2128,10 +2130,10 @@ log_op_stat(Slapi_PBlock *pb, uint64_t connid, int32_t op_id, int32_t op_interna
+                             slapd_log_access_stat(&logpb);
+                         } else {
+                             slapi_log_stat(LDAP_STAT_READ_INDEX,
+-                                           "conn=%" PRIu64 " op=%d STAT read index: attribute=%s key(%s)=%s --> count %d\n",
++                                           "conn=%" PRIu64 " op=%d STAT read index: attribute=%s key(%s)=%s --> count %d (duration %s)\n",
+                                            connid, op_id,
+                                            key_info->attribute_type, key_info->index_type, key_info->key,
+-                                           key_info->id_lookup_cnt);
++                                           key_info->id_lookup_cnt, stat_etime);
+                         }
+                     }
+                 }
+diff --git a/ldap/servers/slapd/slapi-plugin.h b/ldap/servers/slapd/slapi-plugin.h
+index c30a2b8ec..2090c6396 100644
+--- a/ldap/servers/slapd/slapi-plugin.h
++++ b/ldap/servers/slapd/slapi-plugin.h
+@@ -8331,6 +8331,15 @@ void DS_Sleep(PRIntervalTime ticks);
+  * \param struct timespec c the difference.
+  */
+ void slapi_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *diff);
++
++/**
++ * add 'new' timespect into 'cumul'
++ * clock_monotonic to find time taken to perform operations.
++ *
++ * \param struct timespec cumul to compute total duration.
++ * \param struct timespec new is a additional duration
++ */
++void slapi_timespec_add(struct timespec *cumul, struct timespec *new);
+ /**
+  * Given an operation, determine the time elapsed since the op
+  * began.
+diff --git a/ldap/servers/slapd/slapi-private.h b/ldap/servers/slapd/slapi-private.h
+index 7f5c2a05a..ba5e8f144 100644
+--- a/ldap/servers/slapd/slapi-private.h
++++ b/ldap/servers/slapd/slapi-private.h
+@@ -463,6 +463,8 @@ struct component_keys_lookup
+     char *attribute_type;
+     char *key;
+     int id_lookup_cnt;
++    struct timespec key_lookup_start;
++    struct timespec key_lookup_end;
+     struct component_keys_lookup *next;
+ };
+ typedef struct op_search_stat
+diff --git a/ldap/servers/slapd/time.c b/ldap/servers/slapd/time.c
+index 5bd9279db..9c71475a7 100644
+--- a/ldap/servers/slapd/time.c
++++ b/ldap/servers/slapd/time.c
+@@ -272,6 +272,19 @@ slapi_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *dif
+     diff->tv_nsec = nsec;
+ }
+ 
++void
++slapi_timespec_add(struct timespec *cumul, struct timespec *new)
++{
++    /* Now add the two */
++    time_t sec = cumul->tv_sec + new->tv_sec;
++    long nsec = cumul->tv_nsec + new->tv_nsec;
++
++    sec += nsec / 1000000000;
++    nsec = nsec % 1000000000;
++    cumul->tv_sec = sec;
++    cumul->tv_nsec = nsec;
++}
++
+ void
+ slapi_timespec_expire_at(time_t timeout, struct timespec *expire)
+ {
+-- 
+2.49.0
+
