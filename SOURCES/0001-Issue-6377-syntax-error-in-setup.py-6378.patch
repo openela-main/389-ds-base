@@ -1,0 +1,40 @@
+From 5903fac2334f984d18aea663735fb260d6b100ed Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Tue, 22 Oct 2024 17:26:46 +0200
+Subject: [PATCH] Issue 6377 - syntax error in setup.py (#6378)
+
+Syntax error due to badly nested quotes in dblib.py cause trouble in setup.py and dsconf dblib b2b2mdb/mdb2dbd
+Fix bit using double quotes in the f-expression and quotes for the embedded strings.
+
+Issue: #6377
+
+Reviewed by: @tbordaz, @droideck (Thank!)
+---
+ src/lib389/lib389/cli_ctl/dblib.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/lib389/lib389/cli_ctl/dblib.py b/src/lib389/lib389/cli_ctl/dblib.py
+index ff81f0e19..3f6e7b456 100644
+--- a/src/lib389/lib389/cli_ctl/dblib.py
++++ b/src/lib389/lib389/cli_ctl/dblib.py
+@@ -183,7 +183,7 @@ def export_changelog(be, dblib):
+         return False
+     try:
+         cl5dbname = be['eccl5dbname'] if dblib == "bdb" else be['cl5dbname']
+-        _log.info(f'Exporting changelog {cl5dbname} to {be['cl5name']}')
++        _log.info(f"Exporting changelog {cl5dbname} to {be['cl5name']}")
+         run_dbscan(['-D', dblib, '-f', cl5dbname, '-X', be['cl5name']])
+         return True
+     except subprocess.CalledProcessError as e:
+@@ -194,7 +194,7 @@ def import_changelog(be, dblib):
+     # import backend changelog
+     try:
+         cl5dbname = be['eccl5dbname'] if dblib == "bdb" else be['cl5dbname']
+-        _log.info(f'Importing changelog {cl5dbname} from {be['cl5name']}')
++        _log.info(f"Importing changelog {cl5dbname} from {be['cl5name']}")
+         run_dbscan(['-D', dblib, '-f', cl5dbname, '--import', be['cl5name'], '--do-it'])
+         return True
+     except subprocess.CalledProcessError as e:
+-- 
+2.49.0
+

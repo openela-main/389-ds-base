@@ -1,0 +1,31 @@
+From 972ddeed2029975d5d89e165db1db554f2e8bc28 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 29 Jul 2025 08:00:00 +0200
+Subject: [PATCH] Issue 6468 - CLI - Fix default error log level
+
+Description:
+Default error log level is 16384
+
+Relates: https://github.com/389ds/389-ds-base/issues/6468
+
+Reviewed by: @droideck (Thanks!)
+---
+ src/lib389/lib389/cli_conf/logging.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/lib389/lib389/cli_conf/logging.py b/src/lib389/lib389/cli_conf/logging.py
+index d1e32822c..c48c75faa 100644
+--- a/src/lib389/lib389/cli_conf/logging.py
++++ b/src/lib389/lib389/cli_conf/logging.py
+@@ -44,7 +44,7 @@ ERROR_LEVELS = {
+                 + "methods used for a SASL bind"
+     },
+     "default": {
+-        "level": 6384,
++        "level": 16384,
+         "desc": "Default logging level"
+     },
+     "filter": {
+-- 
+2.49.0
+

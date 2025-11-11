@@ -1,0 +1,351 @@
+From 4eef34cec551582d1de23266bc6cde84a7e38b5d Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Mon, 24 Mar 2025 10:43:21 +0100
+Subject: [PATCH] Issue 6680 - instance read-only mode is broken (#6681)
+
+Read only mode is broken because some plugins fails to starts as they are not able to create/updates some entries in the dse backend.
+Solution is to allow interrnal operations to write in dse.backend but not modify the dse.ldif (except for the special case when trying to modify nsslapd-readonly flags (to be allowed to set/unset the readonly mode)
+
+Issue: #6680
+
+Reviewed by: @droideck, @tbordaz (thanks!)
+---
+ .../tests/suites/config/regression_test.py    |  60 ++++++++++
+ ldap/servers/slapd/dse.c                      | 110 +++++++++++++++++-
+ ldap/servers/slapd/mapping_tree.c             |  90 ++++++++++++--
+ 3 files changed, 247 insertions(+), 13 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/config/regression_test.py b/dirsrvtests/tests/suites/config/regression_test.py
+index 8dbba8cd2..6e313ac8a 100644
+--- a/dirsrvtests/tests/suites/config/regression_test.py
++++ b/dirsrvtests/tests/suites/config/regression_test.py
+@@ -28,6 +28,8 @@ CUSTOM_MEM = '9100100100'
+ IDLETIMEOUT = 5
+ DN_TEST_USER = f'uid={TEST_USER_PROPERTIES["uid"]},ou=People,{DEFAULT_SUFFIX}'
+ 
++RO_ATTR = 'nsslapd-readonly'
++
+ 
+ @pytest.fixture(scope="module")
+ def idletimeout_topo(topo, request):
+@@ -190,3 +192,61 @@ def test_idletimeout(idletimeout_topo, dn, expected_result):
+     except ldap.SERVER_DOWN:
+         result = True
+     assert expected_result == result
++
++
++def test_instance_readonly_mode(topo):
++    """Check that readonly mode is supported
++
++    :id: 34d2e28e-04d7-11f0-b0cf-482ae39447e5
++    :setup: Standalone Instance
++    :steps:
++        1. Set readonly mode
++        2. Stop the instance
++        3. Get dse.ldif modification time
++        4. Start the instance
++        5. Get dse.ldif modification time
++        6. Check that modification time has not changed
++        7. Check that readonly mode is set
++        8. Try to modify another config attribute
++        9. Unset readonly mode
++        10. Restart the instance
++        11. Check that modification time has not changed
++        12. Check that modification time has changed
++        13. Check that readonly mode is unset
++        14. Try to modify another config attribute
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Success
++        5. Success
++        6. Success
++        7. Success
++        8. Should get ldap.UNWILLING_TO_PERFORM exception
++        9. Success
++        10. Success
++        11. Success
++        12. Success
++        13. Success
++        14. Success
++    """
++
++    inst = topo.standalone
++    dse_path = f'{topo.standalone.get_config_dir()}/dse.ldif'
++    inst.config.replace(RO_ATTR, 'on')
++    inst.stop()
++    dse_mtime = os.stat(dse_path).st_mtime
++    inst.start()
++    new_dse_mtime = os.stat(dse_path).st_mtime
++    assert dse_mtime == new_dse_mtime
++    assert inst.config.get_attr_val_utf8(RO_ATTR) == "on"
++    attr = 'nsslapd-errorlog-maxlogsize'
++    val = inst.config.get_attr_val_utf8(attr)
++    with pytest.raises(ldap.UNWILLING_TO_PERFORM):
++        inst.config.replace(attr, val)
++    inst.config.replace(RO_ATTR, 'off')
++    inst.restart()
++    new_dse_mtime = os.stat(dse_path).st_mtime
++    assert dse_mtime != new_dse_mtime
++    assert inst.config.get_attr_val_utf8(RO_ATTR) == "off"
++    inst.config.replace(attr, val)
+diff --git a/ldap/servers/slapd/dse.c b/ldap/servers/slapd/dse.c
+index e3157c1ce..0f266f0d7 100644
+--- a/ldap/servers/slapd/dse.c
++++ b/ldap/servers/slapd/dse.c
+@@ -1031,6 +1031,114 @@ dse_check_for_readonly_error(Slapi_PBlock *pb, struct dse *pdse)
+     return rc; /* no error */
+ }
+ 
++/* Trivial wrapper around slapi_re_comp to handle errors */
++static Slapi_Regex *
++recomp(const char *regexp)
++{
++    char *error = "";
++    Slapi_Regex *re = slapi_re_comp(regexp, &error);
++    if (re == NULL) {
++        slapi_log_err(SLAPI_LOG_ERR, "is_readonly_set_in_dse",
++                      "Failed to compile '%s' regular expression. Error is %s\n",
++                      regexp, error);
++    }
++    slapi_ch_free_string(&error);
++    return re;
++}
++
++/*
++ * Check if "nsslapd-readonly: on" is in cn-config in dse.ldif file
++ * ( If the flag is set in memory but on in the file, the file should
++ *   be written (to let dsconf able to modify the nsslapd-readonly flag)
++ */
++static bool
++is_readonly_set_in_dse(const char *dsename)
++{
++    Slapi_Regex *re_config = recomp("^dn:\\s+cn=config\\s*$");
++    Slapi_Regex *re_isro = recomp("^" CONFIG_READONLY_ATTRIBUTE ":\\s+on\\s*$");
++    Slapi_Regex *re_eoe = recomp("^$");
++    bool isconfigentry = false;
++    bool isro = false;
++    FILE *fdse = NULL;
++    char line[128];
++    char *error = NULL;
++    const char *regexp = "";
++
++    if (!dsename) {
++        goto done;
++    }
++    if (re_config == NULL || re_isro == NULL || re_eoe == NULL) {
++        goto done;
++    }
++    fdse = fopen(dsename, "r");
++    if (fdse == NULL) {
++        /* No dse file, we need to write it */
++        goto done;
++    }
++    while (fgets(line, (sizeof line), fdse)) {
++        /* Convert the read line to lowercase */
++        for (char *pt=line; *pt; pt++) {
++            if (isalpha(*pt)) {
++                *pt = tolower(*pt);
++            }
++        }
++        if (slapi_re_exec_nt(re_config, line)) {
++            isconfigentry = true;
++        }
++        if (slapi_re_exec_nt(re_eoe, line)) {
++            if (isconfigentry) {
++                /* End of config entry ==> readonly flag is not set */
++                break;
++            }
++        }
++        if (isconfigentry && slapi_re_exec_nt(re_isro, line)) {
++            /* Found readonly flag */
++            isro = true;
++            break;
++        }
++    }
++done:
++    if (fdse) {
++        (void) fclose(fdse);
++    }
++    slapi_re_free(re_config);
++    slapi_re_free(re_isro);
++    slapi_re_free(re_eoe);
++    return isro;
++}
++
++/*
++ * Check if dse.ldif can be written
++ * Beware that even in read-only mode dse.ldif file
++ * should still be written to change the nsslapd-readonly value
++ */
++static bool
++check_if_readonly(struct dse *pdse)
++{
++    static bool ro = false;
++
++    if (pdse->dse_filename == NULL) {
++        return false;
++    }
++    if (!slapi_config_get_readonly()) {
++        ro = false;
++        return ro;
++    }
++    if (ro) {
++        /* read-only mode and dse is up to date ==> Do not modify it. */
++        return ro;
++    }
++    /* First attempt to write the dse.ldif since readonly mode is enabled.
++     * Lets check if "nsslapd-readonly: on" is in cn=config entry
++     *  and allow to write the dse.ldif if it is the case
++     */
++    if (is_readonly_set_in_dse(pdse->dse_filename)) {
++        /* read-only mode and dse is up to date ==> Do not modify it. */
++        ro = true;
++    }
++    /* Read only mode but nsslapd-readonly value is not up to date. */
++    return ro;
++}
+ 
+ /*
+  * Write the AVL tree of entries back to the LDIF file.
+@@ -1041,7 +1149,7 @@ dse_write_file_nolock(struct dse *pdse)
+     FPWrapper fpw;
+     int rc = 0;
+ 
+-    if (dont_ever_write_dse_files) {
++    if (dont_ever_write_dse_files || check_if_readonly(pdse)) {
+         return rc;
+     }
+ 
+diff --git a/ldap/servers/slapd/mapping_tree.c b/ldap/servers/slapd/mapping_tree.c
+index dd7b1af37..e51b3b948 100644
+--- a/ldap/servers/slapd/mapping_tree.c
++++ b/ldap/servers/slapd/mapping_tree.c
+@@ -2058,6 +2058,82 @@ slapi_dn_write_needs_referral(Slapi_DN *target_sdn, Slapi_Entry **referral)
+ done:
+     return ret;
+ }
++
++/*
++ * This function dermines if an operation should be rejected
++ * when readonly mode is enabled.
++ * All operations are rejected except:
++ *    - if they target a private backend that is not the DSE backend
++ *    - if they are read operations (SEARCH, COMPARE, BIND, UNBIND)
++ *    - if they are tombstone fixup operation (i.e: tombstone purging)
++ *    - if they are internal operation that targets the DSE backend.
++ *      (change will then be done in memory but not written in dse.ldif)
++ *    - single modify modify operation on cn=config changing nsslapd-readonly
++ *      (to allow  "dsconf instance config replace nsslapd-readonly=xxx",
++         change will then be done both in memory and in dse.ldif)
++ */
++static bool
++is_rejected_op(Slapi_Operation *op, Slapi_Backend *be)
++{
++    const char *betype = slapi_be_gettype(be);
++    unsigned long be_op_type = operation_get_type(op);
++    int isdse = (betype && strcmp(betype, "DSE") == 0);
++
++    /* Private backend operations are not rejected */
++
++    /* Read operations are not rejected */
++    if ((be_op_type == SLAPI_OPERATION_SEARCH) ||
++        (be_op_type == SLAPI_OPERATION_COMPARE) ||
++        (be_op_type == SLAPI_OPERATION_BIND) ||
++        (be_op_type == SLAPI_OPERATION_UNBIND)) {
++        return false;
++    }
++
++    /* Tombstone fixup are not rejected. */
++    if (operation_is_flag_set(op, OP_FLAG_TOMBSTONE_FIXUP)) {
++        return false;
++    }
++
++    if (!isdse) {
++        /* write operation on readonly backends are rejected */
++        if (be->be_readonly) {
++            return true;
++        }
++
++        /* private backends (DSE excepted) are not backed on files
++         * so write operations are accepted.
++         * but other operations (not on DSE) are rejected.
++         */
++        if (slapi_be_private(be)) {
++            return false;
++        } else {
++            return true;
++        }
++    }
++
++    /* Allowed operations in dse backend are:
++     *  - the internal operations and
++     *  - modify of nsslapd-readonly flag in cn=config
++     */
++
++    if (operation_is_flag_set(op, OP_FLAG_INTERNAL)) {
++        return false;
++    }
++    if (be_op_type == SLAPI_OPERATION_MODIFY) {
++        Slapi_DN *sdn = operation_get_target_spec(op);
++        Slapi_DN config = {0};
++        LDAPMod **mods = op->o_params.p.p_modify.modify_mods;
++        slapi_sdn_init_ndn_byref(&config, SLAPD_CONFIG_DN);
++        if (mods && mods[0] && !mods[1] &&
++            slapi_sdn_compare(sdn, &config) == 0 &&
++            strcasecmp(mods[0]->mod_type, CONFIG_READONLY_ATTRIBUTE) == 0) {
++                /* Single modifier impacting nsslapd-readonly */
++                return false;
++        }
++    }
++    return true;
++}
++
+ /*
+  * Description:
+  * The reason we have a mapping tree.  This function selects a backend or
+@@ -2095,7 +2171,6 @@ slapi_mapping_tree_select(Slapi_PBlock *pb, Slapi_Backend **be, Slapi_Entry **re
+     int ret;
+     int scope = LDAP_SCOPE_BASE;
+     int op_type;
+-    int fixup = 0;
+ 
+     if (slapi_atomic_load_32(&mapping_tree_freed, __ATOMIC_RELAXED)) {
+         /* shutdown detected */
+@@ -2112,7 +2187,6 @@ slapi_mapping_tree_select(Slapi_PBlock *pb, Slapi_Backend **be, Slapi_Entry **re
+ 
+     /* Get the target for this op */
+     target_sdn = operation_get_target_spec(op);
+-    fixup = operation_is_flag_set(op, OP_FLAG_TOMBSTONE_FIXUP);
+ 
+     PR_ASSERT(mapping_tree_inited == 1);
+ 
+@@ -2161,22 +2235,14 @@ slapi_mapping_tree_select(Slapi_PBlock *pb, Slapi_Backend **be, Slapi_Entry **re
+      * or if the whole server is readonly AND backend is public (!private)
+      */
+     if ((ret == LDAP_SUCCESS) && *be && !be_isdeleted(*be) &&
+-        (((*be)->be_readonly && !fixup) ||
+-         ((slapi_config_get_readonly() && !fixup) &&
+-          !slapi_be_private(*be)))) {
+-        unsigned long be_op_type = operation_get_type(op);
+-
+-        if ((be_op_type != SLAPI_OPERATION_SEARCH) &&
+-            (be_op_type != SLAPI_OPERATION_COMPARE) &&
+-            (be_op_type != SLAPI_OPERATION_BIND) &&
+-            (be_op_type != SLAPI_OPERATION_UNBIND)) {
++        ((*be)->be_readonly || slapi_config_get_readonly()) &&
++        is_rejected_op(op, *be)) {
+             if (errorbuf) {
+                 PL_strncpyz(errorbuf, slapi_config_get_readonly() ? "Server is read-only" : "database is read-only", ebuflen);
+             }
+             ret = LDAP_UNWILLING_TO_PERFORM;
+             slapi_be_Unlock(*be);
+             *be = NULL;
+-        }
+     }
+ 
+     return ret;
+-- 
+2.49.0
+

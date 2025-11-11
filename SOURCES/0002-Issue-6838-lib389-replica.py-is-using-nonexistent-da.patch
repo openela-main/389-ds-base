@@ -1,0 +1,37 @@
+From a91c2641646824e44ef3b31a7eea238e3f55e5c3 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 1 Jul 2025 12:44:04 +0200
+Subject: [PATCH] Issue 6838 - lib389/replica.py is using nonexistent
+ datetime.UTC in Python 3.9
+
+Bug Description:
+389-ds-base-2.x is supposed to be used with Python 3.9.
+But lib389/replica.py is using `datetime.UTC`, which is an alias
+to `datetime.timezone.utc` was added only in Python 3.11.
+
+Fix Description:
+Use `datetime.timezone.utc` instead.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6838
+
+Reviewed by: @mreynolds389 (Thanks!)
+---
+ src/lib389/lib389/replica.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/lib389/lib389/replica.py b/src/lib389/lib389/replica.py
+index 8791f7f4c..78d6eb4eb 100644
+--- a/src/lib389/lib389/replica.py
++++ b/src/lib389/lib389/replica.py
+@@ -917,7 +917,7 @@ class RUV(object):
+             ValueError("Wrong CSN value was supplied")
+ 
+         timestamp = int(csn[:8], 16)
+-        time_str = datetime.datetime.fromtimestamp(timestamp, datetime.UTC).strftime('%Y-%m-%d %H:%M:%S')
++        time_str = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+         # We are parsing shorter CSN which contains only timestamp
+         if len(csn) == 8:
+             return time_str
+-- 
+2.49.0
+
