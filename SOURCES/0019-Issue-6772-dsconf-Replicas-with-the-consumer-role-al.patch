@@ -1,0 +1,67 @@
+From 863c244cc137376ee8da0f007fc9b9da88d8dbc0 Mon Sep 17 00:00:00 2001
+From: Anuar Beisembayev <111912342+abeisemb@users.noreply.github.com>
+Date: Wed, 23 Jul 2025 23:48:11 -0400
+Subject: [PATCH] Issue 6772 - dsconf - Replicas with the "consumer" role allow
+ for viewing and modification of their changelog. (#6773)
+
+dsconf currently allows users to set and retrieve changelogs in consumer replicas, which do not have officially supported changelogs. This can lead to undefined behavior and confusion.
+This commit prints a warning message if the user tries to interact with a changelog on a consumer replica.
+
+Resolves: https://github.com/389ds/389-ds-base/issues/6772
+
+Reviewed by: @droideck
+---
+ src/lib389/lib389/cli_conf/replication.py | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/lib389/lib389/cli_conf/replication.py b/src/lib389/lib389/cli_conf/replication.py
+index 6f77f34ca..a18bf83ca 100644
+--- a/src/lib389/lib389/cli_conf/replication.py
++++ b/src/lib389/lib389/cli_conf/replication.py
+@@ -686,6 +686,9 @@ def set_per_backend_cl(inst, basedn, log, args):
+     replace_list = []
+     did_something = False
+ 
++    if (is_replica_role_consumer(inst, suffix)):
++        log.info("Warning: Changelogs are not supported for consumer replicas. You may run into undefined behavior.")
++
+     if args.encrypt:
+         cl.replace('nsslapd-encryptionalgorithm', 'AES')
+         del args.encrypt
+@@ -715,6 +718,10 @@ def set_per_backend_cl(inst, basedn, log, args):
+ # that means there is a changelog config entry per backend (aka suffix)
+ def get_per_backend_cl(inst, basedn, log, args):
+     suffix = args.suffix
++
++    if (is_replica_role_consumer(inst, suffix)):
++        log.info("Warning: Changelogs are not supported for consumer replicas. You may run into undefined behavior.")
++
+     cl = Changelog(inst, suffix)
+     if args and args.json:
+         log.info(cl.get_all_attrs_json())
+@@ -822,6 +829,22 @@ def del_repl_manager(inst, basedn, log, args):
+ 
+     log.info("Successfully deleted replication manager: " + manager_dn)
+ 
++def is_replica_role_consumer(inst, suffix): 
++    """Helper function for get_per_backend_cl and set_per_backend_cl. 
++    Makes sure the instance in question is not a consumer, which is a role that 
++    does not support changelogs. 
++    """
++    replicas = Replicas(inst)
++    try:
++        replica = replicas.get(suffix)
++        role = replica.get_role()
++    except ldap.NO_SUCH_OBJECT:
++        raise ValueError(f"Backend \"{suffix}\" is not enabled for replication")
++
++    if role == ReplicaRole.CONSUMER:
++        return True
++    else:
++        return False
+ 
+ #
+ # Agreements
+-- 
+2.49.0
+

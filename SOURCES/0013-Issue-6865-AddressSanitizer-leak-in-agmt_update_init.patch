@@ -1,0 +1,58 @@
+From e89a5acbc1bcc1b460683aa498005d6f0ce7054e Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 11 Jul 2025 12:32:38 +0200
+Subject: [PATCH] Issue 6865 - AddressSanitizer: leak in
+ agmt_update_init_status
+
+Bug Description:
+We allocate an array of `LDAPMod *` pointers, but never free it:
+
+```
+=================================================================
+==2748356==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 24 byte(s) in 1 object(s) allocated from:
+    #0 0x7f05e8cb4a07 in __interceptor_malloc (/lib64/libasan.so.6+0xb4a07)
+    #1 0x7f05e85c0138 in slapi_ch_malloc (/usr/lib64/dirsrv/libslapd.so.0+0x1c0138)
+    #2 0x7f05e109e481 in agmt_update_init_status ldap/servers/plugins/replication/repl5_agmt.c:2583
+    #3 0x7f05e10a0aa5 in agmtlist_shutdown ldap/servers/plugins/replication/repl5_agmtlist.c:789
+    #4 0x7f05e10ab6bc in multisupplier_stop ldap/servers/plugins/replication/repl5_init.c:844
+    #5 0x7f05e10ab6bc in multisupplier_stop ldap/servers/plugins/replication/repl5_init.c:837
+    #6 0x7f05e862507d in plugin_call_func ldap/servers/slapd/plugin.c:2001
+    #7 0x7f05e8625be1 in plugin_call_one ldap/servers/slapd/plugin.c:1950
+    #8 0x7f05e8625be1 in plugin_dependency_closeall ldap/servers/slapd/plugin.c:1844
+    #9 0x55e1a7ff9815 in slapd_daemon ldap/servers/slapd/daemon.c:1275
+    #10 0x55e1a7fd36ef in main (/usr/sbin/ns-slapd+0x3e6ef)
+    #11 0x7f05e80295cf in __libc_start_call_main (/lib64/libc.so.6+0x295cf)
+    #12 0x7f05e802967f in __libc_start_main_alias_2 (/lib64/libc.so.6+0x2967f)
+    #13 0x55e1a7fd74a4 in _start (/usr/sbin/ns-slapd+0x424a4)
+
+SUMMARY: AddressSanitizer: 24 byte(s) leaked in 1 allocation(s).
+```
+
+Fix Description:
+Ensure `mods` is freed in the cleanup code.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6865
+Relates: https://github.com/389ds/389-ds-base/issues/6470
+
+Reviewed by: @mreynolds389 (Thanks!)
+---
+ ldap/servers/plugins/replication/repl5_agmt.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/ldap/servers/plugins/replication/repl5_agmt.c b/ldap/servers/plugins/replication/repl5_agmt.c
+index c818c5857..0a81167b7 100644
+--- a/ldap/servers/plugins/replication/repl5_agmt.c
++++ b/ldap/servers/plugins/replication/repl5_agmt.c
+@@ -2743,6 +2743,7 @@ agmt_update_init_status(Repl_Agmt *ra)
+     } else {
+         PR_Unlock(ra->lock);
+     }
++    slapi_ch_free((void **)&mods);
+     slapi_mod_done(&smod_start_time);
+     slapi_mod_done(&smod_end_time);
+     slapi_mod_done(&smod_status);
+-- 
+2.49.0
+

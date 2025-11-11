@@ -1,0 +1,163 @@
+From 4719e7df7ba0eb5e26830812ab9ead51f1e0c5f5 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Tue, 15 Jul 2025 17:56:18 -0400
+Subject: [PATCH] Issue 6872 - compressed log rotation creates files with world
+ readable permission
+
+Description:
+
+When compressing a log file, first create the empty file using open()
+so we can set the correct permissions right from the start. gzopen()
+always uses permission 644 and that is not safe. So after creating it
+with open(), with the correct permissions, then pass the FD to gzdopen()
+and write the compressed content.
+
+relates: https://github.com/389ds/389-ds-base/issues/6872
+
+Reviewed by: progier(Thanks!)
+---
+ .../logging/logging_compression_test.py       | 15 ++++++++--
+ ldap/servers/slapd/log.c                      | 28 +++++++++++++------
+ ldap/servers/slapd/schema.c                   |  2 +-
+ 3 files changed, 33 insertions(+), 12 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/logging/logging_compression_test.py b/dirsrvtests/tests/suites/logging/logging_compression_test.py
+index e30874cc0..3a987d62c 100644
+--- a/dirsrvtests/tests/suites/logging/logging_compression_test.py
++++ b/dirsrvtests/tests/suites/logging/logging_compression_test.py
+@@ -1,5 +1,5 @@
+ # --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2022 Red Hat, Inc.
++# Copyright (C) 2025 Red Hat, Inc.
+ # All rights reserved.
+ #
+ # License: GPL (version 3 or any later version).
+@@ -22,12 +22,21 @@ log = logging.getLogger(__name__)
+ 
+ pytestmark = pytest.mark.tier1
+ 
++
+ def log_rotated_count(log_type, log_dir, check_compressed=False):
+-    # Check if the log was rotated
++    """
++    Check if the log was rotated and has the correct permissions
++    """
+     log_file = f'{log_dir}/{log_type}.2*'
+     if check_compressed:
+         log_file += ".gz"
+-    return len(glob.glob(log_file))
++    log_files = glob.glob(log_file)
++    for logf in log_files:
++        # Check permissions
++        st = os.stat(logf)
++        assert oct(st.st_mode) == '0o100600'  # 0600
++
++    return len(log_files)
+ 
+ 
+ def update_and_sleep(inst, suffix, sleep=True):
+diff --git a/ldap/servers/slapd/log.c b/ldap/servers/slapd/log.c
+index e859682fe..f535011ab 100644
+--- a/ldap/servers/slapd/log.c
++++ b/ldap/servers/slapd/log.c
+@@ -174,17 +174,28 @@ get_syslog_loglevel(int loglevel)
+ }
+ 
+ static int
+-compress_log_file(char *log_name)
++compress_log_file(char *log_name, int32_t mode)
+ {
+     char gzip_log[BUFSIZ] = {0};
+     char buf[LOG_CHUNK] = {0};
+     size_t bytes_read = 0;
+     gzFile outfile = NULL;
+     FILE *source = NULL;
++    int fd = 0;
+ 
+     PR_snprintf(gzip_log, sizeof(gzip_log), "%s.gz", log_name);
+-    if ((outfile = gzopen(gzip_log,"wb")) == NULL) {
+-        /* Failed to open new gzip file */
++
++    /*
++     * Try to open the file as we may have an incorrect path. We also need to
++     * set the permissions using open() as gzopen() creates the file with
++     * 644 permissions (world readable - bad). So we create an empty file with
++     * the correct permissions, then we pass the FD to gzdopen() to write the
++     * compressed content.
++     */
++    if ((fd = open(gzip_log, O_WRONLY|O_CREAT|O_TRUNC, mode)) >= 0) {
++        /* FIle successfully created, now pass the FD to gzdopen() */
++        outfile = gzdopen(fd, "ab");
++    } else {
+         return -1;
+     }
+ 
+@@ -193,6 +204,7 @@ compress_log_file(char *log_name)
+         gzclose(outfile);
+         return -1;
+     }
++
+     bytes_read = fread(buf, 1, LOG_CHUNK, source);
+     while (bytes_read > 0) {
+         int bytes_written = gzwrite(outfile, buf, bytes_read);
+@@ -3402,7 +3414,7 @@ log__open_accesslogfile(int logfile_state, int locked)
+                     return LOG_UNABLE_TO_OPENFILE;
+                 }
+             } else if (loginfo.log_access_compress) {
+-                if (compress_log_file(newfile) != 0) {
++                if (compress_log_file(newfile, loginfo.log_access_mode) != 0) {
+                     slapi_log_err(SLAPI_LOG_ERR, "log__open_auditfaillogfile",
+                             "failed to compress rotated access log (%s)\n",
+                             newfile);
+@@ -3570,7 +3582,7 @@ log__open_securitylogfile(int logfile_state, int locked)
+                     return LOG_UNABLE_TO_OPENFILE;
+                 }
+             } else if (loginfo.log_security_compress) {
+-                if (compress_log_file(newfile) != 0) {
++                if (compress_log_file(newfile, loginfo.log_security_mode) != 0) {
+                     slapi_log_err(SLAPI_LOG_ERR, "log__open_securitylogfile",
+                             "failed to compress rotated security audit log (%s)\n",
+                             newfile);
+@@ -6288,7 +6300,7 @@ log__open_errorlogfile(int logfile_state, int locked)
+                     return LOG_UNABLE_TO_OPENFILE;
+                 }
+             } else if (loginfo.log_error_compress) {
+-                if (compress_log_file(newfile) != 0) {
++                if (compress_log_file(newfile, loginfo.log_error_mode) != 0) {
+                     PR_snprintf(buffer, sizeof(buffer), "Failed to compress errors log file (%s)\n", newfile);
+                     log__error_emergency(buffer, 1, 1);
+                 } else {
+@@ -6476,7 +6488,7 @@ log__open_auditlogfile(int logfile_state, int locked)
+                     return LOG_UNABLE_TO_OPENFILE;
+                 }
+             } else if (loginfo.log_audit_compress) {
+-                if (compress_log_file(newfile) != 0) {
++                if (compress_log_file(newfile, loginfo.log_audit_mode) != 0) {
+                     slapi_log_err(SLAPI_LOG_ERR, "log__open_auditfaillogfile",
+                             "failed to compress rotated audit log (%s)\n",
+                             newfile);
+@@ -6641,7 +6653,7 @@ log__open_auditfaillogfile(int logfile_state, int locked)
+                     return LOG_UNABLE_TO_OPENFILE;
+                 }
+             } else if (loginfo.log_auditfail_compress) {
+-                if (compress_log_file(newfile) != 0) {
++                if (compress_log_file(newfile, loginfo.log_auditfail_mode) != 0) {
+                     slapi_log_err(SLAPI_LOG_ERR, "log__open_auditfaillogfile",
+                             "failed to compress rotated auditfail log (%s)\n",
+                             newfile);
+diff --git a/ldap/servers/slapd/schema.c b/ldap/servers/slapd/schema.c
+index a8e6b1210..9ef4ee4bf 100644
+--- a/ldap/servers/slapd/schema.c
++++ b/ldap/servers/slapd/schema.c
+@@ -903,7 +903,7 @@ oc_check_allowed_sv(Slapi_PBlock *pb, Slapi_Entry *e, const char *type, struct o
+ 
+         if (pb) {
+             PR_snprintf(errtext, sizeof(errtext),
+-                        "attribute \"%s\" not allowed\n",
++                        "attribute \"%s\" not allowed",
+                         escape_string(type, ebuf));
+             slapi_pblock_set(pb, SLAPI_PB_RESULT_TEXT, errtext);
+         }
+-- 
+2.49.0
+

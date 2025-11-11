@@ -2,7 +2,7 @@
 ## (rpmautospec version 0.6.5)
 ## RPMAUTOSPEC: autorelease, autochangelog
 %define autorelease(e:s:pb:n) %{?-p:0.}%{lua:
-    release_number = 13;
+    release_number = 5;
     base_release_number = tonumber(rpm.expand("%{?-b*}%{!?-b:1}"));
     print(release_number + base_release_number - 1);
 }%{?-e:.%{-e*}}%{?-s:.%{-s*}}%{!?-n:%{?dist}}
@@ -70,7 +70,7 @@ ExcludeArch: i686
 
 Summary:          389 Directory Server (%{variant})
 Name:             389-ds-base
-Version:          3.0.6
+Version:          3.1.3
 Release:          %{autorelease -n %{?with_asan:-e asan}}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 Conflicts:        selinux-policy-base < 3.9.8
@@ -89,11 +89,11 @@ Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.5.0
 Provides:  bundled(crate(backtrace)) = 0.3.75
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 2.9.2
+Provides:  bundled(crate(bitflags)) = 2.9.1
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.26.0
-Provides:  bundled(crate(cc)) = 1.2.33
-Provides:  bundled(crate(cfg-if)) = 1.0.3
+Provides:  bundled(crate(cc)) = 1.2.31
+Provides:  bundled(crate(cfg-if)) = 1.0.1
 Provides:  bundled(crate(clap)) = 3.2.25
 Provides:  bundled(crate(clap_lex)) = 0.2.4
 Provides:  bundled(crate(concread)) = 0.5.7
@@ -109,14 +109,14 @@ Provides:  bundled(crate(foreign-types)) = 0.3.2
 Provides:  bundled(crate(foreign-types-shared)) = 0.1.1
 Provides:  bundled(crate(getrandom)) = 0.3.3
 Provides:  bundled(crate(gimli)) = 0.31.1
-Provides:  bundled(crate(hashbrown)) = 0.15.5
+Provides:  bundled(crate(hashbrown)) = 0.15.4
 Provides:  bundled(crate(heck)) = 0.4.1
 Provides:  bundled(crate(hermit-abi)) = 0.1.19
 Provides:  bundled(crate(indexmap)) = 1.9.3
 Provides:  bundled(crate(io-uring)) = 0.7.9
 Provides:  bundled(crate(itoa)) = 1.0.15
 Provides:  bundled(crate(jobserver)) = 0.1.33
-Provides:  bundled(crate(libc)) = 0.2.175
+Provides:  bundled(crate(libc)) = 0.2.174
 Provides:  bundled(crate(linux-raw-sys)) = 0.9.4
 Provides:  bundled(crate(log)) = 0.4.27
 Provides:  bundled(crate(lru)) = 0.13.0
@@ -134,7 +134,7 @@ Provides:  bundled(crate(paste-impl)) = 0.1.18
 Provides:  bundled(crate(pin-project-lite)) = 0.2.16
 Provides:  bundled(crate(pkg-config)) = 0.3.32
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
-Provides:  bundled(crate(proc-macro2)) = 1.0.101
+Provides:  bundled(crate(proc-macro2)) = 1.0.95
 Provides:  bundled(crate(quote)) = 1.0.40
 Provides:  bundled(crate(r-efi)) = 5.3.0
 Provides:  bundled(crate(rustc-demangle)) = 0.1.26
@@ -142,14 +142,14 @@ Provides:  bundled(crate(rustix)) = 1.0.8
 Provides:  bundled(crate(ryu)) = 1.0.20
 Provides:  bundled(crate(serde)) = 1.0.219
 Provides:  bundled(crate(serde_derive)) = 1.0.219
-Provides:  bundled(crate(serde_json)) = 1.0.143
+Provides:  bundled(crate(serde_json)) = 1.0.142
 Provides:  bundled(crate(shlex)) = 1.3.0
-Provides:  bundled(crate(slab)) = 0.4.11
+Provides:  bundled(crate(slab)) = 0.4.10
 Provides:  bundled(crate(smallvec)) = 1.15.1
 Provides:  bundled(crate(sptr)) = 0.3.2
 Provides:  bundled(crate(strsim)) = 0.10.0
-Provides:  bundled(crate(syn)) = 2.0.106
-Provides:  bundled(crate(tempfile)) = 3.21.0
+Provides:  bundled(crate(syn)) = 2.0.104
+Provides:  bundled(crate(tempfile)) = 3.20.0
 Provides:  bundled(crate(termcolor)) = 1.4.1
 Provides:  bundled(crate(textwrap)) = 0.16.2
 Provides:  bundled(crate(tokio)) = 1.47.1
@@ -163,7 +163,7 @@ Provides:  bundled(crate(vcpkg)) = 0.2.15
 Provides:  bundled(crate(wasi)) = 0.14.2+wasi_0.2.4
 Provides:  bundled(crate(winapi)) = 0.3.9
 Provides:  bundled(crate(winapi-i686-pc-windows-gnu)) = 0.4.0
-Provides:  bundled(crate(winapi-util)) = 0.1.10
+Provides:  bundled(crate(winapi-util)) = 0.1.9
 Provides:  bundled(crate(winapi-x86_64-pc-windows-gnu)) = 0.4.0
 Provides:  bundled(crate(windows-link)) = 0.1.3
 Provides:  bundled(crate(windows-sys)) = 0.60.2
@@ -240,19 +240,7 @@ BuildRequires:    doxygen
 # For tests!
 BuildRequires:    libcmocka-devel
 # For lib389 and related components.
-BuildRequires:    python%{python3_pkgversion}
 BuildRequires:    python%{python3_pkgversion}-devel
-BuildRequires:    python%{python3_pkgversion}-setuptools
-BuildRequires:    python%{python3_pkgversion}-ldap
-BuildRequires:    python%{python3_pkgversion}-pyasn1
-BuildRequires:    python%{python3_pkgversion}-pyasn1-modules
-BuildRequires:    python%{python3_pkgversion}-dateutil
-BuildRequires:    python%{python3_pkgversion}-argcomplete
-BuildRequires:    python%{python3_pkgversion}-argparse-manpage
-BuildRequires:    python%{python3_pkgversion}-policycoreutils
-BuildRequires:    python%{python3_pkgversion}-libselinux
-BuildRequires:    python%{python3_pkgversion}-cryptography
-BuildRequires:    python%{python3_pkgversion}-psutil
 
 # For cockpit
 %if %{with cockpit}
@@ -316,80 +304,50 @@ Source4:          389-ds-base.sysusers
 Source5:          https://fedorapeople.org/groups/389ds/libdb-5.3.28-59.tar.bz2
 %endif
 
-# Vendored cargo crates update
-Source6:          vendor-%{version}-3.tar.gz
-Source7:          Cargo-%{version}-3.lock
+Source6:          vendor-%{version}-1.tar.gz
+Source7:          Cargo-%{version}-1.lock
 
-Patch:            0001-Issue-6544-logconv.py-python3-magic-conflicts-with-p.patch
-Patch:            0002-Issue-6374-nsslapd-mdb-max-dbs-autotuning-doesn-t-wo.patch
-Patch:            0003-Issue-6090-Fix-dbscan-options-and-man-pages-6315.patch
-Patch:            0004-Issue-6489-After-log-rotation-refresh-the-FD-pointer.patch
-Patch:            0005-Issue-6436-MOD-on-a-large-group-slow-if-substring-in.patch
-Patch:            0006-Issue-6566-RI-plugin-failure-to-handle-a-modrdn-for-.patch
-Patch:            0007-Issue-6258-Mitigate-race-condition-in-paged_results_.patch
-Patch:            0008-Issue-6229-After-an-initial-failure-subsequent-onlin.patch
-Patch:            0009-Issue-6554-During-import-of-entries-without-nsUnique.patch
-Patch:            0010-Issue-6596-BUG-Compilation-Regresion-6597.patch
-Patch:            0011-Issue-6367-RFE-support-of-Session-Tracking-Control-i.patch
-Patch:            0012-Issue-6561-TLS-1.2-stickiness-in-FIPS-mode.patch
-Patch:            0013-Issue-6375-UI-Update-cockpit.js-code-to-the-latest-v.patch
-Patch:            0014-Issue-6623-UI-Generic-updates-6624.patch
-Patch:            0015-Issue-6625-UI-fix-various-issues-with-LDAP-browser-e.patch
-Patch:            0016-Issue-6625-UI-fix-next-round-of-bugs.patch
-Patch:            0017-Issue-6625-UI-various-fixes-part-3.patch
-Patch:            0018-Issue-6429-UI-clicking-on-a-database-suffix-under-th.patch
-Patch:            0019-Issue-6656-UI-Enhance-Monitor-Log-Viewer-with-Patter.patch
-Patch:            0020-Issue-6568-Fix-failing-webUI-tests.patch
-Patch:            0021-Issue-6665-UI-Need-to-refresh-log-settings-after-sav.patch
-Patch:            0022-Issue-6695-UI-fix-more-minor-issues.patch
-Patch:            0023-Issue-6704-UI-Add-error-log-buffering-config.patch
-Patch:            0024-Issue-6700-CLI-UI-include-superior-objectclasses-all.patch
-Patch:            0025-Issue-6464-UI-Fixed-spelling-in-cockpit-messages.patch
-Patch:            0026-Issue-6481-When-ports-that-are-in-use-are-used-to-up.patch
-Patch:            0027-Security-fix-for-CVE-2025-2487.patch
-Patch:            0028-Issue-6553-Update-concread-to-0.5.4-and-refactor-sta.patch
-Patch:            0029-Issue-6715-dsconf-backend-replication-monitor-fails-.patch
-Patch:            0030-Issue-6713-ns-slapd-crash-during-mdb-offline-import-.patch
-Patch:            0031-Issue-6571-Nested-group-does-not-receive-memberOf-at.patch
-Patch:            0032-Issue-6571-2nd-Nested-group-does-not-receive-memberO.patch
-Patch:            0033-Issue-6288-dsidm-crash-with-account-policy-when-alt-.patch
-Patch:            0034-Issue-6686-CLI-Re-enabling-user-accounts-that-reache.patch
-Patch:            0035-Issue-6698-NPE-after-configuring-invalid-filtered-ro.patch
-Patch:            0036-Issue-6626-Ignore-replica-busy-condition-in-healthch.patch
-Patch:            0037-Issue-6655-fix-replication-release-replica-decoding-.patch
-Patch:            0038-Issue-6787-Improve-error-message-when-bulk-import-co.patch
-Patch:            0039-Issue-6641-modrdn-fails-when-a-user-is-member-of-mul.patch
-Patch:            0040-Issue-6791-crash-in-liblmdb-during-instance-shutdown.patch
-Patch:            0041-Issue-6819-Incorrect-pwdpolicysubentry-returned-for-.patch
-Patch:            0042-Issue-6736-Exception-thrown-by-dsconf-instance-repl-.patch
-Patch:            0043-Issue-6825-RootDN-Access-Control-Plugin-with-wildcar.patch
-Patch:            0044-Issue-6822-Backend-creation-cleanup-and-Database-UI-.patch
-Patch:            0045-Issue-6857-uiduniq-allow-specifying-match-rules-in-t.patch
-Patch:            0046-Issue-6859-str2filter-is-not-fully-applying-matching.patch
-Patch:            0047-Issue-6872-compressed-log-rotation-creates-files-wit.patch
-Patch:            0048-Issue-6895-Crash-if-repl-keep-alive-entry-can-not-be.patch
-Patch:            0049-Issue-6884-Mask-password-hashes-in-audit-logs-6885.patch
-Patch:            0050-Issue-6339-Address-Coverity-scan-issues-in-memberof-.patch
-Patch:            0051-Issue-6468-CLI-Fix-default-error-log-level.patch
-Patch:            0052-Issue-6768-ns-slapd-crashes-when-a-referral-is-added.patch
-Patch:            0053-Issue-6778-Memory-leak-in-roles_cache_create_object_.patch
-Patch:            0054-Issue-6778-Memory-leak-in-roles_cache_create_object_.patch
-Patch:            0055-Issue-6848-AddressSanitizer-leak-in-do_search.patch
-Patch:            0056-Issue-6940-dsconf-monitor-server-fails-with-ldapi-du.patch
-Patch:            0057-Issue-6720-Remove-BDB-attribute-from-MDB-DB-Monitor-.patch
-Patch:            0058-Issue-6614-CLI-Error-when-trying-to-display-global-D.patch
-Patch:            0059-Issue-6756-CLI-UI-Properly-handle-disabled-NDN-cache.patch
-Patch:            0060-Issue-6693-Fix-error-messages-inconsistencies-6694.patch
-Patch:            0061-Issue-6893-Log-user-that-is-updated-during-password-.patch
-Patch:            0062-Issue-6936-Make-user-subtree-policy-creation-idempot.patch
-Patch:            0063-Issue-6865-AddressSanitizer-leak-in-agmt_update_init.patch
-Patch:            0064-Issue-6594-Add-test-for-numSubordinates-replication-.patch
-Patch:            0065-Issue-6919-numSubordinates-tombstoneNumSubordinates-.patch
-Patch:            0066-Issue-6928-The-parentId-attribute-is-indexed-with-im.patch
-Patch:            0067-Issue-6910-Fix-latest-coverity-issues.patch
-Patch:            0068-Issue-7014-memberOf-ignored-deferred-updates-with-LM.patch
-Patch:            0069-Issue-6933-When-deferred-memberof-update-is-enabled-.patch
-Patch:            0070-Issue-6764-statistics-about-index-lookup-report-a-wr.patch
+Patch:            0001-Issue-6822-Backend-creation-cleanup-and-Database-UI-.patch
+Patch:            0002-Issue-6852-Move-ds-CLI-tools-back-to-sbin.patch
+Patch:            0003-Issue-6663-Fix-NULL-subsystem-crash-in-JSON-error-lo.patch
+Patch:            0004-Issue-6829-Update-parametrized-docstring-for-tests.patch
+Patch:            0005-Issue-6782-Improve-paged-result-locking.patch
+Patch:            0006-Issue-6838-lib389-replica.py-is-using-nonexistent-da.patch
+Patch:            0007-Issue-6753-Add-add_exclude_subtree-and-remove_exclud.patch
+Patch:            0008-Issue-6857-uiduniq-allow-specifying-match-rules-in-t.patch
+Patch:            0009-Issue-6756-CLI-UI-Properly-handle-disabled-NDN-cache.patch
+Patch:            0010-Issue-6854-Refactor-for-improved-data-management-685.patch
+Patch:            0011-Issue-6850-AddressSanitizer-memory-leak-in-mdb_init.patch
+Patch:            0012-Issue-6848-AddressSanitizer-leak-in-do_search.patch
+Patch:            0013-Issue-6865-AddressSanitizer-leak-in-agmt_update_init.patch
+Patch:            0014-Issue-6859-str2filter-is-not-fully-applying-matching.patch
+Patch:            0015-Issue-6872-compressed-log-rotation-creates-files-wit.patch
+Patch:            0016-Issue-6878-Prevent-repeated-disconnect-logs-during-s.patch
+Patch:            0017-Issue-6888-Missing-access-JSON-logging-for-TLS-Clien.patch
+Patch:            0018-Issue-6829-Update-parametrized-docstring-for-tests.patch
+Patch:            0019-Issue-6772-dsconf-Replicas-with-the-consumer-role-al.patch
+Patch:            0020-Issue-6893-Log-user-that-is-updated-during-password-.patch
+Patch:            0021-Issue-6352-Fix-DeprecationWarning.patch
+Patch:            0022-Issue-6880-Fix-ds_logs-test-suite-failure.patch
+Patch:            0023-Issue-6901-Update-changelog-trimming-logging.patch
+Patch:            0024-Issue-6895-Crash-if-repl-keep-alive-entry-can-not-be.patch
+Patch:            0025-Issue-6250-Add-test-for-entryUSN-overflow-on-failed-.patch
+Patch:            0026-Issue-6594-Add-test-for-numSubordinates-replication-.patch
+Patch:            0027-Issue-6884-Mask-password-hashes-in-audit-logs-6885.patch
+Patch:            0028-Issue-6897-Fix-disk-monitoring-test-failures-and-imp.patch
+Patch:            0029-Issue-6778-Memory-leak-in-roles_cache_create_object_.patch
+Patch:            0030-Issue-6901-Update-changelog-trimming-logging-fix-tes.patch
+Patch:            0031-Issue-6181-RFE-Allow-system-to-manage-uid-gid-at-sta.patch
+Patch:            0032-Issue-6468-CLI-Fix-default-error-log-level.patch
+Patch:            0033-Issue-6768-ns-slapd-crashes-when-a-referral-is-added.patch
+Patch:            0034-Issues-6913-6886-6250-Adjust-xfail-marks-6914.patch
+Patch:            0035-Issue-6875-Fix-dsidm-tests.patch
+Patch:            0036-Issue-6519-Add-basic-dsidm-account-tests.patch
+Patch:            0037-Issue-6940-dsconf-monitor-server-fails-with-ldapi-du.patch
+Patch:            0038-Issue-6936-Make-user-subtree-policy-creation-idempot.patch
+Patch:            0039-Issue-6919-numSubordinates-tombstoneNumSubordinates-.patch
+Patch:            0040-Issue-6910-Fix-latest-coverity-issues.patch
+Patch:            0041-Issue-6929-Compilation-failure-with-rust-1.89-on-Fed.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -495,7 +453,6 @@ Requires: python%{python3_pkgversion}-libselinux
 Requires: python%{python3_pkgversion}-setuptools
 Requires: python%{python3_pkgversion}-cryptography
 Recommends: bash-completion
-%{?python_provide:%python_provide python%{python3_pkgversion}-lib389}
 
 %description -n python%{python3_pkgversion}-lib389
 This module contains tools and libraries for accessing, testing,
@@ -513,6 +470,12 @@ Requires:         python%{python3_pkgversion}-lib389 = %{version}-%{release}
 %description -n cockpit-389-ds
 A cockpit UI Plugin for configuring and administering the 389 Directory Server
 %endif
+
+%generate_buildrequires
+cd src/lib389
+# Tests do not run in %%check (lib389's tests need to be fixed)
+# but test dependencies are needed to check import lib389.topologies
+%pyproject_buildrequires -g test
 
 %prep
 %autosetup -p1 -n %{name}-%{version}
@@ -623,16 +586,10 @@ autoreconf -fiv
 %endif
 
 # lib389
-make src/lib389/setup.py
 pushd ./src/lib389
-%py3_build
+%{python3} validate_version.py --update
+%pyproject_wheel
 popd
-# argparse-manpage dynamic man pages have hardcoded man v1 in header,
-# need to change it to v8
-sed -i  "1s/\"1\"/\"8\"/" %{_builddir}/%{name}-%{version}/src/lib389/man/dsconf.8
-sed -i  "1s/\"1\"/\"8\"/" %{_builddir}/%{name}-%{version}/src/lib389/man/dsctl.8
-sed -i  "1s/\"1\"/\"8\"/" %{_builddir}/%{name}-%{version}/src/lib389/man/dsidm.8
-sed -i  "1s/\"1\"/\"8\"/" %{_builddir}/%{name}-%{version}/src/lib389/man/dscreate.8
 
 # Generate symbolic info for debuggers
 export XCFLAGS=$RPM_OPT_FLAGS
@@ -662,7 +619,13 @@ cp -r %{_builddir}/%{name}-%{version}/man/man3 $RPM_BUILD_ROOT/%{_mandir}/man3
 
 # lib389
 pushd src/lib389
-%py3_install
+%pyproject_install
+%if 0%{?fedora} <= 41 || (0%{?rhel} && 0%{?rhel} <= 10)
+for clitool in dsconf dscreate dsctl dsidm openldap_to_ds; do
+    mv %{buildroot}%{_bindir}/$clitool %{buildroot}%{_sbindir}/
+done
+%endif
+%pyproject_save_files -l lib389
 popd
 
 # Register CLI tools for bash completion
@@ -717,6 +680,9 @@ export TSAN_OPTIONS=print_stacktrace=1:second_deadlock_stack=1:history_size=7
 %if %{without asan} && %{without msan}
 if ! make DESTDIR="$RPM_BUILD_ROOT" check; then cat ./test-suite.log && false; fi
 %endif
+
+# Check import for lib389 modules
+%pyproject_check_import -e '*.test*'
 
 %post
 if [ -n "$DEBUGPOSTTRANS" ] ; then
@@ -899,18 +865,24 @@ exit 0
 %{_libdir}/%{pkgname}/plugins/libback-bdb.so
 %endif
 
-%files -n python%{python3_pkgversion}-lib389
-%doc LICENSE LICENSE.GPLv3+
-%{python3_sitelib}/lib389*
+%files -n python%{python3_pkgversion}-lib389 -f %{pyproject_files}
+%doc src/lib389/README.md
+%license LICENSE LICENSE.GPLv3+
+# Binaries
 %{_sbindir}/dsconf
-%{_mandir}/man8/dsconf.8.gz
 %{_sbindir}/dscreate
-%{_mandir}/man8/dscreate.8.gz
 %{_sbindir}/dsctl
-%{_mandir}/man8/dsctl.8.gz
 %{_sbindir}/dsidm
-%{_mandir}/man8/dsidm.8.gz
+%{_sbindir}/openldap_to_ds
 %{_libexecdir}/%{pkgname}/dscontainer
+# Man pages
+%{_mandir}/man8/dsconf.8.gz
+%{_mandir}/man8/dscreate.8.gz
+%{_mandir}/man8/dsctl.8.gz
+%{_mandir}/man8/dsidm.8.gz
+%{_mandir}/man8/openldap_to_ds.8.gz
+%exclude %{_mandir}/man1
+# Bash completions for scripts provided by python3-lib389
 %{bash_completions_dir}/dsctl
 %{bash_completions_dir}/dsconf
 %{bash_completions_dir}/dscreate
@@ -924,101 +896,127 @@ exit 0
 
 %changelog
 ## START: Generated by rpmautospec
-* Fri Sep 26 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-13
-- Bump version to 3.0.6-13
-- Resolves: RHEL-111230 - Error showing local password policy on web UI
-  [rhel-10.0.z]
-- Resolves: RHEL-113982 - AddressSanitizer: memory leak in
-  memberof_add_memberof_attr [rhel-10.0.z]
-- Resolves: RHEL-117749 - The numSubordinates value is not matching the
-  number of direct children. [rhel-10.0.z]
-- Resolves: RHEL-117753 - Crash if repl keep alive entry can not be created
-  [rhel-10.0.z]
-- Resolves: RHEL-117756 - Exception thrown by dsconf instance repl get_ruv
-  [rhel-10.0.z]
-- Resolves: RHEL-117763 - Replication online reinitialization of a large
-  database gets stalled. [rhel-10.0.z]
-- Resolves: RHEL-117766 - Statistics about index lookup report a wrong
-  duration [rhel-10.0.z]
-- Resolves: RHEL-117772 - When the server restarts after a crash, the RFE
-  assumes memberof should be recomputed. It triggers a memberof fixup task,
-  dirsrv became unresponsive. [rhel-10.0.z]
-- Resolves: RHEL-117784 - Ignore the memberOfDeferredUpdate setting when
-  LMDB is used.  [rhel-10.0.z]
+* Thu Sep 18 2025 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-5
+- Resolves: RHEL-101727 - The numSubordinates value is not matching the
+  number of direct children.
+- Resolves: RHEL-101783 - RHDS12: Web console doesn't show Server Version
+- Resolves: RHEL-109018 - Allow Uniqueness plugin to search uniqueness
+  attributes using custom matching rules
+- Resolves: RHEL-111224 - Error showing local password policy on web UI
+- Resolves: RHEL-112675 - Statistics about index lookup report a wrong
+  duration
+- Resolves: RHEL-112689 - Crash if repl keep alive entry can not be created
+- Resolves: RHEL-112722 - Exception thrown by dsconf instance repl get_ruv
+- Resolves: RHEL-113969 - AddressSanitizer: memory leak in
+  memberof_add_memberof_attr
 
-* Wed Aug 20 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-9
-- Bump version to 3.0.6-9
-- Resolves: RHEL-80498 - Can't rename users member of automember rule
-  [rhel-10.0.z]
-- Resolves: RHEL-92053 - Memory leak in
-  roles_cache_create_object_from_entry [rhel-10.0.z]
-- Resolves: RHEL-107006 - Failure to get Server monitoring data when NDN
-  cache is disabled. [rhel-10.0.z]
-- Resolves: RHEL-109020 - Allow Uniqueness plugin to search uniqueness
-  attributes using custom matching rules [rhel-10.0.z]
-- Resolves: RHEL-109886 - Wrong backend database name syntax causes "Red
-  Hat Directory Server" => "Databases" menu blank in Cockpit [rhel-10.0.z]
-- Resolves: RHEL-109890 - RootDN Access Control Plugin with wildcards for
-  IP addresses fails with an error "Invalid IP address" [rhel-10.0.z]
-- Resolves: RHEL-109893 - On RHDS 12.6 The user password policy for a user
+* Tue Aug 05 2025 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-4
+- Resolves: RHEL-73032 - segfault - error 4 in libpthread-2.28.so
+- Resolves: RHEL-79079 - Failure to get Server monitoring data when NDN
+  cache is disabled.
+- Resolves: RHEL-87352 - ns-slapd crashed when we add nsslapd-referral
+- Resolves: RHEL-92054 - Memory leak in
+  roles_cache_create_object_from_entry [rhel-10]
+- Resolves: RHEL-107001 - ipa-restore fails to restore SELinux contexts,
+  causes ns-slapd AVC denials on /dev/shm after restore. [rhel-10]
+- Resolves: RHEL-107028 - CWE-284 dirsrv log rotation creates files with
+  world readable permission
+- Resolves: RHEL-107035 - CWE-532 Created user password hash available to
+  see in audit log
+- Resolves: RHEL-107037 - CWE-778 Log doesn't show what user gets password
+  changed by administrator
+
+* Fri Aug 01 2025 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-3
+- Resolves: RHEL-80252 - [RFE] Structured (JSON) logging option for RHDS
+  access and error logs
+- Resolves: RHEL-95441 - ns-slapd[xxxx]: segfault at 10d7d0d0 ip
+  00007ff734050cdb sp 00007ff6de9f1430 error 6 in
+  libslapd.so.0.1.0[7ff733ec0000+1b3000]
+
+* Thu Jul 10 2025 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-2
+- Resolves: RHEL-5117 - ns-slapd crash in
+  dbmdb_import_prepare_worker_entry()
+- Resolves: RHEL-31959 - [RFE] add plugin origin or source in security's
+  log msg info
+- Resolves: RHEL-35241 - ns-slapd crashes in referral mode
+- Resolves: RHEL-61327 - Incomplete messages about replication in the
+  errors log.
+- Resolves: RHEL-61353 - dbscan  on replication changelog does not display
+  MOD_TYPE
+- Resolves: RHEL-62874 - dsidm: issue when renaming users
+- Resolves: RHEL-65660 - DSIDM: Re-enabling user accounts that reached
+  inactivity limit fails with error
+- Resolves: RHEL-67003 - dsconf backend replication monitor fails if
+  replica id starts with 0
+- Resolves: RHEL-67006 - dsconf  utility  should let you configure the
+  "uniqueness-exclude-subtrees" parameter of the Attribute Uniqueness plug-
+  in
+- Resolves: RHEL-67019 - Crash in __strlen_sse2 when using the nsRole
+  filter rewriter.
+- Resolves: RHEL-67022 - Password modify extended operation should skip
+  password policy checks when executed by root DN
+- Resolves: RHEL-70117 - Unify how group description can be added to a new
+  group in WebUI and CLU
+- Resolves: RHEL-74085 - Increased memory consumption caused by NDN cache
+- Resolves: RHEL-74270 - [RFE] Implement "list-dn" option for dsidm tool in
+  Directory Server
+- Resolves: RHEL-76832 - Wrong backend database name syntax causes "Red Hat
+  Directory Server" => "Databases" menu blank in Cockpit
+- Resolves: RHEL-76837 - dsidm Error: float() argument must be a string or
+  a number, not 'NoneType'
+- Resolves: RHEL-76840 - Monitoring tab should use dsconf monitor
+- Resolves: RHEL-77490 - Complete remove the parameter "nsslapd-subtree-
+  rename-switch" from DS-12
+- Resolves: RHEL-79080 - Json option does not work with "dsidm account get-
+  by-dn" command
+- Resolves: RHEL-80252 - [RFE] Structured (JSON) logging option for RHDS
+  access and error logs
+- Resolves: RHEL-80253 - RHDS hangs when having online backup running
+  together with automember_rebuild task executing
+- Resolves: RHEL-80497 - Can't rename users member of automember rule
+  [rhel-10]
+- Resolves: RHEL-81277 - logconv.py fails when specific timestamps are
+  provided
+- Resolves: RHEL-83850 - mdb database statistics don't work
+- Resolves: RHEL-86279 - Cannot create a nested role using "dsidm role
+  create-nested"
+- Resolves: RHEL-86280 - Cannot create a filtered role using "dsidm role
+  create-filtered"
+- Resolves: RHEL-86313 - RootDN Access Control Plugin with wildcards for IP
+  addresses fails with an error "Invalid IP address"
+- Resolves: RHEL-86314 - dsidm failing with error "argument must be a
+  string or a number"
+- Resolves: RHEL-86315 - Dsidm get_dn option fails for organizational unit,
+  service and posixgroup
+- Resolves: RHEL-86316 - Dsidm uniquegroup members option does not work
+- Resolves: RHEL-86321 - dsidm role rename-by-dn does not rename a role
+- Resolves: RHEL-86322 - dsidm role subtree-status doesn't work
+- Resolves: RHEL-86323 - dsidm role get-by-dn doesn't work properly with -j
+  option
+- Resolves: RHEL-86324 - Deleting a role with dsidm results in proper
+  deletion message, but role is still present
+- Resolves: RHEL-86785 - dscontainer: support loading custom schema
+- Resolves: RHEL-86878 - segfault at 7ff2370010c8 ip 00007ff2339ba239 sp
+  00007fed321fe100 error 6 in liblmdb.so.0.0.0
+- Resolves: RHEL-89748 - Nested group does not receive memberOf attribute
+- Resolves: RHEL-89774 - Improve the "result" field of ipa-healthcheck if
+  replicas are busy [rhel-10]
+- Resolves: RHEL-89776 - RHDS12.2 NSMMReplicationPlugin - release_replica
+  Unable to parse the response
+- Resolves: RHEL-95441 - ns-slapd[xxxx]: segfault at 10d7d0d0 ip
+  00007ff734050cdb sp 00007ff6de9f1430 error 6 in
+  libslapd.so.0.1.0[7ff733ec0000+1b3000]
+- Resolves: RHEL-95761 - Improve  error message when bulk import connection
+  is closed
+- Resolves: RHEL-97565 - On RHDS 12.6 The user password policy for a user
   was created, but the pwdpolicysubentry attribute for this user
   incorrectly points to the People OU password policy instead of the
-  specific user policy.  [rhel-10.0.z]
-- Resolves: RHEL-109898 - AddressSanitizer: leak in do_search [rhel-10.0.z]
-- Resolves: RHEL-109905 - ns-slapd crashed when we add nsslapd-referral
-  [rhel-10.0.z]
-- Resolves: RHEL-109947 - CWE-284 dirsrv log rotation creates files with
-  world readable permission [rhel-10.0.z]
-- Resolves: RHEL-109956 - CWE-532 Created user password hash available to
-  see in audit log [rhel-10.0.z]
-- Resolves: RHEL-109959 - CWE-778 Log doesn't show what user gets password
-  changed by administrator [rhel-10.0.z]
-- Resolves: RHEL-110405 - RHDS12: Web console doesn't show Server Version
-  [rhel-10.0.z]
+  specific user policy.
+- Resolves: RHEL-101926 - ipa-backup failed with error : 'No such file or
+  directory: '/usr/sbin/dsctl'
 
-* Mon Jun 09 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-8
-- Bump version to 3.0.6-8
-- Resolves: RHEL-89737 - dsconf backend replication monitor fails if
-  replica id starts with 0 [rhel-10.0.z]
-- Resolves: RHEL-89747 - ns-slapd crash in
-  dbmdb_import_prepare_worker_entry() [rhel-10.0.z]
-- Resolves: RHEL-89754 - Nested group does not receive memberOf attribute
-  [rhel-10.0.z]
-- Resolves: RHEL-89763 - dsidm Error: float() argument must be a string or
-  a number, not 'NoneType' [rhel-10.0.z]
-- Resolves: RHEL-89770 - Crash in __strlen_sse2 when using the nsRole
-  filter rewriter. [rhel-10.0.z]
-- Resolves: RHEL-89775 - Improve the "result" field of ipa-healthcheck if
-  replicas are busy [rhel-10.0.z]
-- Resolves: RHEL-89783 - RHDS12.2 NSMMReplicationPlugin - release_replica
-  Unable to parse the response [rhel-10.0.z]
-- Resolves: RHEL-95762 - Improve  error message when bulk import connection
-  is closed [rhel-10.0.z]
-
-* Thu Jun 05 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-7
-- Resolves: RHEL-95445 - ns-slapd[xxxx]: segfault at 10d7d0d0 ip
-  00007ff734050cdb sp 00007ff6de9f1430 error 6 in
-  libslapd.so.0.1.0[7ff733ec0000+1b3000] [rhel-10.0.z]
-
-* Thu Jun 05 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-6
-- Bump version to 3.0.6-6
-- Reverts: RHEL-80702 Increased memory consumption caused by NDN cache
-  [rhel-10.0.z]
-
-* Fri Apr 04 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-5
-- Restore missing sources file
-
-* Fri Apr 04 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-4
-- Bump version to 3.0.6-4
-- Resolves: RHEL-86063 Backport lib389 fixes required for WebUI
-  [rhel-10.0.z]
-- Resolves: RHEL-80702 Increased memory consumption caused by NDN cache
-  [rhel-10.0.z]
-
-* Wed Feb 19 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-3
-- Bump version to 3.0.6-4
-- Resolves: RHEL-79498 - Failed to set sslversionmax to TLS1.3 in FIPS mode
-  with dsconf $INSTANCE security set --tls-protocol-max TLS1.3 [rhel-10]
+* Mon Jun 30 2025 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-1
+- Resolves: RHEL-80162 - Rebase 389-ds-base to 3.1.x
 
 * Wed Feb 12 2025 Viktor Ashirov <vashirov@redhat.com> - 3.0.6-2
 - Bump version to 3.0.6-3

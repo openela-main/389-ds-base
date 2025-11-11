@@ -1,0 +1,43 @@
+From 091016df4680e1f9ffc3f78292583800626153c2 Mon Sep 17 00:00:00 2001
+From: Barbora Simonova <bsmejkal@redhat.com>
+Date: Thu, 17 Jul 2025 16:46:57 +0200
+Subject: [PATCH] Issue 6829 - Update parametrized docstring for tests
+
+Description:
+Update the rest of missing parametrized values
+
+Relates: https://github.com/389ds/389-ds-base/issues/6829
+
+Reviewed by: @droideck (Thanks!)
+---
+ dirsrvtests/tests/suites/logging/error_json_logging_test.py      | 1 +
+ .../tests/suites/schema/schema_replication_origin_test.py        | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/dirsrvtests/tests/suites/logging/error_json_logging_test.py b/dirsrvtests/tests/suites/logging/error_json_logging_test.py
+index 87e1840a6..e0b3d7317 100644
+--- a/dirsrvtests/tests/suites/logging/error_json_logging_test.py
++++ b/dirsrvtests/tests/suites/logging/error_json_logging_test.py
+@@ -29,6 +29,7 @@ def test_error_json_format(topo, log_format):
+     """Test error log is in JSON
+ 
+     :id: c9afb295-43de-4581-af8b-ec8f25a06d75
++    :parametrized: yes
+     :setup: Standalone
+     :steps:
+         1. Check error log has json and the expected data is present
+diff --git a/dirsrvtests/tests/suites/schema/schema_replication_origin_test.py b/dirsrvtests/tests/suites/schema/schema_replication_origin_test.py
+index 9e4ce498c..e93dddad0 100644
+--- a/dirsrvtests/tests/suites/schema/schema_replication_origin_test.py
++++ b/dirsrvtests/tests/suites/schema/schema_replication_origin_test.py
+@@ -157,6 +157,7 @@ def test_schema_xorigin_repl(topology, schema_replication_init, xorigin):
+     schema is pushed and there is a message in the error log
+ 
+     :id: 2b29823b-3e83-4b25-954a-8a081dbc15ee
++    :parametrized: yes
+     :setup: Supplier and consumer topology, with one user entry;
+             Supplier, hub and consumer topology, with one user entry
+     :steps:
+-- 
+2.49.0
+

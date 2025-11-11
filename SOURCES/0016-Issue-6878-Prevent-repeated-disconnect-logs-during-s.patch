@@ -1,0 +1,116 @@
+From 1cc3715130650d9e778430792c5e2c2e9690cc72 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Fri, 18 Jul 2025 18:50:33 -0700
+Subject: [PATCH] Issue 6878 - Prevent repeated disconnect logs during shutdown
+ (#6879)
+
+Description: Avoid logging non-active initialized connections via CONN in disconnect_server_nomutex_ext by adding a check to skip invalid conn=0 with invalid sockets, preventing excessive repeated messages.
+
+Update ds_logs_test.py by adding test_no_repeated_disconnect_messages to verify the fix.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6878
+
+Reviewed by: @mreynolds389 (Thanks!)
+---
+ .../tests/suites/ds_logs/ds_logs_test.py      | 51 ++++++++++++++++++-
+ ldap/servers/slapd/connection.c               | 15 +++---
+ 2 files changed, 59 insertions(+), 7 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+index 209d63b5d..6fd790c18 100644
+--- a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
++++ b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+@@ -24,7 +24,7 @@ from lib389.plugins import AutoMembershipPlugin, ReferentialIntegrityPlugin, Aut
+ from lib389.idm.user import UserAccounts, UserAccount
+ from lib389.idm.group import Groups
+ from lib389.idm.organizationalunit import OrganizationalUnits
+-from lib389._constants import DEFAULT_SUFFIX, LOG_ACCESS_LEVEL, PASSWORD
++from lib389._constants import DEFAULT_SUFFIX, LOG_ACCESS_LEVEL, PASSWORD, ErrorLog
+ from lib389.utils import ds_is_older, ds_is_newer
+ from lib389.config import RSA
+ from lib389.dseldif import DSEldif
+@@ -1410,6 +1410,55 @@ def test_errorlog_buffering(topology_st, request):
+     assert inst.ds_error_log.match(".*slapd_daemon - slapd started.*")
+ 
+ 
++def test_no_repeated_disconnect_messages(topology_st):
++    """Test that there are no repeated "Not setting conn 0 to be disconnected: socket is invalid" messages on restart
++
++    :id: 72b5e1ce-2db8-458f-b2cd-0a0b6525f51f
++    :setup: Standalone Instance
++    :steps:
++        1. Set error log level to CONNECTION
++        2. Clear existing error logs
++        3. Restart the server with 30 second timeout
++        4. Check error log for repeated disconnect messages
++        5. Verify there are no more than 10 occurrences of the disconnect message
++    :expectedresults:
++        1. Error log level should be set successfully
++        2. Error logs should be cleared
++        3. Server should restart successfully within 30 seconds
++        4. Error log should be accessible
++        5. There should be no more than 10 repeated disconnect messages
++    """
++
++    inst = topology_st.standalone
++
++    log.info('Set error log level to CONNECTION')
++    inst.config.loglevel([ErrorLog.CONNECT])
++    current_level = inst.config.get_attr_val_int('nsslapd-errorlog-level')
++    log.info(f'Error log level set to: {current_level}')
++
++    log.info('Clear existing error logs')
++    inst.deleteErrorLogs()
++
++    log.info('Restart the server with 30 second timeout')
++    inst.restart(timeout=30)
++
++    log.info('Check error log for repeated disconnect messages')
++    disconnect_message = "Not setting conn 0 to be disconnected: socket is invalid"
++
++    # Count occurrences of the disconnect message
++    error_log_lines = inst.ds_error_log.readlines()
++    disconnect_count = 0
++
++    for line in error_log_lines:
++        if disconnect_message in line:
++            disconnect_count += 1
++
++    log.info(f'Found {disconnect_count} occurrences of disconnect message')
++
++    log.info('Verify there are no more than 10 occurrences')
++    assert disconnect_count <= 10, f"Found {disconnect_count} repeated disconnect messages, expected <= 10"
++
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/ldap/servers/slapd/connection.c b/ldap/servers/slapd/connection.c
+index 9f3c374cf..b3ca2e773 100644
+--- a/ldap/servers/slapd/connection.c
++++ b/ldap/servers/slapd/connection.c
+@@ -2556,12 +2556,15 @@ disconnect_server_nomutex_ext(Connection *conn, PRUint64 opconnid, int opid, PRE
+             }
+         }
+     } else {
+-        slapi_log_err(SLAPI_LOG_CONNS, "disconnect_server_nomutex_ext",
+-                "Not setting conn %d to be disconnected: %s\n",
+-                conn->c_sd,
+-                (conn->c_sd == SLAPD_INVALID_SOCKET) ? "socket is invalid" :
+-                        ((conn->c_connid != opconnid) ? "conn id does not match op conn id" :
+-                                    ((conn->c_flags & CONN_FLAG_CLOSING) ? "conn is closing" : "unknown")));
++        /* We avoid logging an invalid conn=0 connection as it is not a real connection. */
++        if (!(conn->c_sd == SLAPD_INVALID_SOCKET && conn->c_connid == 0)) {
++            slapi_log_err(SLAPI_LOG_CONNS, "disconnect_server_nomutex_ext",
++                    "Not setting conn %d to be disconnected: %s\n",
++                    conn->c_sd,
++                    (conn->c_sd == SLAPD_INVALID_SOCKET) ? "socket is invalid" :
++                            ((conn->c_connid != opconnid) ? "conn id does not match op conn id" :
++                                        ((conn->c_flags & CONN_FLAG_CLOSING) ? "conn is closing" : "unknown")));
++        }
+     }
+ }
+ 
+-- 
+2.49.0
+

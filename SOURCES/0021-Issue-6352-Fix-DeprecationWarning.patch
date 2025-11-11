@@ -1,0 +1,37 @@
+From ab188bdfed7a144734c715f57ba4772c8d453b6f Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 11 Jul 2025 13:12:44 +0200
+Subject: [PATCH] Issue 6352 - Fix DeprecationWarning
+
+Bug Description:
+When pytest is used on ASAN build, pytest-html plugin collects `*asan*`
+files, which results in the following deprecation warning:
+
+```
+The 'report.extra' attribute is deprecated and will be removed in a
+future release, use 'report.extras' instead.
+```
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6352
+
+Reviwed by: @droideck (Thanks!)
+---
+ dirsrvtests/conftest.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/dirsrvtests/conftest.py b/dirsrvtests/conftest.py
+index c989729c1..0db6045f4 100644
+--- a/dirsrvtests/conftest.py
++++ b/dirsrvtests/conftest.py
+@@ -138,7 +138,7 @@ def pytest_runtest_makereport(item, call):
+                         log_name = os.path.basename(f)
+                         instance_name = os.path.basename(os.path.dirname(f)).split("slapd-",1)[1]
+                         extra.append(pytest_html.extras.text(text, name=f"{instance_name}-{log_name}"))
+-            report.extra = extra
++            report.extras = extra
+ 
+     # Make a screenshot if WebUI test fails
+     if call.when == "call" and "WEBUI" in os.environ:
+-- 
+2.49.0
+

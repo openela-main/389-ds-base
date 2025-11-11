@@ -1,0 +1,574 @@
+From 5d2dc7f78f0a834e46d5665f0c12024da5ddda9e Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 28 Jul 2025 17:12:33 -0400
+Subject: [PATCH] Issue 6910 - Fix latest coverity issues
+
+Description:
+
+Fix various coverity/ASAN warnings:
+
+- CID 1618837: Out-of-bounds read (OVERRUN) - bdb_bdbreader_glue.c
+- CID 1618831: Resource leak (RESOURCE_LEAK) - bdb_layer.c
+- CID 1612606: Resource leak (RESOURCE_LEAK) - log.c
+- CID 1611461: Uninitialized pointer read (UNINIT) - repl5_agmt.c
+- CID 1568589: Dereference before null check (REVERSE_INULL) - repl5_agmt.c
+- CID 1590353: Logically dead code (DEADCODE) - repl5_agmt.c
+- CID 1611460: Logically dead code (DEADCODE) - control.c
+- CID 1610568: Dereference after null check (FORWARD_NULL) - modify.c
+- CID 1591259: Out-of-bounds read (OVERRUN) - memberof.c
+- CID 1550231: Unsigned compared against 0 (NO_EFFECT) - memberof_config.c
+- CID 1548904: Overflowed constant (INTEGER_OVERFLOW) - ch_malloc.c
+- CID 1548902: Overflowed constant (INTEGER_OVERFLOW) - dse.lc
+- CID 1548900: Overflowed return value (INTEGER_OVERFLOW) - acct_util.c
+- CID 1548898: Overflowed constant (INTEGER_OVERFLOW) - parents.c
+- CID 1546849: Resource leak (RESOURCE_LEAK) - referint.c
+- ASAN - Use after free - automember.c
+
+Relates: http://github.com/389ds/389-ds-base/issues/6910
+
+Reviewed by: progier & spichugi(Thanks!)
+---
+ ldap/servers/plugins/acctpolicy/acct_util.c   |  6 ++-
+ ldap/servers/plugins/automember/automember.c  |  9 ++--
+ ldap/servers/plugins/memberof/memberof.c      | 15 +++++--
+ .../plugins/memberof/memberof_config.c        | 11 +++--
+ ldap/servers/plugins/referint/referint.c      |  4 +-
+ ldap/servers/plugins/replication/repl5_agmt.c | 41 ++++++++-----------
+ .../slapd/back-ldbm/db-bdb/bdb_import.c       |  5 ++-
+ .../back-ldbm/db-bdb/bdb_instance_config.c    |  3 +-
+ .../slapd/back-ldbm/db-bdb/bdb_layer.c        | 13 ++++--
+ ldap/servers/slapd/back-ldbm/parents.c        |  4 +-
+ ldap/servers/slapd/ch_malloc.c                |  4 +-
+ ldap/servers/slapd/control.c                  |  5 +--
+ ldap/servers/slapd/dse.c                      |  4 +-
+ ldap/servers/slapd/log.c                      |  5 ++-
+ ldap/servers/slapd/modify.c                   |  6 +--
+ ldap/servers/slapd/passwd_extop.c             |  2 +-
+ ldap/servers/slapd/unbind.c                   | 12 ++++--
+ 17 files changed, 88 insertions(+), 61 deletions(-)
+
+diff --git a/ldap/servers/plugins/acctpolicy/acct_util.c b/ldap/servers/plugins/acctpolicy/acct_util.c
+index b27eeaff1..7735d10e6 100644
+--- a/ldap/servers/plugins/acctpolicy/acct_util.c
++++ b/ldap/servers/plugins/acctpolicy/acct_util.c
+@@ -17,7 +17,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ Contributors:
+ Hewlett-Packard Development Company, L.P.
+ 
+-Copyright (C) 2021 Red Hat, Inc.
++Copyright (C) 2025 Red Hat, Inc.
+ ******************************************************************************/
+ 
+ #include <stdio.h>
+@@ -248,6 +248,10 @@ gentimeToEpochtime(char *gentimestr)
+ 
+     /* Turn tm object into local epoch time */
+     epochtime = mktime(&t);
++    if (epochtime == (time_t) -1) {
++        /* mktime failed */
++        return 0;
++    }
+ 
+     /* Turn local epoch time into GMT epoch time */
+     epochtime -= zone_offset;
+diff --git a/ldap/servers/plugins/automember/automember.c b/ldap/servers/plugins/automember/automember.c
+index f900db7f2..9eade495e 100644
+--- a/ldap/servers/plugins/automember/automember.c
++++ b/ldap/servers/plugins/automember/automember.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2022 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -1756,9 +1756,10 @@ automember_update_member_value(Slapi_Entry *member_e, const char *group_dn, char
+ 
+         mod_pb = slapi_pblock_new();
+         /* Do a single mod with error overrides for DEL/ADD */
+-        result = slapi_single_modify_internal_override(mod_pb, slapi_sdn_new_dn_byval(group_dn), mods,
+-                                                        automember_get_plugin_id(), 0);
+-
++        Slapi_DN *sdn = slapi_sdn_new_normdn_byref(group_dn);
++        result = slapi_single_modify_internal_override(mod_pb, sdn, mods,
++                                                       automember_get_plugin_id(), 0);
++        slapi_sdn_free(&sdn);
+         if(add){
+             if (result != LDAP_SUCCESS) {
+                 slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index 073d8d938..cfda977f0 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2021 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -1655,6 +1655,7 @@ memberof_call_foreach_dn(Slapi_PBlock *pb __attribute__((unused)), Slapi_DN *sdn
+                             /* We already did the search for this backend, don't
+                              * do it again when we fall through */
+                             do_suffix_search = PR_FALSE;
++                            slapi_pblock_init(search_pb);
+                         }
+                     }
+                 } else if (!all_backends) {
+@@ -3763,6 +3764,10 @@ memberof_replace_list(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *group_
+ 
+                     pre_index++;
+                 } else {
++                    if (pre_index >= pre_total || post_index >= post_total) {
++                        /* Don't overrun pre_array/post_array */
++                        break;
++                    }
+                     /* decide what to do */
+                     int cmp = memberof_compare(
+                         config,
+@@ -4453,10 +4458,12 @@ memberof_add_memberof_attr(LDAPMod **mods, const char *dn, char *add_oc)
+ 
+         while (1) {
+             slapi_pblock_init(mod_pb);
+-
++            Slapi_DN *sdn = slapi_sdn_new_normdn_byref(dn);
+             /* Internal mod with error overrides for DEL/ADD */
+-            rc = slapi_single_modify_internal_override(mod_pb, slapi_sdn_new_normdn_byref(dn), single_mod,
+-                                                        memberof_get_plugin_id(), SLAPI_OP_FLAG_BYPASS_REFERRALS);
++            rc = slapi_single_modify_internal_override(mod_pb, sdn, single_mod,
++                                                       memberof_get_plugin_id(),
++                                                       SLAPI_OP_FLAG_BYPASS_REFERRALS);
++            slapi_sdn_free(&sdn);
+             if (rc == LDAP_OBJECT_CLASS_VIOLATION) {
+                 if (!add_oc || added_oc) {
+                     /*
+diff --git a/ldap/servers/plugins/memberof/memberof_config.c b/ldap/servers/plugins/memberof/memberof_config.c
+index 1e83ba6e0..e4da351d9 100644
+--- a/ldap/servers/plugins/memberof/memberof_config.c
++++ b/ldap/servers/plugins/memberof/memberof_config.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2021 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -570,21 +570,24 @@ memberof_apply_config(Slapi_PBlock *pb __attribute__((unused)),
+         if (num_groupattrs > 1) {
+             size_t bytes_out = 0;
+             size_t filter_str_len = groupattr_name_len + (num_groupattrs * 4) + 4;
++            int32_t rc = 0;
+ 
+             /* Allocate enough space for the filter */
+             filter_str = slapi_ch_malloc(filter_str_len);
+ 
+             /* Add beginning of filter. */
+-            bytes_out = snprintf(filter_str, filter_str_len - bytes_out, "(|");
+-            if (bytes_out<0) {
++            rc = snprintf(filter_str, filter_str_len - bytes_out, "(|");
++            if (rc < 0) {
+                 slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM, "snprintf unexpectly failed in memberof_apply_config.\n");
+                 *returncode = LDAP_UNWILLING_TO_PERFORM;
+                 goto done;
++            } else {
++                bytes_out = rc;
+             }
+ 
+             /* Add filter section for each groupattr. */
+             for (size_t i=0; theConfig.groupattrs && theConfig.groupattrs[i]; i++) {
+-                size_t bytes_read = snprintf(filter_str + bytes_out, filter_str_len - bytes_out, "(%s=*)", theConfig.groupattrs[i]);
++                int32_t bytes_read = snprintf(filter_str + bytes_out, filter_str_len - bytes_out, "(%s=*)", theConfig.groupattrs[i]);
+                 if (bytes_read<0) {
+                     slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM, "snprintf unexpectly failed in memberof_apply_config.\n");
+                     *returncode = LDAP_UNWILLING_TO_PERFORM;
+diff --git a/ldap/servers/plugins/referint/referint.c b/ldap/servers/plugins/referint/referint.c
+index 5d7f9e5dd..5746b913f 100644
+--- a/ldap/servers/plugins/referint/referint.c
++++ b/ldap/servers/plugins/referint/referint.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2021 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -1499,6 +1499,8 @@ referint_thread_func(void *arg __attribute__((unused)))
+                 slapi_sdn_free(&sdn);
+                 continue;
+             }
++
++            slapi_sdn_free(&tmpsuperior);
+             if (!strcasecmp(ptoken, "NULL")) {
+                 tmpsuperior = NULL;
+             } else {
+diff --git a/ldap/servers/plugins/replication/repl5_agmt.c b/ldap/servers/plugins/replication/repl5_agmt.c
+index 0a81167b7..eed97578e 100644
+--- a/ldap/servers/plugins/replication/repl5_agmt.c
++++ b/ldap/servers/plugins/replication/repl5_agmt.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2021 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -202,7 +202,7 @@ agmt_init_session_id(Repl_Agmt *ra)
+     char *host = NULL; /* e.g. localhost.domain */
+     char port[10];   /* e.g. 389 */
+     char sport[10];  /* e.g. 636 */
+-    char *hash_in;
++    char *hash_in = NULL;
+     int32_t max_str_sid = SESSION_ID_STR_SZ - 4;
+ 
+     if (ra == NULL) {
+@@ -2718,31 +2718,26 @@ agmt_update_init_status(Repl_Agmt *ra)
+         mod_idx++;
+     }
+ 
+-    if (nb_mods) {
+-        /* it is ok to release the lock here because we are done with the agreement data.
+-           we have to do it before issuing the modify operation because it causes
+-           agmtlist_notify_all to be called which uses the same lock - hence the deadlock */
+-        PR_Unlock(ra->lock);
+-
+-        pb = slapi_pblock_new();
+-        mods[nb_mods] = NULL;
++    /* it is ok to release the lock here because we are done with the agreement data.
++       we have to do it before issuing the modify operation because it causes
++       agmtlist_notify_all to be called which uses the same lock - hence the deadlock */
++    PR_Unlock(ra->lock);
+ 
+-        slapi_modify_internal_set_pb_ext(pb, ra->dn, mods, NULL, NULL,
+-                                         repl_get_plugin_identity(PLUGIN_MULTISUPPLIER_REPLICATION), 0);
+-        slapi_modify_internal_pb(pb);
++    pb = slapi_pblock_new();
++    mods[nb_mods] = NULL;
+ 
+-        slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &rc);
+-        if (rc != LDAP_SUCCESS && rc != LDAP_NO_SUCH_ATTRIBUTE) {
+-            slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name, "agmt_update_consumer_ruv - "
+-                                                           "%s: agmt_update_consumer_ruv: "
+-                                                           "failed to update consumer's RUV; LDAP error - %d\n",
+-                          ra->long_name, rc);
+-        }
++    slapi_modify_internal_set_pb_ext(pb, ra->dn, mods, NULL, NULL,
++                                     repl_get_plugin_identity(PLUGIN_MULTISUPPLIER_REPLICATION), 0);
++    slapi_modify_internal_pb(pb);
+ 
+-        slapi_pblock_destroy(pb);
+-    } else {
+-        PR_Unlock(ra->lock);
++    slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &rc);
++    if (rc != LDAP_SUCCESS && rc != LDAP_NO_SUCH_ATTRIBUTE) {
++        slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name, "agmt_update_consumer_ruv - "
++                      "%s: agmt_update_consumer_ruv: failed to update consumer's RUV; LDAP error - %d\n",
++                      ra->long_name, rc);
+     }
++
++    slapi_pblock_destroy(pb);
+     slapi_ch_free((void **)&mods);
+     slapi_mod_done(&smod_start_time);
+     slapi_mod_done(&smod_end_time);
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+index 46c80ec3d..0127bf2f9 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2020 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -947,6 +947,7 @@ bdb_ancestorid_new_idl_create_index(backend *be, ImportJob *job)
+                                EQ_PREFIX, (u_long)id);
+         key.size++; /* include the null terminator */
+         ret = NEW_IDL_NO_ALLID;
++        idl_free(&children);
+         children = idl_fetch(be, db_pid, &key, txn, ai_pid, &ret);
+         if (ret != 0) {
+             ldbm_nasty("bdb_ancestorid_new_idl_create_index", sourcefile, 13070, ret);
+@@ -957,6 +958,7 @@ bdb_ancestorid_new_idl_create_index(backend *be, ImportJob *job)
+         if (job->flags & FLAG_ABORT) {
+             import_log_notice(job, SLAPI_LOG_ERR, "bdb_ancestorid_new_idl_create_index",
+                               "ancestorid creation aborted.");
++            idl_free(&children);
+             ret = -1;
+             break;
+         }
+@@ -1290,6 +1292,7 @@ bdb_update_subordinatecounts(backend *be, ImportJob *job, DB_TXN *txn)
+     }
+     bdb_close_subcount_cursor(&c_entryrdn);
+     bdb_close_subcount_cursor(&c_objectclass);
++
+     return ret;
+ }
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_instance_config.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_instance_config.c
+index bb515a23f..44a624fde 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_instance_config.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_instance_config.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2020 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -261,6 +261,7 @@ bdb_instance_cleanup(struct ldbm_instance *inst)
+         if (inst_dirp && *inst_dir) {
+             return_value = env->remove(env, inst_dirp, 0);
+         } else {
++            slapi_ch_free((void **)&env);
+             return_value = -1;
+         }
+         if (return_value == EBUSY) {
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+index 53f1cde69..b1e44a919 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2023 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -2027,9 +2027,13 @@ bdb_pre_close(struct ldbminfo *li)
+     conf = (bdb_config *)li->li_dblayer_config;
+     bdb_db_env *pEnv = (bdb_db_env *)priv->dblayer_env;
+ 
++    if (pEnv == NULL) {
++        return;
++    }
++
+     pthread_mutex_lock(&pEnv->bdb_thread_count_lock);
+ 
+-    if (conf->bdb_stop_threads || !pEnv) {
++    if (conf->bdb_stop_threads) {
+         /* already stopped.  do nothing... */
+         goto timeout_escape;
+     }
+@@ -2203,6 +2207,7 @@ bdb_remove_env(struct ldbminfo *li)
+     }
+     if (NULL == li) {
+         slapi_log_err(SLAPI_LOG_ERR, "bdb_remove_env", "No ldbm info is given\n");
++        slapi_ch_free((void **)&env);
+         return -1;
+     }
+ 
+@@ -2212,10 +2217,11 @@ bdb_remove_env(struct ldbminfo *li)
+         if (rc) {
+             slapi_log_err(SLAPI_LOG_ERR,
+                           "bdb_remove_env", "Failed to remove DB environment files. "
+-                                                "Please remove %s/__db.00# (# is 1 through 6)\n",
++                          "Please remove %s/__db.00# (# is 1 through 6)\n",
+                           home_dir);
+         }
+     }
++    slapi_ch_free((void **)&env);
+     return rc;
+ }
+ 
+@@ -6341,6 +6347,7 @@ bdb_back_ctrl(Slapi_Backend *be, int cmd, void *info)
+                 db->close(db, 0);
+                 rc = bdb_db_remove_ex((bdb_db_env *)priv->dblayer_env, path, NULL, PR_TRUE);
+                 inst->inst_changelog = NULL;
++                slapi_ch_free_string(&path);
+                 slapi_ch_free_string(&instancedir);
+             }
+         }
+diff --git a/ldap/servers/slapd/back-ldbm/parents.c b/ldap/servers/slapd/back-ldbm/parents.c
+index 31107591e..52c665ca4 100644
+--- a/ldap/servers/slapd/back-ldbm/parents.c
++++ b/ldap/servers/slapd/back-ldbm/parents.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -123,7 +123,7 @@ parent_update_on_childchange(modify_context *mc, int op, size_t *new_sub_count)
+         /* Now compute the new value */
+         if ((PARENTUPDATE_ADD == op) || (PARENTUPDATE_RESURECT == op)) {
+             current_sub_count++;
+-        } else {
++        } else if (current_sub_count > 0) {
+             current_sub_count--;
+         }
+ 
+diff --git a/ldap/servers/slapd/ch_malloc.c b/ldap/servers/slapd/ch_malloc.c
+index cbab1d170..27ed546a5 100644
+--- a/ldap/servers/slapd/ch_malloc.c
++++ b/ldap/servers/slapd/ch_malloc.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -254,7 +254,7 @@ slapi_ch_bvecdup(struct berval **v)
+             ++i;
+         newberval = (struct berval **)slapi_ch_malloc((i + 1) * sizeof(struct berval *));
+         newberval[i] = NULL;
+-        while (i-- > 0) {
++        while (i > 0 && i-- > 0) {
+             newberval[i] = slapi_ch_bvdup(v[i]);
+         }
+     }
+diff --git a/ldap/servers/slapd/control.c b/ldap/servers/slapd/control.c
+index 7aeeba885..d661dc6e1 100644
+--- a/ldap/servers/slapd/control.c
++++ b/ldap/servers/slapd/control.c
+@@ -174,7 +174,6 @@ create_sessiontracking_ctrl(const char *session_tracking_id, LDAPControl **sessi
+     char *undefined_sid = "undefined sid";
+     const char *sid;
+     int rc = 0;
+-    int tag;
+     LDAPControl *ctrl = NULL;
+ 
+     if (session_tracking_id) {
+@@ -183,9 +182,7 @@ create_sessiontracking_ctrl(const char *session_tracking_id, LDAPControl **sessi
+         sid = undefined_sid;
+     }
+     ctrlber = ber_alloc();
+-    tag = ber_printf( ctrlber, "{nnno}", sid, strlen(sid));
+-    if (rc == LBER_ERROR) {
+-        tag = -1;
++    if ((rc = ber_printf( ctrlber, "{nnno}", sid, strlen(sid)) == LBER_ERROR)) {
+         goto done;
+     }
+     slapi_build_control(LDAP_CONTROL_X_SESSION_TRACKING, ctrlber, 0, &ctrl);
+diff --git a/ldap/servers/slapd/dse.c b/ldap/servers/slapd/dse.c
+index b788054db..bec3e32f4 100644
+--- a/ldap/servers/slapd/dse.c
++++ b/ldap/servers/slapd/dse.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -637,7 +637,7 @@ dse_updateNumSubordinates(Slapi_Entry *entry, int op)
+     /* Now compute the new value */
+     if (SLAPI_OPERATION_ADD == op) {
+         current_sub_count++;
+-    } else {
++    } else if (current_sub_count > 0) {
+         current_sub_count--;
+     }
+     {
+diff --git a/ldap/servers/slapd/log.c b/ldap/servers/slapd/log.c
+index 91ba23047..a9a5f3b3f 100644
+--- a/ldap/servers/slapd/log.c
++++ b/ldap/servers/slapd/log.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005-2024 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * Copyright (C) 2010 Hewlett-Packard Development Company, L.P.
+  * All rights reserved.
+  *
+@@ -201,6 +201,7 @@ compress_log_file(char *log_name, int32_t mode)
+ 
+     if ((source = fopen(log_name, "r")) == NULL) {
+         /* Failed to open log file */
++        /* coverity[leaked_storage] gzclose does close FD */
+         gzclose(outfile);
+         return -1;
+     }
+@@ -211,11 +212,13 @@ compress_log_file(char *log_name, int32_t mode)
+         if (bytes_written == 0)
+         {
+             fclose(source);
++            /* coverity[leaked_storage] gzclose does close FD */
+             gzclose(outfile);
+             return -1;
+         }
+         bytes_read = fread(buf, 1, LOG_CHUNK, source);
+     }
++    /* coverity[leaked_storage] gzclose does close FD */
+     gzclose(outfile);
+     fclose(source);
+     PR_Delete(log_name); /* remove the old uncompressed log */
+diff --git a/ldap/servers/slapd/modify.c b/ldap/servers/slapd/modify.c
+index 0a351d46a..9e5bce80b 100644
+--- a/ldap/servers/slapd/modify.c
++++ b/ldap/servers/slapd/modify.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2009 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * Copyright (C) 2009, 2010 Hewlett-Packard Development Company, L.P.
+  * All rights reserved.
+  *
+@@ -498,7 +498,7 @@ slapi_modify_internal_set_pb_ext(Slapi_PBlock *pb, const Slapi_DN *sdn, LDAPMod
+  *
+  * Any other errors encountered during the operation will be returned as-is.
+  */
+-int 
++int
+ slapi_single_modify_internal_override(Slapi_PBlock *pb, const Slapi_DN *sdn, LDAPMod **mod, Slapi_ComponentId *plugin_id, int op_flags)
+ {
+     int rc = 0;
+@@ -512,7 +512,7 @@ slapi_single_modify_internal_override(Slapi_PBlock *pb, const Slapi_DN *sdn, LDA
+                     !pb ? "pb " : "",
+                     !sdn ? "sdn " : "",
+                     !mod ? "mod " : "",
+-                    !mod[0] ? "mod[0] " : "");
++                    !mod || !mod[0] ? "mod[0] " : "");
+ 
+         return LDAP_PARAM_ERROR;
+     }
+diff --git a/ldap/servers/slapd/passwd_extop.c b/ldap/servers/slapd/passwd_extop.c
+index 69bb3494c..5f05cf74e 100644
+--- a/ldap/servers/slapd/passwd_extop.c
++++ b/ldap/servers/slapd/passwd_extop.c
+@@ -1,5 +1,5 @@
+ /** BEGIN COPYRIGHT BLOCK
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+diff --git a/ldap/servers/slapd/unbind.c b/ldap/servers/slapd/unbind.c
+index fa8cd649f..c4e7a5efd 100644
+--- a/ldap/servers/slapd/unbind.c
++++ b/ldap/servers/slapd/unbind.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -112,8 +112,12 @@ do_unbind(Slapi_PBlock *pb)
+     /* pass the unbind to all backends */
+     be_unbindall(pb_conn, operation);
+ 
+-free_and_return:;
++free_and_return:
+ 
+-    /* close the connection to the client */
+-    disconnect_server(pb_conn, operation->o_connid, operation->o_opid, SLAPD_DISCONNECT_UNBIND, 0);
++    /* close the connection to the client after refreshing the operation */
++    slapi_pblock_get(pb, SLAPI_OPERATION, &operation);
++    disconnect_server(pb_conn,
++                      operation ? operation->o_connid : -1,
++                      operation ? operation->o_opid : -1,
++                      SLAPD_DISCONNECT_UNBIND, 0);
+ }
+-- 
+2.49.0
+
