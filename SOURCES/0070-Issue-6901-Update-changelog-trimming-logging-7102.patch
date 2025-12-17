@@ -1,0 +1,79 @@
+From 3ed914e5b7a668fbf90c4a2f425ce166901018b6 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 18 Nov 2025 14:17:09 +0100
+Subject: [PATCH] Issue 6901 - Update changelog trimming logging (#7102)
+
+Description:
+* Set SLAPI_LOG_ERR for message in `_cl5DispatchTrimThread`
+* Add number of scanned entries to the log.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6901
+
+Reviewed by: @mreynolds389, @progier389, @tbordaz (Thanks!)
+
+(cherry picked from commit 375d317cbe39c7792cdc608f236846e18252d6b1)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ ldap/servers/plugins/replication/cl5_api.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/cl5_api.c b/ldap/servers/plugins/replication/cl5_api.c
+index 5d4edea92..21d2f5b8b 100644
+--- a/ldap/servers/plugins/replication/cl5_api.c
++++ b/ldap/servers/plugins/replication/cl5_api.c
+@@ -2082,7 +2082,7 @@ _cl5DispatchDBThreads(void)
+                           NULL, PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD,
+                           PR_UNJOINABLE_THREAD, DEFAULT_THREAD_STACKSIZE);
+     if (NULL == pth) {
+-        slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl,
++        slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name_cl,
+                       "_cl5DispatchDBThreads - Failed to create trimming thread"
+                       "; NSPR error - %d\n",
+                       PR_GetError());
+@@ -3687,7 +3687,7 @@ _cl5TrimFile(Object *obj, long *numToTrim)
+     slapi_operation_parameters op = {0};
+     ReplicaId csn_rid;
+     void *it;
+-    int finished = 0, totalTrimmed = 0, count;
++    int finished = 0, totalTrimmed = 0, totalScanned = 0, count, scanned;
+     PRBool abort;
+     char strCSN[CSN_STRSIZE];
+     int rc;
+@@ -3704,6 +3704,7 @@ _cl5TrimFile(Object *obj, long *numToTrim)
+     while (!finished && !slapi_is_shutting_down()) {
+         it = NULL;
+         count = 0;
++        scanned = 0;
+         txnid = NULL;
+         abort = PR_FALSE;
+ 
+@@ -3720,6 +3721,7 @@ _cl5TrimFile(Object *obj, long *numToTrim)
+ 
+         finished = _cl5GetFirstEntry(obj, &entry, &it, txnid);
+         while (!finished && !slapi_is_shutting_down()) {
++            scanned++;
+             /*
+              * This change can be trimmed if it exceeds purge
+              * parameters and has been seen by all consumers.
+@@ -3809,6 +3811,7 @@ _cl5TrimFile(Object *obj, long *numToTrim)
+                               rc, db_strerror(rc));
+             } else {
+                 totalTrimmed += count;
++                totalScanned += scanned;
+             }
+         }
+ 
+@@ -3818,8 +3821,8 @@ _cl5TrimFile(Object *obj, long *numToTrim)
+         ruv_destroy(&ruv);
+ 
+     if (totalTrimmed) {
+-        slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl, "_cl5TrimFile - Trimmed %d changes from the changelog\n",
+-                      totalTrimmed);
++        slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl, "_cl5TrimFile - Scanned %d records, and trimmed %d changes from the changelog\n",
++                      totalScanned, totalTrimmed);
+     }
+ }
+ 
+-- 
+2.51.1
+

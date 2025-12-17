@@ -1,0 +1,671 @@
+From dfb7e19fdcefe4af683a235ea7113956248571e3 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Thu, 17 Nov 2022 14:21:17 +0100
+Subject: [PATCH] Issue 3729 - RFE Extend log of operations statistics in
+ access log (#5508)
+
+Bug description:
+	Create a per operation framework to collect/display
+	statistics about internal ressource consumption
+
+Fix description:
+
+	The fix contains 2 parts
+	The framework, that registers a per operation object extension
+        (op_stat_init). The extension is used to store/retrieve
+	collected statistics.
+        To reduce the impact of collecting/logging it uses a toggle
+        with config attribute 'nsslapd-statlog-level' that is a bit mask.
+        So that data are collected and logged only if the appropriate
+        statistic level is set.
+
+	An exemple of statistic level regarding indexes fetching
+	during the evaluation of a search filter.
+	it is implemented in filterindex.c (store) and result.c (retrieve/log).
+	This path uses LDAP_STAT_READ_INDEX=0x1.
+	For LDAP_STAT_READ_INDEX, the collected data are:
+		- for each key (attribute, type, value) the number of
+		  IDs
+		- the duration to fetch all the values
+
+	design https://www.port389.org/docs/389ds/design/log-operation-stats.html
+relates: #3729
+
+Reviewed by: Pierre Rogier, Mark Reynolds (thanks !)
+
+(cherry picked from commit a480d2cbfa2b1325f44ab3e1c393c5ee348b388e)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ .../tests/suites/ds_logs/ds_logs_test.py      | 73 ++++++++++++++++
+ ldap/servers/slapd/back-ldbm/filterindex.c    | 49 +++++++++++
+ ldap/servers/slapd/libglobs.c                 | 48 +++++++++++
+ ldap/servers/slapd/log.c                      | 26 ++++++
+ ldap/servers/slapd/log.h                      |  1 +
+ ldap/servers/slapd/main.c                     |  1 +
+ ldap/servers/slapd/operation.c                | 86 +++++++++++++++++++
+ ldap/servers/slapd/proto-slap.h               |  8 ++
+ ldap/servers/slapd/result.c                   | 64 ++++++++++++++
+ ldap/servers/slapd/slap.h                     |  4 +
+ ldap/servers/slapd/slapi-private.h            | 27 ++++++
+ 11 files changed, 387 insertions(+)
+
+diff --git a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+index 84d721756..43288f67f 100644
+--- a/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
++++ b/dirsrvtests/tests/suites/ds_logs/ds_logs_test.py
+@@ -27,6 +27,7 @@ from lib389.idm.group import Groups
+ from lib389.idm.organizationalunit import OrganizationalUnits
+ from lib389._constants import DEFAULT_SUFFIX, LOG_ACCESS_LEVEL, PASSWORD
+ from lib389.utils import ds_is_older, ds_is_newer
++from lib389.dseldif import DSEldif
+ import ldap
+ import glob
+ import re
+@@ -1250,6 +1251,78 @@ def test_missing_backend_suffix(topology_st, request):
+ 
+     request.addfinalizer(fin)
+ 
++def test_stat_index(topology_st, request):
++    """Testing nsslapd-statlog-level with indexing statistics
++
++    :id: fcabab05-f000-468c-8eb4-02ce3c39c902
++    :setup: Standalone instance
++    :steps:
++         1. Check that nsslapd-statlog-level is 0 (default)
++         2. Create 20 users with 'cn' starting with 'user\_'
++         3. Check there is no statistic record in the access log with ADD
++         4. Check there is no statistic record in the access log with SRCH
++         5. Set nsslapd-statlog-level=LDAP_STAT_READ_INDEX (0x1) to get
++            statistics when reading indexes
++         6. Check there is statistic records in access log with SRCH
++    :expectedresults:
++         1. This should pass
++         2. This should pass
++         3. This should pass
++         4. This should pass
++         5. This should pass
++         6. This should pass
++    """
++    topology_st.standalone.start()
++
++    # Step 1
++    log.info("Assert nsslapd-statlog-level is by default 0")
++    assert topology_st.standalone.config.get_attr_val_int("nsslapd-statlog-level") == 0
++
++    # Step 2
++    users = UserAccounts(topology_st.standalone, DEFAULT_SUFFIX)
++    users_set = []
++    log.info('Adding 20 users')
++    for i in range(20):
++        name = 'user_%d' % i
++        last_user = users.create(properties={
++            'uid': name,
++            'sn': name,
++            'cn': name,
++            'uidNumber': '1000',
++            'gidNumber': '1000',
++            'homeDirectory': '/home/%s' % name,
++            'mail': '%s@example.com' % name,
++            'userpassword': 'pass%s' % name,
++        })
++        users_set.append(last_user)
++
++    # Step 3
++    assert not topology_st.standalone.ds_access_log.match('.*STAT read index.*')
++
++    # Step 4
++    entries = topology_st.standalone.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "cn=user_*")
++    assert not topology_st.standalone.ds_access_log.match('.*STAT read index.*')
++
++    # Step 5
++    log.info("Set nsslapd-statlog-level: 1 to enable indexing statistics")
++    topology_st.standalone.config.set("nsslapd-statlog-level", "1")
++
++    # Step 6
++    entries = topology_st.standalone.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "cn=user_*")
++    topology_st.standalone.stop()
++    assert topology_st.standalone.ds_access_log.match('.*STAT read index.*')
++    assert topology_st.standalone.ds_access_log.match('.*STAT read index: attribute.*')
++    assert topology_st.standalone.ds_access_log.match('.*STAT read index: duration.*')
++    topology_st.standalone.start()
++
++    def fin():
++        log.info('Deleting users')
++        for user in users_set:
++            user.delete()
++        topology_st.standalone.config.set("nsslapd-statlog-level", "0")
++
++    request.addfinalizer(fin)
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/ldap/servers/slapd/back-ldbm/filterindex.c b/ldap/servers/slapd/back-ldbm/filterindex.c
+index 8a79848c3..30550dde7 100644
+--- a/ldap/servers/slapd/back-ldbm/filterindex.c
++++ b/ldap/servers/slapd/back-ldbm/filterindex.c
+@@ -1040,13 +1040,57 @@ keys2idl(
+     int allidslimit)
+ {
+     IDList *idl = NULL;
++    Op_stat *op_stat;
++    PRBool collect_stat = PR_FALSE;
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, "keys2idl", "=> type %s indextype %s\n", type, indextype);
++
++    /* Before reading the index take the start time */
++    if (LDAP_STAT_READ_INDEX & config_get_statlog_level()) {
++        op_stat = op_stat_get_operation_extension(pb);
++        if (op_stat->search_stat) {
++            collect_stat = PR_TRUE;
++            clock_gettime(CLOCK_MONOTONIC, &(op_stat->search_stat->keys_lookup_start));
++        }
++    }
++
+     for (uint32_t i = 0; ivals[i] != NULL; i++) {
+         IDList *idl2 = NULL;
++        struct component_keys_lookup *key_stat;
++        int key_len;
+ 
+         idl2 = index_read_ext_allids(pb, be, type, indextype, slapi_value_get_berval(ivals[i]), txn, err, unindexed, allidslimit);
++        if (collect_stat) {
++            /* gather the index lookup statistics */
++            key_stat = (struct component_keys_lookup *) slapi_ch_calloc(1, sizeof (struct component_keys_lookup));
++
++            /* indextype e.g. "eq" or "sub" (see index.c) */
++            if (indextype) {
++                key_stat->index_type = slapi_ch_strdup(indextype);
++            }
++            /* key value e.g. '^st' or 'smith'*/
++            key_len = slapi_value_get_length(ivals[i]);
++            if (key_len) {
++                key_stat->key = (char *) slapi_ch_calloc(1, key_len + 1);
++                memcpy(key_stat->key, slapi_value_get_string(ivals[i]), key_len);
++            }
+ 
++            /* attribute name e.g. 'uid' */
++            if (type) {
++                key_stat->attribute_type = slapi_ch_strdup(type);
++            }
++
++            /* Number of lookup IDs with the key */
++            key_stat->id_lookup_cnt = idl2 ? idl2->b_nids : 0;
++            if (op_stat->search_stat->keys_lookup) {
++                /* it already exist key stat. add key_stat at the head */
++                key_stat->next = op_stat->search_stat->keys_lookup;
++            } else {
++                /* this is the first key stat record */
++                key_stat->next = NULL;
++            }
++            op_stat->search_stat->keys_lookup = key_stat;
++        }
+ #ifdef LDAP_ERROR_LOGGING
+         /* XXX if ( slapd_ldap_debug & LDAP_DEBUG_TRACE ) { XXX */
+         {
+@@ -1080,5 +1124,10 @@ keys2idl(
+         }
+     }
+ 
++    /* All the keys have been fetch, time to take the completion time */
++    if (collect_stat) {
++        clock_gettime(CLOCK_MONOTONIC, &(op_stat->search_stat->keys_lookup_end));
++    }
++
+     return (idl);
+ }
+diff --git a/ldap/servers/slapd/libglobs.c b/ldap/servers/slapd/libglobs.c
+index 2097ab93c..99b2c5d8e 100644
+--- a/ldap/servers/slapd/libglobs.c
++++ b/ldap/servers/slapd/libglobs.c
+@@ -712,6 +712,10 @@ static struct config_get_and_set
+      NULL, 0,
+      (void **)&global_slapdFrontendConfig.accessloglevel,
+      CONFIG_INT, NULL, SLAPD_DEFAULT_ACCESSLOG_LEVEL_STR, NULL},
++    {CONFIG_STATLOGLEVEL_ATTRIBUTE, config_set_statlog_level,
++     NULL, 0,
++     (void **)&global_slapdFrontendConfig.statloglevel,
++     CONFIG_INT, NULL, SLAPD_DEFAULT_STATLOG_LEVEL, NULL},
+     {CONFIG_ERRORLOG_LOGROTATIONTIMEUNIT_ATTRIBUTE, NULL,
+      log_set_rotationtimeunit, SLAPD_ERROR_LOG,
+      (void **)&global_slapdFrontendConfig.errorlog_rotationunit,
+@@ -1748,6 +1752,7 @@ FrontendConfig_init(void)
+     cfg->accessloglevel = SLAPD_DEFAULT_ACCESSLOG_LEVEL;
+     init_accesslogbuffering = cfg->accesslogbuffering = LDAP_ON;
+     init_csnlogging = cfg->csnlogging = LDAP_ON;
++    cfg->statloglevel = SLAPD_DEFAULT_STATLOG_LEVEL;
+ 
+     init_errorlog_logging_enabled = cfg->errorlog_logging_enabled = LDAP_ON;
+     init_external_libs_debug_enabled = cfg->external_libs_debug_enabled = LDAP_OFF;
+@@ -5382,6 +5387,38 @@ config_set_accesslog_level(const char *attrname, char *value, char *errorbuf, in
+     return retVal;
+ }
+ 
++int
++config_set_statlog_level(const char *attrname, char *value, char *errorbuf, int apply)
++{
++    int retVal = LDAP_SUCCESS;
++    long level = 0;
++    char *endp = NULL;
++
++    slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
++
++    if (config_value_is_null(attrname, value, errorbuf, 1)) {
++        return LDAP_OPERATIONS_ERROR;
++    }
++
++    errno = 0;
++    level = strtol(value, &endp, 10);
++
++    if (*endp != '\0' || errno == ERANGE || level < 0) {
++        slapi_create_errormsg(errorbuf, SLAPI_DSE_RETURNTEXT_SIZE, "%s: stat log level \"%s\" is invalid,"
++                                                                   " access log level must range from 0 to %lld",
++                              attrname, value, (long long int)LONG_MAX);
++        retVal = LDAP_OPERATIONS_ERROR;
++        return retVal;
++    }
++
++    if (apply) {
++        CFG_LOCK_WRITE(slapdFrontendConfig);
++        g_set_statlog_level(level);
++        slapdFrontendConfig->statloglevel = level;
++        CFG_UNLOCK_WRITE(slapdFrontendConfig);
++    }
++    return retVal;
++}
+ /* set the referral-mode url (which puts us into referral mode) */
+ int
+ config_set_referral_mode(const char *attrname __attribute__((unused)), char *url, char *errorbuf, int apply)
+@@ -6612,6 +6649,17 @@ config_get_accesslog_level()
+     return retVal;
+ }
+ 
++int
++config_get_statlog_level()
++{
++    slapdFrontendConfig_t *slapdFrontendConfig = getFrontendConfig();
++    int retVal;
++
++    retVal = slapdFrontendConfig->statloglevel;
++
++    return retVal;
++}
++
+ /*  return integer -- don't worry about locking similar to config_check_referral_mode
+     below */
+ 
+diff --git a/ldap/servers/slapd/log.c b/ldap/servers/slapd/log.c
+index 8074735e2..837a9c6fd 100644
+--- a/ldap/servers/slapd/log.c
++++ b/ldap/servers/slapd/log.c
+@@ -233,6 +233,17 @@ g_set_accesslog_level(int val)
+     LOG_ACCESS_UNLOCK_WRITE();
+ }
+ 
++/******************************************************************************
++* Set the stat level
++******************************************************************************/
++void
++g_set_statlog_level(int val)
++{
++    LOG_ACCESS_LOCK_WRITE();
++    loginfo.log_access_stat_level = val;
++    LOG_ACCESS_UNLOCK_WRITE();
++}
++
+ /******************************************************************************
+ * Set whether the process is alive or dead
+ * If it is detached, then we write the error in 'stderr'
+@@ -283,6 +294,7 @@ g_log_init()
+     if ((loginfo.log_access_buffer->lock = PR_NewLock()) == NULL) {
+         exit(-1);
+     }
++    loginfo.log_access_stat_level = cfg->statloglevel;
+ 
+     /* ERROR LOG */
+     loginfo.log_error_state = cfg->errorlog_logging_enabled;
+@@ -2640,7 +2652,21 @@ vslapd_log_access(char *fmt, va_list ap)
+ 
+     return (rc);
+ }
++int
++slapi_log_stat(int loglevel, const char *fmt, ...)
++{
++    char buf[2048];
++    va_list args;
++    int rc = LDAP_SUCCESS;
+ 
++    if (loglevel & loginfo.log_access_stat_level) {
++            va_start(args, fmt);
++            PR_vsnprintf(buf, sizeof(buf), fmt, args);
++            rc = slapi_log_access(LDAP_DEBUG_STATS, "%s", buf);
++            va_end(args);
++    }
++    return rc;
++}
+ int
+ slapi_log_access(int level,
+                  char *fmt,
+diff --git a/ldap/servers/slapd/log.h b/ldap/servers/slapd/log.h
+index 9fb4e7425..6ac37bd29 100644
+--- a/ldap/servers/slapd/log.h
++++ b/ldap/servers/slapd/log.h
+@@ -120,6 +120,7 @@ struct logging_opts
+     int log_access_exptime;              /* time */
+     int log_access_exptimeunit;          /* unit time */
+     int log_access_exptime_secs;         /* time in secs */
++    int log_access_stat_level;           /* statistics level in access log file */
+ 
+     int log_access_level;               /* access log level */
+     char *log_access_file;              /* access log file path */
+diff --git a/ldap/servers/slapd/main.c b/ldap/servers/slapd/main.c
+index ac45c85d1..9b5b845cb 100644
+--- a/ldap/servers/slapd/main.c
++++ b/ldap/servers/slapd/main.c
+@@ -1040,6 +1040,7 @@ main(int argc, char **argv)
+          * changes are replicated as soon as the replication plugin is started.
+          */
+         pw_exp_init();
++        op_stat_init();
+ 
+         plugin_print_lists();
+         plugin_startall(argc, argv, NULL /* specific plugin list */);
+diff --git a/ldap/servers/slapd/operation.c b/ldap/servers/slapd/operation.c
+index 4dd3481c7..dacd1838f 100644
+--- a/ldap/servers/slapd/operation.c
++++ b/ldap/servers/slapd/operation.c
+@@ -652,6 +652,92 @@ slapi_operation_time_expiry(Slapi_Operation *o, time_t timeout, struct timespec
+     slapi_timespec_expire_rel(timeout, &(o->o_hr_time_rel), expiry);
+ }
+ 
++
++/*
++ * Operation extension for operation statistics
++ */
++static int op_stat_objtype = -1;
++static int op_stat_handle = -1;
++
++Op_stat *
++op_stat_get_operation_extension(Slapi_PBlock *pb)
++{
++    Slapi_Operation *op;
++
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
++    return (Op_stat *)slapi_get_object_extension(op_stat_objtype,
++                                                             op, op_stat_handle);
++}
++
++void
++op_stat_set_operation_extension(Slapi_PBlock *pb, Op_stat *op_stat)
++{
++    Slapi_Operation *op;
++
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
++    slapi_set_object_extension(op_stat_objtype, op,
++                               op_stat_handle, (void *)op_stat);
++}
++
++/*
++ * constructor for the operation object extension.
++ */
++static void *
++op_stat_constructor(void *object __attribute__((unused)), void *parent __attribute__((unused)))
++{
++    Op_stat *op_statp = NULL;
++    op_statp = (Op_stat *)slapi_ch_calloc(1, sizeof(Op_stat));
++    op_statp->search_stat = (Op_search_stat *)slapi_ch_calloc(1, sizeof(Op_search_stat));
++
++    return op_statp;
++}
++/*
++ * destructor for the operation object extension.
++ */
++static void
++op_stat_destructor(void *extension, void *object __attribute__((unused)), void *parent __attribute__((unused)))
++{
++    Op_stat *op_statp = (Op_stat *)extension;
++
++    if (NULL == op_statp) {
++        return;
++    }
++
++    if (op_statp->search_stat) {
++        struct component_keys_lookup *keys, *next;
++
++        /* free all the individual key counter */
++        keys = op_statp->search_stat->keys_lookup;
++        while (keys) {
++            next = keys->next;
++            slapi_ch_free_string(&keys->attribute_type);
++            slapi_ch_free_string(&keys->key);
++            slapi_ch_free_string(&keys->index_type);
++            slapi_ch_free((void **) &keys);
++            keys = next;
++        }
++        slapi_ch_free((void **) &op_statp->search_stat);
++    }
++    slapi_ch_free((void **) &op_statp);
++}
++
++#define SLAPI_OP_STAT_MODULE "Module to collect operation stat"
++/* Called once from main */
++void
++op_stat_init(void)
++{
++    if (slapi_register_object_extension(SLAPI_OP_STAT_MODULE,
++                                        SLAPI_EXT_OPERATION,
++                                        op_stat_constructor,
++                                        op_stat_destructor,
++                                        &op_stat_objtype,
++                                        &op_stat_handle) != 0) {
++        slapi_log_err(SLAPI_LOG_ERR, "op_stat_init",
++                      "slapi_register_object_extension failed; "
++                      "operation statistics is not enabled\n");
++    }
++}
++
+ /* Set the time the operation actually started */
+ void
+ slapi_operation_set_time_started(Slapi_Operation *o)
+diff --git a/ldap/servers/slapd/proto-slap.h b/ldap/servers/slapd/proto-slap.h
+index 410a3c5fe..3a049ee76 100644
+--- a/ldap/servers/slapd/proto-slap.h
++++ b/ldap/servers/slapd/proto-slap.h
+@@ -291,6 +291,7 @@ int config_set_defaultreferral(const char *attrname, struct berval **value, char
+ int config_set_timelimit(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_errorlog_level(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_accesslog_level(const char *attrname, char *value, char *errorbuf, int apply);
++int config_set_statlog_level(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_auditlog(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_auditfaillog(const char *attrname, char *value, char *errorbuf, int apply);
+ int config_set_userat(const char *attrname, char *value, char *errorbuf, int apply);
+@@ -510,6 +511,7 @@ long long config_get_pw_minage(void);
+ long long config_get_pw_warning(void);
+ int config_get_errorlog_level(void);
+ int config_get_accesslog_level(void);
++int config_get_statlog_level();
+ int config_get_auditlog_logging_enabled(void);
+ int config_get_auditfaillog_logging_enabled(void);
+ char *config_get_auditlog_display_attrs(void);
+@@ -815,10 +817,15 @@ int lock_fclose(FILE *fp, FILE *lfp);
+ #define LDAP_DEBUG_INFO       0x08000000  /* 134217728 */
+ #define LDAP_DEBUG_DEBUG      0x10000000  /* 268435456 */
+ #define LDAP_DEBUG_ALL_LEVELS 0xFFFFFF
++
++#define LDAP_STAT_READ_INDEX  0x00000001  /*         1 */
++#define LDAP_STAT_FREE_1      0x00000002  /*         2 */
++
+ extern int slapd_ldap_debug;
+ 
+ int loglevel_is_set(int level);
+ int slapd_log_error_proc(int sev_level, char *subsystem, char *fmt, ...);
++int slapi_log_stat(int loglevel, const char *fmt, ...);
+ 
+ int slapi_log_access(int level, char *fmt, ...)
+ #ifdef __GNUC__
+@@ -874,6 +881,7 @@ int check_log_max_size(
+ 
+ 
+ void g_set_accesslog_level(int val);
++void g_set_statlog_level(int val);
+ void log__delete_rotated_logs(void);
+ 
+ /*
+diff --git a/ldap/servers/slapd/result.c b/ldap/servers/slapd/result.c
+index adcef9539..e94533d72 100644
+--- a/ldap/servers/slapd/result.c
++++ b/ldap/servers/slapd/result.c
+@@ -38,6 +38,7 @@ static PRLock *current_conn_count_mutex;
+ 
+ static int flush_ber(Slapi_PBlock *pb, Connection *conn, Operation *op, BerElement *ber, int type);
+ static char *notes2str(unsigned int notes, char *buf, size_t buflen);
++static void log_op_stat(Slapi_PBlock *pb);
+ static void log_result(Slapi_PBlock *pb, Operation *op, int err, ber_tag_t tag, int nentries);
+ static void log_entry(Operation *op, Slapi_Entry *e);
+ static void log_referral(Operation *op);
+@@ -2050,6 +2051,68 @@ notes2str(unsigned int notes, char *buf, size_t buflen)
+     return (buf);
+ }
+ 
++static void
++log_op_stat(Slapi_PBlock *pb)
++{
++
++    Connection *conn = NULL;
++    Operation *op = NULL;
++    Op_stat *op_stat;
++    struct timespec duration;
++    char stat_etime[ETIME_BUFSIZ] = {0};
++
++    if (config_get_statlog_level() == 0) {
++        return;
++    }
++
++    slapi_pblock_get(pb, SLAPI_CONNECTION, &conn);
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
++    op_stat = op_stat_get_operation_extension(pb);
++
++    if (conn == NULL || op == NULL || op_stat == NULL) {
++        return;
++    }
++    /* process the operation */
++    switch (op->o_tag) {
++        case LDAP_REQ_BIND:
++        case LDAP_REQ_UNBIND:
++        case LDAP_REQ_ADD:
++        case LDAP_REQ_DELETE:
++        case LDAP_REQ_MODRDN:
++        case LDAP_REQ_MODIFY:
++        case LDAP_REQ_COMPARE:
++            break;
++        case LDAP_REQ_SEARCH:
++            if ((LDAP_STAT_READ_INDEX & config_get_statlog_level()) &&
++                op_stat->search_stat) {
++                struct component_keys_lookup *key_info;
++                for (key_info = op_stat->search_stat->keys_lookup; key_info; key_info = key_info->next) {
++                    slapi_log_stat(LDAP_STAT_READ_INDEX,
++                                   "conn=%" PRIu64 " op=%d STAT read index: attribute=%s key(%s)=%s --> count %d\n",
++                                   op->o_connid, op->o_opid,
++                                   key_info->attribute_type, key_info->index_type, key_info->key,
++                                   key_info->id_lookup_cnt);
++                }
++               
++                /* total elapsed time */
++                slapi_timespec_diff(&op_stat->search_stat->keys_lookup_end, &op_stat->search_stat->keys_lookup_start, &duration);
++                snprintf(stat_etime, ETIME_BUFSIZ, "%" PRId64 ".%.09" PRId64 "", (int64_t)duration.tv_sec, (int64_t)duration.tv_nsec);
++                slapi_log_stat(LDAP_STAT_READ_INDEX,
++                               "conn=%" PRIu64 " op=%d STAT read index: duration %s\n",
++                               op->o_connid, op->o_opid, stat_etime); 
++            }
++            break;
++        case LDAP_REQ_ABANDON_30:
++        case LDAP_REQ_ABANDON:
++            break;
++
++        default:
++            slapi_log_err(SLAPI_LOG_ERR,
++                          "log_op_stat", "Ignoring unknown LDAP request (conn=%" PRIu64 ", tag=0x%lx)\n",
++                          conn->c_connid, op->o_tag);
++            break;
++    }
++}
+ 
+ static void
+ log_result(Slapi_PBlock *pb, Operation *op, int err, ber_tag_t tag, int nentries)
+@@ -2206,6 +2269,7 @@ log_result(Slapi_PBlock *pb, Operation *op, int err, ber_tag_t tag, int nentries
+             } else {
+                 ext_str = "";
+             }
++            log_op_stat(pb);
+             slapi_log_access(LDAP_DEBUG_STATS,
+                              "conn=%" PRIu64 " op=%d RESULT err=%d"
+                              " tag=%" BERTAG_T " nentries=%d wtime=%s optime=%s etime=%s%s%s%s\n",
+diff --git a/ldap/servers/slapd/slap.h b/ldap/servers/slapd/slap.h
+index 927576b70..82550527c 100644
+--- a/ldap/servers/slapd/slap.h
++++ b/ldap/servers/slapd/slap.h
+@@ -348,6 +348,8 @@ typedef void (*VFPV)(); /* takes undefined arguments */
+ #define SLAPD_DEFAULT_FE_ERRORLOG_LEVEL_STR "16384"
+ #define SLAPD_DEFAULT_ACCESSLOG_LEVEL 256
+ #define SLAPD_DEFAULT_ACCESSLOG_LEVEL_STR "256"
++#define SLAPD_DEFAULT_STATLOG_LEVEL 0
++#define SLAPD_DEFAULT_STATLOG_LEVEL_STR "0"
+ 
+ #define SLAPD_DEFAULT_DISK_THRESHOLD 2097152
+ #define SLAPD_DEFAULT_DISK_THRESHOLD_STR "2097152"
+@@ -2082,6 +2084,7 @@ typedef struct _slapdEntryPoints
+ #define CONFIG_SCHEMAREPLACE_ATTRIBUTE "nsslapd-schemareplace"
+ #define CONFIG_LOGLEVEL_ATTRIBUTE "nsslapd-errorlog-level"
+ #define CONFIG_ACCESSLOGLEVEL_ATTRIBUTE "nsslapd-accesslog-level"
++#define CONFIG_STATLOGLEVEL_ATTRIBUTE "nsslapd-statlog-level"
+ #define CONFIG_ACCESSLOG_MODE_ATTRIBUTE "nsslapd-accesslog-mode"
+ #define CONFIG_ERRORLOG_MODE_ATTRIBUTE "nsslapd-errorlog-mode"
+ #define CONFIG_AUDITLOG_MODE_ATTRIBUTE "nsslapd-auditlog-mode"
+@@ -2457,6 +2460,7 @@ typedef struct _slapdFrontendConfig
+     int accessloglevel;
+     slapi_onoff_t accesslogbuffering;
+     slapi_onoff_t csnlogging;
++    int statloglevel;
+ 
+     /* ERROR LOG */
+     slapi_onoff_t errorlog_logging_enabled;
+diff --git a/ldap/servers/slapd/slapi-private.h b/ldap/servers/slapd/slapi-private.h
+index 4b6cf29eb..bd7a4b39d 100644
+--- a/ldap/servers/slapd/slapi-private.h
++++ b/ldap/servers/slapd/slapi-private.h
+@@ -449,6 +449,33 @@ int operation_is_flag_set(Slapi_Operation *op, int flag);
+ unsigned long operation_get_type(Slapi_Operation *op);
+ LDAPMod **copy_mods(LDAPMod **orig_mods);
+ 
++/* Structures use to collect statistics per operation */
++/* used for LDAP_STAT_READ_INDEX */
++struct component_keys_lookup
++{
++    char *index_type;
++    char *attribute_type;
++    char *key;
++    int id_lookup_cnt;
++    struct component_keys_lookup *next;
++};
++typedef struct op_search_stat
++{
++    struct component_keys_lookup *keys_lookup;
++    struct timespec keys_lookup_start;
++    struct timespec keys_lookup_end;
++} Op_search_stat;
++
++/* structure store in the operation extension */
++typedef struct op_stat
++{
++    Op_search_stat *search_stat;
++} Op_stat;
++
++void op_stat_init(void);
++Op_stat *op_stat_get_operation_extension(Slapi_PBlock *pb);
++void op_stat_set_operation_extension(Slapi_PBlock *pb, Op_stat *op_stat);
++
+ /*
+  * From ldap.h
+  * #define LDAP_MOD_ADD            0x00
+-- 
+2.51.1
+

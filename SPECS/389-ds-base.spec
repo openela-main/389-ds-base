@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}15%{?prerel}%{?dist}
+Release:          %{?relprefix}19%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -347,6 +347,30 @@ Patch46:          0046-Issue-6686-CLI-Re-enabling-user-accounts-that-reache.patc
 Patch47:          0047-Issue-6302-Allow-to-run-replication-status-without-a.patch
 Patch48:          0048-Issue-6857-uiduniq-allow-specifying-match-rules-in-t.patch
 Patch49:          0049-Issue-6859-str2filter-is-not-fully-applying-matching.patch
+Patch50:          0050-Issue-6787-Improve-error-message-when-bulk-import-co.patch
+Patch51:          0051-Issue-6641-modrdn-fails-when-a-user-is-member-of-mul.patch
+Patch52:          0052-Issue-6470-Some-replication-status-data-are-reset-up.patch
+Patch53:          0053-Issue-3729-RFE-Extend-log-of-operations-statistics-i.patch
+Patch54:          0054-Issue-3729-cont-RFE-Extend-log-of-operations-statist.patch
+Patch55:          0055-Issue-5710-subtree-search-statistics-for-index-looku.patch
+Patch56:          0056-Issue-6764-statistics-about-index-lookup-report-a-wr.patch
+Patch57:          0057-Issue-6470-Cont-Some-replication-status-data-are-res.patch
+Patch58:          0058-Issue-6895-Crash-if-repl-keep-alive-entry-can-not-be.patch
+Patch59:          0059-Issue-6884-Mask-password-hashes-in-audit-logs-6885.patch
+Patch60:          0060-Issue-6819-Incorrect-pwdpolicysubentry-returned-for-.patch
+Patch61:          0061-Issue-6936-Make-user-subtree-policy-creation-idempot.patch
+Patch62:          0062-Issue-6641-Fix-memory-leaks.patch
+Patch63:          0063-Issue-6933-When-deferred-memberof-update-is-enabled-.patch
+Patch64:          0064-Issue-6928-The-parentId-attribute-is-indexed-with-im.patch
+Patch65:          0065-Issue-6966-On-large-DB-unlimited-IDL-scan-limit-redu.patch
+Patch66:          0066-Issue-6979-Improve-the-way-to-detect-asynchronous-op.patch
+Patch67:          0067-Issue-7047-MemberOf-plugin-logs-null-attribute-name-.patch
+Patch68:          0068-Issue-7032-The-new-ipahealthcheck-test-ipahealthchec.patch
+Patch69:          0069-Issue-6947-Revise-time-skew-check-in-healthcheck-too.patch
+Patch70:          0070-Issue-6901-Update-changelog-trimming-logging-7102.patch
+Patch71:          0071-Issue-7007-Improve-paged-result-search-locking.patch
+Patch72:          0072-Issue-6966-2nd-On-large-DB-unlimited-IDL-scan-limit-.patch
+Patch73:          0073-Issue-7056-DSBLE0007-doesn-t-generate-remediation-st.patch
 
 
 #Patch100:         cargo.patch
@@ -972,6 +996,34 @@ exit 0
 %doc README.md
 
 %changelog
+* Fri Dec 05 2025 Masahiro Matsuya <mmatsuya@redhat.com> - 1.4.3.39-19
+- Resolves: RHEL-117759 - Replication online reinitialization of a large database gets stalled. [rhel-8.10.z]
+
+* Wed Dec 03 2025 Masahiro Matsuya <mmatsuya@redhat.com> - 1.4.3.39-18
+- Reverts: RHEL-123241 - Attribute uniqueness is not enforced upon modrdn operation [rhel-8.10.z]
+
+* Wed Nov 26 2025 Masahiro Matsuya <mmatsuya@redhat.com> - 1.4.3.39-17
+- Resolves: RHEL-80491 - Can't rename users member of automember rule [rhel-8.10.z]
+- Resolves: RHEL-87191 - Some replication status data are reset upon a restart. [rhel-8.10.z]
+- Resolves: RHEL-89785 - Extend log of operations statistics in access log
+- Resolves: RHEL-111226 - Error showing local password policy on web UI [rhel-8.10.z]
+- Resolves: RHEL-113976 - AddressSanitizer: memory leak in memberof_add_memberof_attr [rhel-8.10.z]
+- Resolves: RHEL-117457 - subtree search statistics for index lookup does not report ancestorid/entryrdn lookups
+- Resolves: RHEL-117752 - Crash if repl keep alive entry can not be created [rhel-8.10.z]
+- Resolves: RHEL-117759 - Replication online reinitialization of a large database gets stalled. [rhel-8.10.z]
+- Resolves: RHEL-117765 - Statistics about index lookup report a wrong duration [rhel-8.10.z]
+- Resolves: RHEL-123228 - Improve the way to detect asynchronous operations in the access logs [rhel-8.10.z]
+- Resolves: RHEL-123241 - Attribute uniqueness is not enforced upon modrdn operation [rhel-8.10.z]
+- Resolves: RHEL-123254 - Typo in errors log after a Memberof fixup task. [rhel-8.10.z]
+- Resolves: RHEL-123269 - LDAP high CPU usage while handling indexes with IDL scan limit at INT_MAX [rhel-8.10.z]
+- Resolves: RHEL-123276 - The new ipahealthcheck test ipahealthcheck.ds.backends.BackendsCheck raises CRITICAL issue [rhel-8.10.z]
+- Resolves: RHEL-123363 - When deferred memberof update is enabled after the server crashed it should not launch memberof fixup task by default [rhel-8.10.z]
+- Resolves: RHEL-123365 - IPA health check up script shows time skew is over 24 hours [rhel-8.10.z]
+- Resolves: RHEL-123920 - Changelog trimming - add number of scanned entries to the log [rhel-8.10.z]
+- Resolves: RHEL-126512 - Created user password hash available to see in audit log [rhel-8.10.z]
+- Resolves: RHEL-129578 - Fix paged result search locking [rhel-8.10.z]
+- Resolves: RHEL-130900 - On RHDS 12.6 The user password policy for a user was created, but the pwdpolicysubentry attribute for this user incorrectly points to the People OU password policy instead of the specific user policy. [rhel-8.10.z]
+
 * Mon Aug 18 2025 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-15
 - Resolves: RHEL-109028 - Allow Uniqueness plugin to search uniqueness attributes using custom matching rules [rhel-8.10.z]
 

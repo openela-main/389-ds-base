@@ -1,0 +1,76 @@
+From 4a17dc8ef8f226b9d733f3f8fc72bce5e506eb40 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Wed, 10 Sep 2025 13:16:26 +0200
+Subject: [PATCH] Issue 6641 - Fix memory leaks
+
+Description:
+Partial backport from 9cede9cdcbfb10e864ba0d91053efdabbe937eca
+
+Relates: https://github.com/389ds/389-ds-base/issues/6910
+(cherry picked from commit cec5596acb0fb82ca34ee98b7881312dd7ba602c)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ ldap/servers/plugins/automember/automember.c |  7 ++++---
+ ldap/servers/plugins/memberof/memberof.c     | 13 ++++++++++---
+ 2 files changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/ldap/servers/plugins/automember/automember.c b/ldap/servers/plugins/automember/automember.c
+index fde92ee12..1b1da39b3 100644
+--- a/ldap/servers/plugins/automember/automember.c
++++ b/ldap/servers/plugins/automember/automember.c
+@@ -1755,9 +1755,10 @@ automember_update_member_value(Slapi_Entry *member_e, const char *group_dn, char
+ 
+         mod_pb = slapi_pblock_new();
+         /* Do a single mod with error overrides for DEL/ADD */
+-        result = slapi_single_modify_internal_override(mod_pb, slapi_sdn_new_dn_byval(group_dn), mods,
+-                                                        automember_get_plugin_id(), 0);
+-
++        Slapi_DN *sdn = slapi_sdn_new_normdn_byref(group_dn);
++        result = slapi_single_modify_internal_override(mod_pb, sdn, mods,
++                                                       automember_get_plugin_id(), 0);
++        slapi_sdn_free(&sdn);
+         if(add){
+             if (result != LDAP_SUCCESS) {
+                 slapi_log_err(SLAPI_LOG_ERR, AUTOMEMBER_PLUGIN_SUBSYSTEM,
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index f3dc7cf00..ce1788e35 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -1647,6 +1647,7 @@ memberof_call_foreach_dn(Slapi_PBlock *pb __attribute__((unused)), Slapi_DN *sdn
+                             /* We already did the search for this backend, don't
+                              * do it again when we fall through */
+                             do_suffix_search = PR_FALSE;
++                            slapi_pblock_init(search_pb);
+                         }
+                     }
+                 } else if (!all_backends) {
+@@ -3745,6 +3746,10 @@ memberof_replace_list(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *group_
+ 
+                     pre_index++;
+                 } else {
++                    if (pre_index >= pre_total || post_index >= post_total) {
++                        /* Don't overrun pre_array/post_array */
++                        break;
++                    }
+                     /* decide what to do */
+                     int cmp = memberof_compare(
+                         config,
+@@ -4438,10 +4443,12 @@ memberof_add_memberof_attr(LDAPMod **mods, const char *dn, char *add_oc)
+ 
+         while (1) {
+             slapi_pblock_init(mod_pb);
+-
++            Slapi_DN *sdn = slapi_sdn_new_normdn_byref(dn);
+             /* Internal mod with error overrides for DEL/ADD */
+-            rc = slapi_single_modify_internal_override(mod_pb, slapi_sdn_new_normdn_byref(dn), single_mod,
+-                                                        memberof_get_plugin_id(), SLAPI_OP_FLAG_BYPASS_REFERRALS);
++            rc = slapi_single_modify_internal_override(mod_pb, sdn, single_mod,
++                                                       memberof_get_plugin_id(),
++                                                       SLAPI_OP_FLAG_BYPASS_REFERRALS);
++            slapi_sdn_free(&sdn);
+             if (rc == LDAP_OBJECT_CLASS_VIOLATION) {
+                 if (!add_oc || added_oc) {
+                     /*
+-- 
+2.51.1
+

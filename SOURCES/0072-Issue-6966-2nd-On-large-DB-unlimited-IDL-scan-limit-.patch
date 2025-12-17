@@ -1,0 +1,30 @@
+From 85c82d8e7c95eeb76788311b33544f8086cec31b Mon Sep 17 00:00:00 2001
+From: Thierry Bordaz <tbordaz@redhat.com>
+Date: Wed, 26 Nov 2025 10:38:40 +0100
+Subject: [PATCH] Issue 6966 - (2nd) On large DB, unlimited IDL scan limit
+ reduce the SRCH performance
+
+(cherry picked from commit e098ee776d94c2d4dac6f2a01473d63d8db54954)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ ldap/servers/slapd/back-ldbm/instance.c | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/instance.c b/ldap/servers/slapd/back-ldbm/instance.c
+index 29299b992..65084c61c 100644
+--- a/ldap/servers/slapd/back-ldbm/instance.c
++++ b/ldap/servers/slapd/back-ldbm/instance.c
+@@ -278,10 +278,6 @@ ldbm_instance_create_default_indexes(backend *be)
+     slapi_entry_free(e);
+ #endif
+ 
+-    e = ldbm_instance_init_config_entry(LDBM_NUMSUBORDINATES_STR, "pres", 0, 0, 0, 0);
+-    ldbm_instance_config_add_index_entry(inst, e, flags);
+-    slapi_entry_free(e);
+-
+     e = ldbm_instance_init_config_entry(SLAPI_ATTR_UNIQUEID, "eq", 0, 0, 0, 0, 0);
+     ldbm_instance_config_add_index_entry(inst, e, flags);
+     slapi_entry_free(e);
+-- 
+2.51.1
+

@@ -1,0 +1,82 @@
+From c8a5594efdb2722b6dceaed16219039d8e59c888 Mon Sep 17 00:00:00 2001
+From: Thierry Bordaz <tbordaz@redhat.com>
+Date: Thu, 5 Jun 2025 10:33:29 +0200
+Subject: [PATCH] Issue 6470 (Cont) - Some replication status data are reset
+ upon a restart
+
+(cherry picked from commit a8b419dab31f4fa9fca8c33fe04a79e7a34965e5)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ ldap/servers/plugins/replication/repl5_agmt.c |  4 ++--
+ ldap/servers/slapd/slapi-plugin.h             |  8 --------
+ ldap/servers/slapd/time.c                     | 13 -------------
+ 3 files changed, 2 insertions(+), 23 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/repl5_agmt.c b/ldap/servers/plugins/replication/repl5_agmt.c
+index c3b8d298c..229783763 100644
+--- a/ldap/servers/plugins/replication/repl5_agmt.c
++++ b/ldap/servers/plugins/replication/repl5_agmt.c
+@@ -537,7 +537,7 @@ agmt_new_from_entry(Slapi_Entry *e)
+     if (val) {
+         strcpy(ra->last_init_status, val);
+     }
+-    ra->changecounters = (struct changecounter **)slapi_ch_calloc(MAX_NUM_OF_SUPPLIERS + 1,
++    ra->changecounters = (struct changecounter **)slapi_ch_calloc(MAX_NUM_OF_MASTERS + 1,
+                                                                   sizeof(struct changecounter *));
+     ra->num_changecounters = 0;
+     ra->max_changecounters = MAX_NUM_OF_MASTERS;
+@@ -2615,7 +2615,7 @@ agmt_update_init_status(Repl_Agmt *ra)
+         mods[nb_mods] = NULL;
+ 
+         slapi_modify_internal_set_pb_ext(pb, ra->dn, mods, NULL, NULL,
+-                                         repl_get_plugin_identity(PLUGIN_MULTISUPPLIER_REPLICATION), 0);
++                                         repl_get_plugin_identity(PLUGIN_MULTIMASTER_REPLICATION), 0);
+         slapi_modify_internal_pb(pb);
+ 
+         slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &rc);
+diff --git a/ldap/servers/slapd/slapi-plugin.h b/ldap/servers/slapd/slapi-plugin.h
+index 00e9722d2..677be1db0 100644
+--- a/ldap/servers/slapd/slapi-plugin.h
++++ b/ldap/servers/slapd/slapi-plugin.h
+@@ -8315,14 +8315,6 @@ void DS_Sleep(PRIntervalTime ticks);
+  */
+ void slapi_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *diff);
+ 
+-/**
+- * add 'new' timespect into 'cumul'
+- * clock_monotonic to find time taken to perform operations.
+- *
+- * \param struct timespec cumul to compute total duration.
+- * \param struct timespec new is a additional duration
+- */
+-void slapi_timespec_add(struct timespec *cumul, struct timespec *new);
+ /**
+  * Given an operation, determine the time elapsed since the op
+  * began.
+diff --git a/ldap/servers/slapd/time.c b/ldap/servers/slapd/time.c
+index 0dd457fbe..0406c3689 100644
+--- a/ldap/servers/slapd/time.c
++++ b/ldap/servers/slapd/time.c
+@@ -272,19 +272,6 @@ slapi_timespec_diff(struct timespec *a, struct timespec *b, struct timespec *dif
+     diff->tv_nsec = nsec;
+ }
+ 
+-void
+-slapi_timespec_add(struct timespec *cumul, struct timespec *new)
+-{
+-    /* Now add the two */
+-    time_t sec = cumul->tv_sec + new->tv_sec;
+-    long nsec = cumul->tv_nsec + new->tv_nsec;
+-
+-    sec += nsec / 1000000000;
+-    nsec = nsec % 1000000000;
+-    cumul->tv_sec = sec;
+-    cumul->tv_nsec = nsec;
+-}
+-
+ void
+ slapi_timespec_expire_at(time_t timeout, struct timespec *expire)
+ {
+-- 
+2.51.1
+

@@ -1,0 +1,137 @@
+From 284da99d0cd1ad16c702f4a4f68d2a479ac41576 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Wed, 18 Jun 2025 11:12:28 +0200
+Subject: [PATCH] Issue 6819 - Incorrect pwdpolicysubentry returned for an
+ entry with user password policy
+
+Bug Description:
+When both subtree and user password policies exist, pwdpolicysubentry
+points to the subtree password policy instead of user password policy.
+
+Fix Description:
+Update the template for CoS pointer definition to use
+`operational-default` modifier instead of `operational`.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6819
+
+Reviewed by: @droideck, @tbordaz (Thanks!)
+
+(cherry picked from commit 622c191302879035ef7450a29aa7569ee768c3ab)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ .../password/pwdPolicy_attribute_test.py      | 73 +++++++++++++++++--
+ src/lib389/lib389/pwpolicy.py                 |  2 +-
+ 2 files changed, 66 insertions(+), 9 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/password/pwdPolicy_attribute_test.py b/dirsrvtests/tests/suites/password/pwdPolicy_attribute_test.py
+index c2c1e47fb..0dde8d637 100644
+--- a/dirsrvtests/tests/suites/password/pwdPolicy_attribute_test.py
++++ b/dirsrvtests/tests/suites/password/pwdPolicy_attribute_test.py
+@@ -59,17 +59,39 @@ def test_user(topology_st, request):
+     return user
+ 
+ 
+-@pytest.fixture(scope="module")
+-def password_policy(topology_st, test_user):
++@pytest.fixture(scope="function")
++def password_policy(topology_st, request, test_user):
+     """Set up password policy for subtree and user"""
+ 
+     pwp = PwPolicyManager(topology_st.standalone)
+     policy_props = {}
+-    log.info('Create password policy for subtree {}'.format(OU_PEOPLE))
+-    pwp.create_subtree_policy(OU_PEOPLE, policy_props)
++    log.info(f"Create password policy for subtree {OU_PEOPLE}")
++    try:
++        pwp.create_subtree_policy(OU_PEOPLE, policy_props)
++    except ldap.ALREADY_EXISTS:
++        log.info(f"Subtree password policy for {OU_PEOPLE} already exist, skipping")
++
++    log.info(f"Create password policy for user {TEST_USER_DN}")
++    try:
++        pwp.create_user_policy(TEST_USER_DN, policy_props)
++    except ldap.ALREADY_EXISTS:
++        log.info(f"User password policy for {TEST_USER_DN} already exist, skipping")
++
++    def fin():
++        log.info(f"Delete password policy for subtree {OU_PEOPLE}")
++        try:
++            pwp.delete_local_policy(OU_PEOPLE)
++        except ValueError:
++            log.info(f"Subtree password policy for {OU_PEOPLE} doesn't exist, skipping")
++
++        log.info(f"Delete password policy for user {TEST_USER_DN}")
++        try:
++            pwp.delete_local_policy(TEST_USER_DN)
++        except ValueError:
++            log.info(f"User password policy for {TEST_USER_DN} doesn't exist, skipping")
++
++    request.addfinalizer(fin)
+ 
+-    log.info('Create password policy for user {}'.format(TEST_USER_DN))
+-    pwp.create_user_policy(TEST_USER_DN, policy_props)
+ 
+ @pytest.mark.skipif(ds_is_older('1.4.3.3'), reason="Not implemented")
+ def test_pwd_reset(topology_st, test_user):
+@@ -257,8 +279,43 @@ def test_pwd_min_age(topology_st, test_user, password_policy):
+         log.info('Bind as DM')
+         topology_st.standalone.simple_bind_s(DN_DM, PASSWORD)
+         user.reset_password(TEST_USER_PWD)
+-        pwp.delete_local_policy(TEST_USER_DN)
+-        pwp.delete_local_policy(OU_PEOPLE)
++
++
++def test_pwdpolicysubentry(topology_st, password_policy):
++    """Verify that 'pwdpolicysubentry' attr works as expected
++    User should have a priority over a subtree.
++
++    :id: 4ab0c62a-623b-40b4-af67-99580c77b36c
++    :setup: Standalone instance, a test user,
++            password policy entries for a user and a subtree
++    :steps:
++        1. Create a subtree policy
++        2. Create a user policy
++        3. Search for 'pwdpolicysubentry' in the user entry
++        4. Delete the user policy
++        5. Search for 'pwdpolicysubentry' in the user entry
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Should point to the user policy entry
++        4. Success
++        5. Should point to the subtree policy entry
++
++    """
++
++    users = UserAccounts(topology_st.standalone, OU_PEOPLE, rdn=None)
++    user = users.get(TEST_USER_NAME)
++
++    pwp_subentry = user.get_attr_vals_utf8('pwdpolicysubentry')[0]
++    assert 'nsPwPolicyEntry_subtree' not in pwp_subentry
++    assert 'nsPwPolicyEntry_user' in pwp_subentry
++
++    pwp = PwPolicyManager(topology_st.standalone)
++    pwp.delete_local_policy(TEST_USER_DN)
++    pwp_subentry = user.get_attr_vals_utf8('pwdpolicysubentry')[0]
++    assert 'nsPwPolicyEntry_subtree' in pwp_subentry
++    assert 'nsPwPolicyEntry_user' not in pwp_subentry
++
+ 
+ if __name__ == '__main__':
+     # Run isolated
+diff --git a/src/lib389/lib389/pwpolicy.py b/src/lib389/lib389/pwpolicy.py
+index 7ffe449cc..6a47a44fe 100644
+--- a/src/lib389/lib389/pwpolicy.py
++++ b/src/lib389/lib389/pwpolicy.py
+@@ -168,7 +168,7 @@ class PwPolicyManager(object):
+ 
+             # The CoS specification entry at the subtree level
+             cos_pointer_defs = CosPointerDefinitions(self._instance, dn)
+-            cos_pointer_defs.create(properties={'cosAttribute': 'pwdpolicysubentry default operational',
++            cos_pointer_defs.create(properties={'cosAttribute': 'pwdpolicysubentry default operational-default',
+                                                 'cosTemplateDn': cos_template.dn,
+                                                 'cn': 'nsPwPolicy_CoS'})
+         except ldap.LDAPError as e:
+-- 
+2.51.1
+

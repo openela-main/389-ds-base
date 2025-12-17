@@ -1,0 +1,55 @@
+From 77cc17e5dfb7ed71a320844d14a90c99c1474cc3 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Tue, 20 May 2025 08:13:24 -0400
+Subject: [PATCH] Issue 6787 - Improve error message when bulk import
+ connection is closed
+
+Description:
+
+If an online replication initialization connection is closed a vague error
+message is reported when the init is aborted:
+
+    factory_destructor - ERROR bulk import abandoned
+
+It should be clear that the import is being abandoned because the connection
+was closed and identify the conn id.
+
+relates: https://github.com/389ds/389-ds-base/issues/6787
+
+Reviewed by: progier(Thanks!)
+
+(cherry picked from commit d472dd83d49f8dce6d71e202cbb4d897218ceffb)
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+index 67d6e3abc..e433f3db2 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+@@ -3432,9 +3432,10 @@ factory_constructor(void *object __attribute__((unused)), void *parent __attribu
+ }
+ 
+ void
+-factory_destructor(void *extension, void *object __attribute__((unused)), void *parent __attribute__((unused)))
++factory_destructor(void *extension, void *object, void *parent __attribute__((unused)))
+ {
+     ImportJob *job = (ImportJob *)extension;
++    Connection *conn = (Connection *)object;
+     PRThread *thread;
+ 
+     if (extension == NULL)
+@@ -3446,7 +3447,8 @@ factory_destructor(void *extension, void *object __attribute__((unused)), void *
+      */
+     thread = job->main_thread;
+     slapi_log_err(SLAPI_LOG_ERR, "factory_destructor",
+-                  "ERROR bulk import abandoned\n");
++                  "ERROR bulk import abandoned: conn=%ld was closed\n",
++                  conn->c_connid);
+     import_abort_all(job, 1);
+     /* wait for import_main to finish... */
+     PR_JoinThread(thread);
+-- 
+2.51.1
+
