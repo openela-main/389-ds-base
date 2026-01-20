@@ -1,0 +1,90 @@
+From aa0240c73c000f1d8a009a7394b04afc806504b3 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 9 Jan 2026 11:39:50 +0100
+Subject: [PATCH 1/2] Issue 7172 - Index ordering mismatch after upgrade
+ (#7173)
+
+Bug Description:
+Commit daf731f55071d45eaf403a52b63d35f4e699ff28 introduced a regression.
+After upgrading to a version that adds `integerOrderingMatch` matching
+rule to `parentid` and `ancestorid` indexes, searches may return empty
+or incorrect results.
+
+This happens because the existing index data was created with
+lexicographic ordering, but the new compare function expects integer
+ordering. Index lookups fail because the compare function doesn't match
+the data ordering.
+The root cause is that `ldbm_instance_create_default_indexes()` calls
+`attr_index_config()` unconditionally for `parentid` and `ancestorid`
+indexes, which triggers `ainfo_dup()` to overwrite `ai_key_cmp_fn` on
+existing indexes. This breaks indexes that were created without the
+`integerOrderingMatch` matching rule.
+
+Fix Description:
+* Call `attr_index_config()` for `parentid` and `ancestorid` indexes
+only if index config doesn't exist.
+
+* Add `upgrade_check_id_index_matching_rule()` that logs an error on
+server startup if `parentid` or `ancestorid` indexes are missing the
+integerOrderingMatch matching rule, advising administrators to reindex.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7172
+
+Reviewed by: @tbordaz, @progier389, @droideck (Thanks!)
+---
+ ldap/servers/slapd/back-ldbm/instance.c | 25 +++++++++++++++++--------
+ 1 file changed, 17 insertions(+), 8 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/instance.c b/ldap/servers/slapd/back-ldbm/instance.c
+index 65084c61c..04340a992 100644
+--- a/ldap/servers/slapd/back-ldbm/instance.c
++++ b/ldap/servers/slapd/back-ldbm/instance.c
+@@ -191,6 +191,7 @@ ldbm_instance_create_default_indexes(backend *be)
+     char *ancestorid_indexes_limit = NULL;
+     char *parentid_indexes_limit = NULL;
+     struct attrinfo *ai = NULL;
++    struct attrinfo *index_already_configured = NULL;
+     struct index_idlistsizeinfo *iter;
+     int cookie;
+     int limit;
+@@ -255,10 +256,14 @@ ldbm_instance_create_default_indexes(backend *be)
+         slapi_entry_free(e);
+     }
+ 
+-    e = ldbm_instance_init_config_entry(LDBM_PARENTID_STR, "eq", 0, 0, 0, "integerOrderingMatch", parentid_indexes_limit);
+-    ldbm_instance_config_add_index_entry(inst, e, flags);
+-    attr_index_config(be, "ldbm index init", 0, e, 1, 0, NULL);
+-    slapi_entry_free(e);
++    ainfo_get(be, (char *)LDBM_PARENTID_STR, &ai);
++    index_already_configured = ai;
++    if (!index_already_configured) {
++        e = ldbm_instance_init_config_entry(LDBM_PARENTID_STR, "eq", 0, 0, 0, "integerOrderingMatch", parentid_indexes_limit);
++        ldbm_instance_config_add_index_entry(inst, e, flags);
++        attr_index_config(be, "ldbm index init", 0, e, 1, 0, NULL);
++        slapi_entry_free(e);
++    }
+ 
+     e = ldbm_instance_init_config_entry("objectclass", "eq", 0, 0, 0, 0, 0);
+     ldbm_instance_config_add_index_entry(inst, e, flags);
+@@ -302,10 +307,14 @@ ldbm_instance_create_default_indexes(backend *be)
+          * ancestorid is special, there is actually no such attr type
+          * but we still want to use the attr index file APIs.
+          */
+-        e = ldbm_instance_init_config_entry(LDBM_ANCESTORID_STR, "eq", 0, 0, 0, "integerOrderingMatch", ancestorid_indexes_limit);
+-        ldbm_instance_config_add_index_entry(inst, e, flags);
+-        attr_index_config(be, "ldbm index init", 0, e, 1, 0, NULL);
+-        slapi_entry_free(e);
++        ainfo_get(be, (char *)LDBM_ANCESTORID_STR, &ai);
++        index_already_configured = ai;
++        if (!index_already_configured) {
++            e = ldbm_instance_init_config_entry(LDBM_ANCESTORID_STR, "eq", 0, 0, 0, "integerOrderingMatch", ancestorid_indexes_limit);
++            ldbm_instance_config_add_index_entry(inst, e, flags);
++            attr_index_config(be, "ldbm index init", 0, e, 1, 0, NULL);
++            slapi_entry_free(e);
++        }
+     }
+ 
+     slapi_ch_free_string(&ancestorid_indexes_limit);
+-- 
+2.52.0
+

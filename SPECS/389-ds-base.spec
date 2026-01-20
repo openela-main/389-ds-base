@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}19%{?prerel}%{?dist}
+Release:          %{?relprefix}20%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -371,6 +371,8 @@ Patch70:          0070-Issue-6901-Update-changelog-trimming-logging-7102.patch
 Patch71:          0071-Issue-7007-Improve-paged-result-search-locking.patch
 Patch72:          0072-Issue-6966-2nd-On-large-DB-unlimited-IDL-scan-limit-.patch
 Patch73:          0073-Issue-7056-DSBLE0007-doesn-t-generate-remediation-st.patch
+Patch74:          0074-Issue-7172-Index-ordering-mismatch-after-upgrade-717.patch
+Patch75:          0075-Issue-7172-2nd-Index-ordering-mismatch-after-upgrade.patch
 
 
 #Patch100:         cargo.patch
@@ -996,6 +998,9 @@ exit 0
 %doc README.md
 
 %changelog
+* Tue Jan 13 2026 Arun Bansal <arbansal@redhat.com> - 1.4.3.39-20
+- Resolves: RHEL-140086 - Upgrading IDM to latest version: 389-ds-base and ipa-server breaks replication [rhel-8.10.z]
+
 * Fri Dec 05 2025 Masahiro Matsuya <mmatsuya@redhat.com> - 1.4.3.39-19
 - Resolves: RHEL-117759 - Replication online reinitialization of a large database gets stalled. [rhel-8.10.z]
 
