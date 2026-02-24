@@ -1,0 +1,91 @@
+From c160ef5a53f0ae9725790ebcd2667dcda2089f14 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Tue, 28 Oct 2025 10:49:18 -0400
+Subject: [PATCH 1/2] Issue 7071 - search filter (&(cn:dn:=groups)) no longer
+ returns results
+
+Description:
+
+When processing an "and" filter and it only contains one filter component then
+the logic in the code breaks down and the filter is seen as not matching.
+
+The logic breaks down because we are not setting "nomatch" after the access
+check is successful. If there are two components then it works fine
+because we do the access check on the first filter component and set that
+the access check was done(access_check_done), but "nomatch" is not set yet.
+So when the next filter component is checked for access we see that the access
+check was done and then we set "nomatch".
+
+To recap we always need to set "nomatch" when the access check is successful
+in order to handle the case where an "and" fitler only has one component.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7071
+
+Reviewed by: spichugi(Thanks!)
+---
+ .../tests/suites/filter/complex_filters_test.py | 17 ++++++++++++++---
+ ldap/servers/slapd/filterentry.c                |  7 ++++++-
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/filter/complex_filters_test.py b/dirsrvtests/tests/suites/filter/complex_filters_test.py
+index 62be27381..3180ab229 100644
+--- a/dirsrvtests/tests/suites/filter/complex_filters_test.py
++++ b/dirsrvtests/tests/suites/filter/complex_filters_test.py
+@@ -25,8 +25,15 @@ AND_FILTERS = [("(&(uid=uid1)(sn=last1)(givenname=first1))", 1),
+                ("(&(uid=*)(&(sn=last3)(givenname=*)))", 1),
+                ("(&(uid=uid5)(&(&(sn=*))(&(givenname=*))))", 1),
+                ("(&(objectclass=*)(uid=*)(sn=last*))", 5),
+-               ("(&(objectclass=*)(uid=*)(sn=last1))", 1)]
+-
++               ("(&(objectclass=*)(uid=*)(sn=last1))", 1),
++               ("(&(sn:dn:=last1))", 1),
++               ("(&(sn:dn:=last1)(givenname:dn:=first1))", 1),
++               ("(&(sn:dn:=last1)(givenname=first1))", 1),
++               ("(&(sn=last1)(givenname=first1)(uid:dn:=uid1))", 1),
++               ("(&(uid:dn:=uid1))", 1),
++               ("(&(uid:dn:=uid1)(cn:dn:=full1))", 1),
++               ("(&(uid:dn:=uid1)(givenname:dn:=first1))", 1),
++               ("(&(uid:dn:=uid1)(givenname:dn:=first1)(cn:dn:=full1))", 1)]
+ OR_FILTERS = [("(|(uid=uid1)(sn=last1)(givenname=first1))", 1),
+               ("(|(uid=uid1)(|(sn=last1)(givenname=first1)))", 1),
+               ("(|(uid=uid1)(|(|(sn=last1))(|(givenname=first1))))", 1),
+@@ -51,7 +58,11 @@ ZERO_AND_FILTERS = [("(&(uid=uid1)(sn=last1)(givenname=NULL))", 0),
+                    ("(&(uid=uid1)(&(sn=last1)(givenname=NULL)))", 0),
+                    ("(&(uid=uid1)(&(&(sn=last1))(&(givenname=NULL))))", 0),
+                    ("(&(uid=uid1)(&(&(sn=last1))(&(givenname=NULL)(sn=*)))(|(sn=NULL)))", 0),
+-                   ("(&(uid=uid1)(&(&(sn=last*))(&(givenname=first*)))(&(sn=NULL)))", 0)]
++                   ("(&(uid=uid1)(&(&(sn=last*))(&(givenname=first*)))(&(sn=NULL)))", 0),
++                   ("(&(uid:dn:=not_uid))", 0),
++                   ("(&(uid:dn:=not_uid)(cn:dn:=full1))", 0),
++                   ("(&(uid:dn:=uid1)(givenname:dn:=not_first1))", 0),
++                   ("(&(uid:dn:=uid1)(givenname:dn:=first1)(cn:dn:=not_full1))", 0)]
+ 
+ ZERO_OR_FILTERS = [("(|(uid=NULL)(sn=NULL)(givenname=NULL))", 0),
+                   ("(|(uid=NULL)(|(sn=NULL)(givenname=NULL)))", 0),
+diff --git a/ldap/servers/slapd/filterentry.c b/ldap/servers/slapd/filterentry.c
+index cae5c7edc..1c513fe62 100644
+--- a/ldap/servers/slapd/filterentry.c
++++ b/ldap/servers/slapd/filterentry.c
+@@ -1011,13 +1011,18 @@ vattr_test_filter_list_and(
+             nomatch = -1;
+             break;
+         } else {
++            /* We have a match, but we need to check access */
+             if (!verify_access || (*access_check_done)) {
+                 nomatch = 0;
+             } else {
+                 /* check access */
+                 rc = slapi_vattr_filter_test_ext_internal(pb, e, f, verify_access, 1, access_check_done);
+-                if (rc)
++                if (rc) {
+                     undefined = rc;
++                } else {
++                    /* Access is good so mark this as a match */
++                    nomatch = 0;
++                }
+             }
+         }
+     }
+-- 
+2.52.0
+

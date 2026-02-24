@@ -1,0 +1,117 @@
+From e9f5082218c06f7dbcb1e7f70337841178f18271 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Mon, 2 Feb 2026 09:30:13 +0100
+Subject: [PATCH] Issue 7223 - Backport upgrade infrastructure from main branch
+
+Backport the upgrade.c infrastructure from main/1.4.4 branches to provide
+a mechanism for automatic configuration fixes during server startup.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7223
+
+Reviewed by: @progier389, @tbordaz (Thanks!)
+---
+ Makefile.am                  |  1 +
+ ldap/servers/slapd/main.c    | 16 ++++++++++++++++
+ ldap/servers/slapd/slap.h    | 10 ++++++++++
+ ldap/servers/slapd/upgrade.c | 29 +++++++++++++++++++++++++++++
+ 4 files changed, 56 insertions(+)
+ create mode 100644 ldap/servers/slapd/upgrade.c
+
+diff --git a/Makefile.am b/Makefile.am
+index 245d7cf19..41eab712b 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -2346,6 +2346,7 @@ ns_slapd_SOURCES = ldap/servers/slapd/abandon.c \
+ 	ldap/servers/slapd/stubs.c \
+ 	ldap/servers/slapd/tempnam.c  \
+ 	ldap/servers/slapd/unbind.c \
++	ldap/servers/slapd/upgrade.c \
+ 	$(GETSOCKETPEER)
+ 
+ ns_slapd_CPPFLAGS = $(AM_CPPFLAGS) $(DSPLUGIN_CPPFLAGS) $(SASL_CFLAGS) $(SVRCORE_INCLUDES)
+diff --git a/ldap/servers/slapd/main.c b/ldap/servers/slapd/main.c
+index 9b5b845cb..043dc54bc 100644
+--- a/ldap/servers/slapd/main.c
++++ b/ldap/servers/slapd/main.c
+@@ -738,6 +738,22 @@ main(int argc, char **argv)
+ 
+         mcfg.n_port = config_get_port();
+         mcfg.s_port = config_get_secureport();
++
++        /*
++         * This step checks for any updates and changes on upgrade
++         * specifically, it manages assumptions about what plugins should exist,
++         * and their configurations, and potentially even the state of
++         * configurations on the server and their removal and deprecation.
++         *
++         * Has to be after dse to change config, but before plugins start
++         * so we can adjust these configurations.
++         */
++        if (upgrade_server() != UPGRADE_SUCCESS) {
++            slapi_log_err(SLAPI_LOG_EMERG, "main",
++                          "Server upgrade check failed. Please check the error log for more information.\n");
++            return_value = 1;
++            goto cleanup;
++        }
+     }
+ 
+     raise_process_limits(); /* should be done ASAP once config file read */
+diff --git a/ldap/servers/slapd/slap.h b/ldap/servers/slapd/slap.h
+index 36d26bf4a..e6b49d366 100644
+--- a/ldap/servers/slapd/slap.h
++++ b/ldap/servers/slapd/slap.h
+@@ -183,6 +183,16 @@ typedef void (*VFPV)(); /* takes undefined arguments */
+ #include "slapi-private.h"
+ #include "pw.h"
+ 
++/*
++ * SERVER UPGRADE INTERNALS
++ */
++typedef enum _upgrade_status {
++    UPGRADE_SUCCESS = 0,
++    UPGRADE_FAILURE = 1,
++} upgrade_status;
++
++upgrade_status upgrade_server(void);
++
+ /*
+  * call the appropriate signal() function.
+  */
+diff --git a/ldap/servers/slapd/upgrade.c b/ldap/servers/slapd/upgrade.c
+new file mode 100644
+index 000000000..2f124afaf
+--- /dev/null
++++ b/ldap/servers/slapd/upgrade.c
+@@ -0,0 +1,29 @@
++/* BEGIN COPYRIGHT BLOCK
++ * Copyright (C) 2017 Red Hat, Inc.
++ * Copyright (C) 2020 William Brown <william@blackhats.net.au>
++ * All rights reserved.
++ *
++ * License: GPL (version 3 or any later version).
++ * See LICENSE for details.
++ * END COPYRIGHT BLOCK */
++
++#include <slap.h>
++#include <slapi-private.h>
++
++/*
++ * This is called on server startup *before* plugins start
++ * but after config dse is read for operations. This allows
++ * us to make internal assertions about the state of the configuration
++ * at start up, enable plugins, and more.
++ *
++ * The functions in this file are named as:
++ * upgrade_xxx_yyy, where xxx is the minimum version of the project
++ * and yyy is the feature that is having it's configuration upgrade
++ * or altered.
++ */
++
++upgrade_status
++upgrade_server(void)
++{
++    return UPGRADE_SUCCESS;
++}
+-- 
+2.52.0
+

@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}20%{?prerel}%{?dist}
+Release:          %{?relprefix}22%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -373,6 +373,16 @@ Patch72:          0072-Issue-6966-2nd-On-large-DB-unlimited-IDL-scan-limit-.patc
 Patch73:          0073-Issue-7056-DSBLE0007-doesn-t-generate-remediation-st.patch
 Patch74:          0074-Issue-7172-Index-ordering-mismatch-after-upgrade-717.patch
 Patch75:          0075-Issue-7172-2nd-Index-ordering-mismatch-after-upgrade.patch
+Patch76:          0076-Issue-7071-search-filter-cn-dn-groups-no-longer-retu.patch
+Patch77:          0077-Issue-7189-DSBLE0007-generates-incorrect-remediation.patch
+Patch78:          0078-Issue-7223-Revert-index-scan-limits-for-system-index.patch
+Patch79:          0079-Issue-7223-Backport-upgrade-infrastructure-from-main.patch
+Patch80:          0080-Issue-7223-Add-upgrade-function-to-remove-nsIndexIDL.patch
+Patch81:          0081-Issue-7223-Add-upgrade-function-to-remove-ancestorid.patch
+Patch82:          0082-Issue-7223-Detect-and-log-index-ordering-mismatch-du.patch
+Patch83:          0083-Issue-7223-Add-dsctl-index-check-command-for-offline.patch
+Patch84:          0084-Issue-7223-Use-lexicographical-order-for-ancestorid.patch
+Patch85:          0085-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
 
 
 #Patch100:         cargo.patch
@@ -681,7 +691,42 @@ if ! getent passwd $USERNAME >/dev/null ; then
 fi
 
 # Reload our sysctl before we restart (if we can)
-sysctl --system &> $output; true
+sysctl --system &> "$output"; true
+
+# Gather running instances, stop them, run index-check, then restart
+instbase="%{_sysconfdir}/%{pkgname}"
+instances=""
+ninst=0
+
+for dir in "$instbase"/slapd-* ; do
+    echo "dir = $dir" >> "$output" 2>&1 || :
+    if [ ! -d "$dir" ] ; then continue ; fi
+    case "$dir" in *.removed) continue ;; esac
+    basename=$(basename "$dir")
+    inst="%{pkgname}@${basename#slapd-}"
+    inst_name="${basename#slapd-}"
+    echo "found instance $inst - getting status" >> "$output" 2>&1 || :
+    if /bin/systemctl -q is-active "$inst" ; then
+       echo "instance $inst is running - stopping for upgrade" >> "$output" 2>&1 || :
+       instances="$instances $inst"
+       /bin/systemctl stop "$inst" >> "$output" 2>&1 || :
+    else
+       echo "instance $inst is not running" >> "$output" 2>&1 || :
+    fi
+    ninst=$((ninst + 1))
+done
+
+if [ $ninst -eq 0 ] ; then
+    echo "no instances to upgrade" >> "$output" 2>&1 || :
+    exit 0
+fi
+
+# Restart previously running instances
+for inst in $instances ; do
+    echo "starting instance $inst" >> "$output" 2>&1 || :
+    /bin/systemctl start "$inst" >> "$output" 2>&1 || :
+done
+
 
 %preun
 if [ $1 -eq 0 ]; then # Final removal
@@ -998,6 +1043,14 @@ exit 0
 %doc README.md
 
 %changelog
+* Wed Feb 18 2026 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-22
+- Resolves: RHEL-148485 - Upgrading IDM to latest version: 389-ds-base and ipa-server breaks replication [rhel-8.10.z]
+
+* Fri Jan 23 2026 Arun Bansal <arbansal@redhat.com> - 1.4.3.39-21
+- Resolves: RHEL-141419 - (&(cn:dn:=groups)) no longer returns results [rhel-8.10.z]
+- Resolves: RHEL-140272 - ipa-healthcheck is complaining about missing or 
+                          incorrectly configured system indexes. [rhel-8.10.z]
+
 * Tue Jan 13 2026 Arun Bansal <arbansal@redhat.com> - 1.4.3.39-20
 - Resolves: RHEL-140086 - Upgrading IDM to latest version: 389-ds-base and ipa-server breaks replication [rhel-8.10.z]
 
