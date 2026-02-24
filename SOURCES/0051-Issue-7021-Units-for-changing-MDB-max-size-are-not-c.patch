@@ -1,0 +1,113 @@
+From 6a3366e173ea23f8180cc7c7b5e3b0f5702943cb Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Tue, 30 Sep 2025 20:11:22 +0100
+Subject: [PATCH] Issue 7021 - Units for changing MDB max size are not
+ consistent across different tools (#7022)
+
+Description: nsslapd-mdb-max-size accepts value in bytes. But it can't
+be any value, it should be a multiple of the page size, which can
+vary (4K, 16K, 64K on different architectures). dscreate accepts unit suffix
+but this value is not pagesize aligned. dsconf sets the lmdb database
+maximum size (in bytes) and is also not pagesize aligned.
+
+Update dscreate a page align the mdb max size and dsconf to accept unit
+suffix and page size align the value
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7021
+
+Reviewed by: @progier389  (Thank you)
+---
+ src/lib389/lib389/cli_conf/backend.py | 20 ++++++++++++++++----
+ src/lib389/lib389/instance/setup.py   |  7 ++++++-
+ src/lib389/lib389/utils.py            |  5 +++++
+ 3 files changed, 27 insertions(+), 5 deletions(-)
+
+diff --git a/src/lib389/lib389/cli_conf/backend.py b/src/lib389/lib389/cli_conf/backend.py
+index ec319045f..368468d6f 100644
+--- a/src/lib389/lib389/cli_conf/backend.py
++++ b/src/lib389/lib389/cli_conf/backend.py
+@@ -18,7 +18,7 @@ from lib389.configurations.sample import (
+ from lib389.chaining import (ChainingLinks)
+ from lib389.monitor import MonitorLDBM
+ from lib389.replica import Replicas
+-from lib389.utils import ensure_str, is_a_dn, is_dn_parent
++from lib389.utils import ensure_str, is_a_dn, is_dn_parent, parse_size, align_to_page_size
+ from lib389.tasks import DBCompactTask
+ from lib389._constants import INSTALL_LATEST_CONFIG
+ from lib389.properties import BACKEND_SAMPLE_ENTRIES
+@@ -539,8 +539,20 @@ def db_config_set(inst, basedn, log, args):
+         if value == "":
+             # We don't support deleting attributes or setting empty values in db
+             continue
+-        else:
+-            replace_list.append([attr, value])
++
++        if attr == "nsslapd-mdb-max-size":
++            try:
++                mdb_max_size = parse_size(value)
++                # MDB max size requires pagesize alignment
++                mdb_max_size_aligned = align_to_page_size(mdb_max_size)
++                if mdb_max_size_aligned != mdb_max_size:
++                    log.info(f"Aligning MDB max size from {mdb_max_size} to nearest pagesize {mdb_max_size_aligned}")
++                value = str(mdb_max_size_aligned)
++            except ValueError:
++                raise ValueError(f"Invalid value for --mdb-max-size: {value}")
++
++        replace_list.append([attr, value])
++
+     if len(replace_list) > 0:
+         db_cfg.set(replace_list)
+     elif not did_something:
+@@ -1085,7 +1097,7 @@ def create_parser(subparsers):
+     set_db_config_parser.add_argument('--deadlock-policy', help='Adjusts the backend database deadlock policy (Advanced setting)')
+     set_db_config_parser.add_argument('--db-home-directory', help='Sets the directory for the database mmapped files (Advanced setting)')
+     set_db_config_parser.add_argument('--db-lib', help='Sets which db lib is used. Valid values are: bdb or mdb')
+-    set_db_config_parser.add_argument('--mdb-max-size', help='Sets the lmdb database maximum size (in bytes).')
++    set_db_config_parser.add_argument('--mdb-max-size', help='Sets the lmdb database maximum size (accepts bytes, or with unit suffix: k, m, g, t)')
+     set_db_config_parser.add_argument('--mdb-max-readers', help='Sets the lmdb database maximum number of readers (Advanced setting)')
+     set_db_config_parser.add_argument('--mdb-max-dbs', help='Sets the lmdb database maximum number of sub databases (Advanced setting)')
+ 
+diff --git a/src/lib389/lib389/instance/setup.py b/src/lib389/lib389/instance/setup.py
+index 30a8e628a..60c2af2e3 100644
+--- a/src/lib389/lib389/instance/setup.py
++++ b/src/lib389/lib389/instance/setup.py
+@@ -38,6 +38,7 @@ from lib389.instance.remove import remove_ds_instance
+ from lib389.index import Indexes
+ from lib389.replica import Replicas, BootstrapReplicationManager, Changelog
+ from lib389.utils import (
++    align_to_page_size,
+     assert_c,
+     is_a_dn,
+     ensure_str,
+@@ -1069,7 +1070,11 @@ class SetupDs(object):
+         # Before we create any backends, set lmdb max size
+         if slapd['db_lib'] == 'mdb':
+             mdb_max_size = parse_size(slapd['mdb_max_size'])
+-            DatabaseConfig(ds_instance).set([('nsslapd-mdb-max-size', str(mdb_max_size)),])
++            # MDB max size requires pagesize alignment
++            mdb_max_size_aligned = align_to_page_size(mdb_max_size)
++            if mdb_max_size_aligned != mdb_max_size:
++                self.log.debug(f"Aligning MDB max size from {mdb_max_size} to nearest pagesize {mdb_max_size_aligned}")
++            DatabaseConfig(ds_instance).set([('nsslapd-mdb-max-size', str(mdb_max_size_aligned)),])
+ 
+         # Before we create any backends, create any extra default indexes that may be
+         # dynamically provisioned, rather than from template-dse.ldif. Looking at you
+diff --git a/src/lib389/lib389/utils.py b/src/lib389/lib389/utils.py
+index 33cc1b6ba..960a1eacd 100644
+--- a/src/lib389/lib389/utils.py
++++ b/src/lib389/lib389/utils.py
+@@ -1501,6 +1501,11 @@ def ensure_dict_str(val):
+     return retdict
+ 
+ 
++def align_to_page_size(size):
++    page_size = os.sysconf("SC_PAGE_SIZE")
++    return ((size + page_size - 1) // page_size) * page_size
++
++
+ def pseudolocalize(string):
+     pseudo_string = u""
+     for char in string:
+-- 
+2.52.0
+
