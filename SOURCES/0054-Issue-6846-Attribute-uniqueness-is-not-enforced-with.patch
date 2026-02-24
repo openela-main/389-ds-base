@@ -1,0 +1,80 @@
+From 6f94438cc8b1d996dbc185ae6a8d3f339efc579c Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Tue, 14 Oct 2025 20:35:01 +0100
+Subject: [PATCH] Issue 6846 - Attribute uniqueness is not enforced with modrdn
+ (#7026)
+
+Description: The attribute uniqueness plugin fails to enforce
+uniqueness on the CN attribute during a MODRDN operation. If no
+new superior DN is specified, the destinationSDN is an empty SDN
+struct, breaking marker and subtree searches later.
+
+In this case we fall back to using the parent of the source entry
+as the destination.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6846
+
+Reviewed by: @progier389, @tbordaz  (Thank you)
+---
+ dirsrvtests/tests/suites/plugins/attruniq_test.py | 4 ----
+ ldap/servers/plugins/uiduniq/uid.c                | 7 ++++++-
+ 2 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/plugins/attruniq_test.py b/dirsrvtests/tests/suites/plugins/attruniq_test.py
+index ad9589c91..ab07e37e2 100644
+--- a/dirsrvtests/tests/suites/plugins/attruniq_test.py
++++ b/dirsrvtests/tests/suites/plugins/attruniq_test.py
+@@ -21,7 +21,6 @@ from lib389._constants import DEFAULT_SUFFIX
+ from lib389.topologies import topology_st
+ from lib389.utils import ds_is_older
+ 
+-
+ pytestmark = [pytest.mark.tier1,
+               pytest.mark.skipif(ds_is_older('1.3.3'), reason="Not implemented")]
+ 
+@@ -638,7 +637,6 @@ def test_one_container_mod(topology_st, attruniq, containers,
+         active_user_2.replace('cn', ACTIVE_USER_1_CN)
+ 
+ 
+-@pytest.mark.xfail(reason="DS6846")
+ def test_one_container_modrdn(topology_st, attruniq, containers,
+                               active_user_1, active_user_2):
+     """Test MODRDN operations with attribute uniqueness in a single container.
+@@ -851,7 +849,6 @@ def test_multiple_containers_mod_across_subtrees(topology_st, attruniq, containe
+         stage_user_1.replace('cn', ACTIVE_USER_1_CN)
+ 
+ 
+-@pytest.mark.xfail(reason="DS6846")
+ def test_multiple_containers_modrdn(topology_st, attruniq, containers,
+                            active_user_1, active_user_2, stage_user_1, stage_user_2):
+     """Test MODRDN operations with attribute uniqueness across multiple containers.
+@@ -893,7 +890,6 @@ def test_multiple_containers_modrdn(topology_st, attruniq, containers,
+     stage_user_2.rename(f'cn={ACTIVE_USER_1_CN}', deloldrdn=False)
+ 
+ 
+-@pytest.mark.xfail(reason="DS6846")
+ def test_multiple_containers_modrdn_across_subtrees(topology_st, attruniq, containers,
+                                         active_user_1, active_user_2, stage_user_1, stage_user_2):
+         """Test MODRDN operations with attribute uniqueness across multiple containers with cross-subtree enforcement.
+diff --git a/ldap/servers/plugins/uiduniq/uid.c b/ldap/servers/plugins/uiduniq/uid.c
+index fdb1404a0..aae0b0445 100644
+--- a/ldap/servers/plugins/uiduniq/uid.c
++++ b/ldap/servers/plugins/uiduniq/uid.c
+@@ -1342,8 +1342,13 @@ preop_modrdn(Slapi_PBlock *pb)
+      * its current level in the tree.  Use the source SDN for
+      * determining which managed tree this belongs to
+      */
+-    if (!destinationSDN)
++    if (!destinationSDN) {
++        destinationSDN = slapi_sdn_new();
++    }
++    if (slapi_sdn_get_dn(destinationSDN) == NULL) {
++        /* If no superior was specified fall back to the parent of source */
+         slapi_sdn_get_parent(sourceSDN, destinationSDN);
++    }
+ 
+     /* Get the new RDN - this has the attribute values */
+     err = slapi_pblock_get(pb, SLAPI_MODRDN_NEWRDN, &rdn);
+-- 
+2.52.0
+

@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.7.0
-Release:          7%{?dist}
+Release:          10%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -322,6 +322,55 @@ Patch:            0030-Issue-6940-dsconf-monitor-server-fails-with-ldapi-du.patc
 Patch:            0031-Issue-6919-numSubordinates-tombstoneNumSubordinates-.patch
 Patch:            0032-Issue-6910-Fix-latest-coverity-issues.patch
 Patch:            0033-Issue-6929-Compilation-failure-with-rust-1.89-on-Fed.patch
+Patch:            0034-Issue-6936-Make-user-subtree-policy-creation-idempot.patch
+Patch:            0035-Issue-6947-Revise-time-skew-check-in-healthcheck-too.patch
+Patch:            0036-Issue-7012-improve-dscrl-dbverify-result-when-backen.patch
+Patch:            0037-Issue-7014-memberOf-ignored-deferred-updates-with-LM.patch
+Patch:            0038-Issue-6933-When-deferred-memberof-update-is-enabled-.patch
+Patch:            0039-Issue-6928-The-parentId-attribute-is-indexed-with-im.patch
+Patch:            0040-Issue-6954-do-not-delete-referrals-on-chain_on_updat.patch
+Patch:            0041-Issue-7021-Units-for-changing-MDB-max-size-are-not-c.patch
+Patch:            0042-Issue-6966-On-large-DB-unlimited-IDL-scan-limit-redu.patch
+Patch:            0043-Issue-7027-389-ds-base-OpenScanHub-Leaks-Detected-70.patch
+Patch:            0044-Issue-6753-Add-add_exclude_subtree-and-remove_exclud.patch
+Patch:            0045-Issue-6753-Port-and-fix-ticket-47823-tests.patch
+Patch:            0046-Issue-6753-Port-ticket-tests.patch
+Patch:            0047-Issue-6979-Improve-the-way-to-detect-asynchronous-op.patch
+Patch:            0048-Issue-7047-MemberOf-plugin-logs-null-attribute-name-.patch
+Patch:            0049-Issue-7032-The-new-ipahealthcheck-test-ipahealthchec.patch
+Patch:            0050-Issue-7065-A-search-filter-containing-a-non-normaliz.patch
+Patch:            0051-Issue-7055-Online-initialization-of-consumers-fails-.patch
+Patch:            0052-Issue-6901-Update-changelog-trimming-logging-fix-tes.patch
+Patch:            0053-Issue-6901-Update-changelog-trimming-logging.patch
+Patch:            0054-Issue-6846-Attribute-uniqueness-is-not-enforced-with.patch
+Patch:            0055-Issue-7007-Improve-paged-result-search-locking.patch
+Patch:            0056-Issue-7056-DSBLE0007-doesn-t-generate-remediation-st.patch
+Patch:            0057-Issue-7115-LeakSanitizer-leak-in-slapd_bind_local_us.patch
+Patch:            0058-Issue-7121-LeakSanitizer-various-leaks-during-replic.patch
+Patch:            0059-Issue-Revise-paged-result-search-locking.patch
+Patch:            0060-Issue-7172-Index-ordering-mismatch-after-upgrade-717.patch
+Patch:            0061-Issue-7172-2nd-Index-ordering-mismatch-after-upgrade.patch
+Patch:            0062-Issue-6947-Revise-time-skew-check-in-healthcheck-too.patch
+Patch:            0063-Issue-7128-memory-corruption-in-alias-entry-plugin-7.patch
+Patch:            0064-Issue-7150-Compressed-access-log-rotations-skipped-a.patch
+Patch:            0065-Issue-7049-RetroCL-plugin-generates-invalid-LDIF.patch
+Patch:            0066-Issue-7096-During-replication-online-total-init-the-.patch
+Patch:            0067-Issue-7096-2nd-During-replication-online-total-init-.patch
+Patch:            0068-Issue-7027-2nd-389-ds-base-OpenScanHub-Leaks-Detecte.patch
+Patch:            0069-Issue-7189-DSBLE0007-generates-incorrect-remediation.patch
+Patch:            0070-Issue-7223-Revert-index-scan-limits-for-system-index.patch
+Patch:            0071-Issue-7223-Add-upgrade-function-to-remove-nsIndexIDL.patch
+Patch:            0072-Issue-7223-Add-upgrade-function-to-remove-ancestorid.patch
+Patch:            0073-Issue-7223-Detect-and-log-index-ordering-mismatch-du.patch
+Patch:            0074-Issue-7223-Add-dsctl-index-check-command-for-offline.patch
+Patch:            0075-Issue-7076-6992-6784-6214-Fix-CI-test-failures-7077.patch
+Patch:            0076-Issue-7076-Fix-revert_cache-never-called-in-modrdn-7.patch
+Patch:            0077-Issue-6947-Fix-health_system_indexes_test.py.patch
+Patch:            0078-Issue-7121-2nd-LeakSanitizer-various-leaks-during-re.patch
+Patch:            0079-Issue-7223-Use-lexicographical-order-for-ancestorid-.patch
+Patch:            0080-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
+Patch:            0081-Security-fix-for-CVE-2025-14905.patch
+Patch:            0082-Issue-7053-Remove-memberof_del_dn_from_groups-from-M.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -595,40 +644,42 @@ fi
 # Reload our sysctl before we restart (if we can)
 sysctl --system &> $output; true
 
-# Gather the running instances so we can restart them
+# Gather running instances, stop them, run index-check, then restart
 instbase="%{_sysconfdir}/%{pkgname}"
+instances=""
 ninst=0
-for dir in $instbase/slapd-* ; do
-    echo dir = $dir >> $output 2>&1 || :
+
+for dir in "$instbase"/slapd-* ; do
+    echo "dir = $dir" >> "$output" 2>&1 || :
     if [ ! -d "$dir" ] ; then continue ; fi
     case "$dir" in *.removed) continue ;; esac
-    basename=`basename $dir`
-    inst="%{pkgname}@`echo $basename | sed -e 's/slapd-//g'`"
-    echo found instance $inst - getting status  >> $output 2>&1 || :
-    if /bin/systemctl -q is-active $inst ; then
-       echo instance $inst is running >> $output 2>&1 || :
+    basename=$(basename "$dir")
+    inst="%{pkgname}@${basename#slapd-}"
+    inst_name="${basename#slapd-}"
+    echo "found instance $inst - getting status" >> "$output" 2>&1 || :
+    if /bin/systemctl -q is-active "$inst" ; then
+       echo "instance $inst is running - stopping for upgrade" >> "$output" 2>&1 || :
        instances="$instances $inst"
+       /bin/systemctl stop "$inst" >> "$output" 2>&1 || :
     else
-       echo instance $inst is not running >> $output 2>&1 || :
+       echo "instance $inst is not running" >> "$output" 2>&1 || :
     fi
-    ninst=`expr $ninst + 1`
+    # Run index-check on all instances (running or not)
+    # This fixes index ordering mismatches from older versions
+    dsctl "$inst_name" index-check --fix >> "$output2" 2>&1 || :
+    ninst=$((ninst + 1))
 done
+
 if [ $ninst -eq 0 ] ; then
-    echo no instances to upgrade >> $output 2>&1 || :
-    exit 0 # have no instances to upgrade - just skip the rest
-else
-    # restart running instances
-    echo shutting down all instances . . . >> $output 2>&1 || :
-    for inst in $instances ; do
-        echo stopping instance $inst >> $output 2>&1 || :
-        /bin/systemctl stop $inst >> $output 2>&1 || :
-    done
-    for inst in $instances ; do
-        echo starting instance $inst >> $output 2>&1 || :
-        /bin/systemctl start $inst >> $output 2>&1 || :
-    done
+    echo "no instances to upgrade" >> "$output" 2>&1 || :
+    exit 0
 fi
 
+# Restart previously running instances
+for inst in $instances ; do
+    echo "starting instance $inst" >> "$output" 2>&1 || :
+    /bin/systemctl start "$inst" >> "$output" 2>&1 || :
+done
 
 %preun
 if [ $1 -eq 0 ]; then # Final removal
@@ -768,6 +819,45 @@ exit 0
 %endif
 
 %changelog
+* Thu Feb 19 2026 Viktor Ashirov <vashirov@redhat.com> - 2.7.0-10
+- Resolves: RHEL-123243 - Attribute uniqueness is not enforced upon modrdn operation [rhel-9.7.z]
+- Resolves: RHEL-123765 - 389-ds-base OpenScanHub Leaks Detected [rhel-9.7.z]
+- Resolves: RHEL-137083 - CVE-2025-14905 389-ds-base: 389-ds-base: Remote Code Execution and Denial of Service via heap buffer overflow [rhel-9.7.z]
+- Resolves: RHEL-140088 - Upgrading IDM  to latest version: 389-ds-base and ipa-server breaks replication  [rhel-9.7.z]
+- Resolves: RHEL-150906 - Remove memberof_del_dn_from_groups from MemberOf plugin [rhel-9.7.z]
+
+* Wed Feb 11 2026 Viktor Ashirov <vashirov@redhat.com> - 2.7.0-9
+- Resolves: RHEL-116425 - RetroCL plugin generates invalid LDIF [rhel-9.7.z]
+- Resolves: RHEL-123243 - Attribute uniqueness is not enforced upon modrdn operation [rhel-9.7.z]
+- Resolves: RHEL-123765 - 389-ds-base OpenScanHub Leaks Detected [rhel-9.7.z]
+- Resolves: RHEL-123896 - [WebUI] Replication tab crashes after enabling replication as a consumer [rhel-9.7.z]
+- Resolves: RHEL-129558 - Online initialization of consumers fails with error -23 [rhel-9.7.z]
+- Resolves: RHEL-140088 - Upgrading IDM  to latest version: 389-ds-base and ipa-server breaks replication  [rhel-9.7.z]
+- Resolves: RHEL-142979 - Scalability issue of replication online initialization with large database [rhel-9.7.z]
+- Resolves: RHEL-146898 - memory corruption in alias entry plugin [rhel-9.7.z]
+- Resolves: RHEL-147211 - Access logs are not getting deleted as configured. [rhel-9.7.z]
+
+* Tue Jan 13 2026 Viktor Ashirov <vashirov@redhat.com> - 2.7.0-8
+- Resolves: RHEL-111228 - Error showing local password policy on web UI [rhel-9.7.z]
+- Resolves: RHEL-117049 - Replication online reinitialization of a large database gets stalled. [rhel-9.7.z]
+- Resolves: RHEL-117770 - When the server restarts after a crash, the RFE assumes memberof should be recomputed. It triggers a memberof fixup task, dirsrv became unresponsive. [rhel-9.7.z]
+- Resolves: RHEL-123230 - Improve the way to detect asynchronous operations in the access logs [rhel-9.7.z]
+- Resolves: RHEL-123243 - Attribute uniqueness is not enforced upon modrdn operation [rhel-9.7.z]
+- Resolves: RHEL-123257 - Typo in errors log after a Memberof fixup task. [rhel-9.7.z]
+- Resolves: RHEL-123278 - The new ipahealthcheck test ipahealthcheck.ds.backends.BackendsCheck raises CRITICAL issue [rhel-9.7.z]
+- Resolves: RHEL-123367 - IPA health check up script shows time skew is over 24 hours [rhel-9.7.z]
+- Resolves: RHEL-123765 - 389-ds-base OpenScanHub Leaks Detected [rhel-9.7.z]
+- Resolves: RHEL-123852 - Units for changing MDB max size are not consistent across different tools [rhel-9.7.z]
+- Resolves: RHEL-123892 - Improve output dsctl dbverify when backend does not exist [rhel-9.7.z]
+- Resolves: RHEL-123896 - [WebUI] Replication tab crashes after enabling replication as a consumer [rhel-9.7.z]
+- Resolves: RHEL-123922 - Changelog trimming - add number of scanned entries to the log [rhel-9.7.z]
+- Resolves: RHEL-126551 - RHDS 12.6 doesn't handle 'ldapsearch' filter with space char in DN name correctly [rhel-9.7.z]
+- Resolves: RHEL-129558 - Online initialization of consumers fails with error -23 [rhel-9.7.z]
+- Resolves: RHEL-129579 - Fix paged result search locking [rhel-9.7.z]
+- Resolves: RHEL-138480 - Memory leak observed in ns-slapd with 389-ds-base-2.6.1-12 [rhel-9.7.z]
+- Resolves: RHEL-140088 - Upgrading IDM  to latest version: 389-ds-base and ipa-server breaks replication  [rhel-9.7.z]
+- Resolves: RHEL-140274 - ipa-healthcheck is complaining about missing or incorrectly configured system indexes. [rhel-9.7.z]
+
 * Tue Sep 16 2025 Viktor Ashirov <vashirov@redhat.com> - 2.7.0-7
 - Resolves: RHEL-104591 - RHDS12: Web console doesn't show Server Version [rhel-9]
 - Resolves: RHEL-104593 - The numSubordinates value is not matching the number of direct children. [rhel-9]

@@ -1,0 +1,26 @@
+From c0cd5aa57db1ba2fa10af68c9a3e820566953344 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 27 Jan 2026 14:37:36 +0100
+Subject: [PATCH] Issue 6947 - Revise time skew check in healthcheck tool and
+ add option to exclude checks
+
+Remove debug prints from the healthcheck
+---
+ src/lib389/lib389/cli_ctl/health.py | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/lib389/lib389/cli_ctl/health.py b/src/lib389/lib389/cli_ctl/health.py
+index 38540e0df..017daa9c6 100644
+--- a/src/lib389/lib389/cli_ctl/health.py
++++ b/src/lib389/lib389/cli_ctl/health.py
+@@ -166,7 +166,6 @@ def health_check_run(inst, log, args):
+ 
+     checks = args.check or dict(_list_targets(inst)).keys()
+     exclude_checks = args.exclude_check
+-    print("MARK excl: " + str(exclude_checks))
+     if args.list_checks or args.dry_run:
+         _print_checks(inst, log, checks)
+         return
+-- 
+2.52.0
+

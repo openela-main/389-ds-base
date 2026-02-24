@@ -1,0 +1,53 @@
+From f939ce182c2038992823dc1d82dd52d78836d678 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Thu, 24 Jul 2025 19:09:40 +0200
+Subject: [PATCH] Issue 6901 - Update changelog trimming logging
+
+Description:
+* Set SLAPI_LOG_ERR for message in `_cl5DispatchTrimThread`
+* Set correct function name for logs in `_cl5TrimEntry`.
+* Add number of scanned entries to the log.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6901
+
+Reviewed by: @mreynolds389, @progier389 (Thanks!)
+---
+ ldap/servers/plugins/replication/cl5_api.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/cl5_api.c b/ldap/servers/plugins/replication/cl5_api.c
+index d88ce7d98..c21cbaa8f 100644
+--- a/ldap/servers/plugins/replication/cl5_api.c
++++ b/ldap/servers/plugins/replication/cl5_api.c
+@@ -2007,7 +2007,7 @@ _cl5DispatchTrimThread(Replica *replica)
+                           (void *)replica, PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD,
+                           PR_UNJOINABLE_THREAD, DEFAULT_THREAD_STACKSIZE);
+     if (NULL == pth) {
+-        slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl,
++        slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name_cl,
+                       "_cl5DispatchTrimThread - Failed to create trimming thread for %s"
+                       "; NSPR error - %d\n", replica_get_name(replica),
+                       PR_GetError());
+@@ -2788,7 +2788,7 @@ _cl5TrimEntry(dbi_val_t *key, dbi_val_t *data, void *ctx)
+             return DBI_RC_NOTFOUND;
+         } else {
+             slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl,
+-                          "_cl5TrimReplica - Changelog purge skipped anchor csn %s\n",
++                          "_cl5TrimEntry - Changelog purge skipped anchor csn %s\n",
+                           (char*)key->data);
+             return DBI_RC_SUCCESS;
+         }
+@@ -2867,8 +2867,8 @@ _cl5TrimReplica(Replica *r)
+     slapi_ch_free((void**)&dblcictx.rids);
+ 
+     if (dblcictx.changed.tot) {
+-        slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl, "_cl5TrimReplica - Trimmed %ld changes from the changelog\n",
+-                      dblcictx.changed.tot);
++        slapi_log_err(SLAPI_LOG_REPL, repl_plugin_name_cl, "_cl5TrimReplica - Scanned %ld records, and trimmed %ld changes from the changelog\n",
++                      dblcictx.seen.tot, dblcictx.changed.tot);
+     }
+ }
+ 
+-- 
+2.52.0
+

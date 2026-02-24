@@ -1,0 +1,202 @@
+From f0e052cb32770c12642b1322496874f0d42e6099 Mon Sep 17 00:00:00 2001
+From: Alex Kulberg <vectinx@yandex.ru>
+Date: Tue, 9 Dec 2025 17:11:56 +0300
+Subject: [PATCH] Issue 7053 - Remove memberof_del_dn_from_groups from MemberOf
+ plugin (#7064)
+
+Bug Description:
+
+The member plugin creates redundant changes to the member attribute
+in groups when deleting a user, although the referential integrity
+of the member attribute should be controlled by the Referential Integrity plugin.
+Furthermore, memberof doesn't take replication of operations into account
+and performs the change on every server instance in the topology.
+
+Fix Description:
+
+Remove the `memberof_del_dn_from_groups` function from the MemberOf plugin,
+completely transferring responsibility for deleting users from groups
+to the Referential Integrity plugin.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7053
+
+Reviewed by: @tbordaz
+---
+ .../memberof_include_scopes_test.py           | 13 ++-
+ ldap/servers/plugins/memberof/memberof.c      | 79 -------------------
+ 2 files changed, 9 insertions(+), 83 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py b/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py
+index e1d3b0a96..347eb880f 100644
+--- a/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py
++++ b/dirsrvtests/tests/suites/memberof_plugin/memberof_include_scopes_test.py
+@@ -13,7 +13,7 @@ import time
+ from lib389.utils import ensure_str
+ from lib389.topologies import topology_st as topo
+ from lib389._constants import *
+-from lib389.plugins import MemberOfPlugin
++from lib389.plugins import MemberOfPlugin, ReferentialIntegrityPlugin
+ from lib389.idm.user import UserAccount, UserAccounts
+ from lib389.idm.group import Group, Groups
+ from lib389.idm.nscontainer import nsContainers
+@@ -77,6 +77,13 @@ def test_multiple_scopes(topo):
+ 
+     inst = topo.standalone
+ 
++    EXCLUDED_SUBTREE = 'cn=exclude,%s' % SUFFIX
++    # enable Referential Integrity plugin
++    # to correctly process the 'member' attribute
++    refint = ReferentialIntegrityPlugin(inst)
++    refint.add_excludescope(EXCLUDED_SUBTREE)
++    refint.enable()
++
+     # configure plugin
+     memberof = MemberOfPlugin(inst)
+     memberof.enable()
+@@ -106,7 +113,6 @@ def test_multiple_scopes(topo):
+     check_membership(inst, f'uid=test_m3,{SUBTREE_3}', f'cn=g3,{SUBTREE_3}', False)
+ 
+     # Set exclude scope
+-    EXCLUDED_SUBTREE = 'cn=exclude,%s' % SUFFIX
+     EXCLUDED_USER = f"uid=test_m1,{EXCLUDED_SUBTREE}"
+     INCLUDED_USER = f"uid=test_m1,{SUBTREE_1}"
+     GROUP_DN = f'cn=g1,{SUBTREE_1}'
+@@ -122,9 +128,8 @@ def test_multiple_scopes(topo):
+     # Check memberOf and group are cleaned up
+     check_membership(inst, EXCLUDED_USER, GROUP_DN, False)
+     group = Group(topo.standalone,  dn=GROUP_DN)
+-    assert not group.present("member", EXCLUDED_USER)
+     assert not group.present("member", INCLUDED_USER)
+-
++    assert not group.present("member", EXCLUDED_USER)
+ 
+ if __name__ == '__main__':
+     # Run isolated
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index 4ebd5e838..90ffb1112 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -144,7 +144,6 @@ static void memberof_set_plugin_id(void *plugin_id);
+ static int memberof_compare(MemberOfConfig *config, const void *a, const void *b);
+ static int memberof_qsort_compare(const void *a, const void *b);
+ static void memberof_load_array(Slapi_Value **array, Slapi_Attr *attr);
+-static int memberof_del_dn_from_groups(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *sdn);
+ static int memberof_call_foreach_dn(Slapi_PBlock *pb, Slapi_DN *sdn, MemberOfConfig *config, char **types, plugin_search_entry_callback callback, void *callback_data, int *cached, PRBool use_grp_cache);
+ static int memberof_is_direct_member(MemberOfConfig *config, Slapi_Value *groupdn, Slapi_Value *memberdn);
+ static int memberof_is_grouping_attr(char *type, MemberOfConfig *config);
+@@ -503,21 +502,6 @@ deferred_modrdn_func(MemberofDeferredModrdnTask *task)
+      * attributes to refer to the new name. */
+     if (ret == LDAP_SUCCESS && pre_sdn && post_sdn) {
+         if (!memberof_entry_in_scope(&configCopy, post_sdn)) {
+-            /*
+-             * After modrdn the group contains both the pre and post DN's as
+-             * members, so we need to cleanup both in this case.
+-             */
+-            if ((ret = memberof_del_dn_from_groups(pb, &configCopy, pre_sdn))) {
+-                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                              "deferred_modrdn_func - Delete dn failed for preop entry(%s), error (%d)\n",
+-                              slapi_sdn_get_dn(pre_sdn), ret);
+-            }
+-            if ((ret = memberof_del_dn_from_groups(pb, &configCopy, post_sdn))) {
+-                slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                              "deferred_modrdn_func - Delete dn failed for postop entry(%s), error (%d)\n",
+-                              slapi_sdn_get_dn(post_sdn), ret);
+-            }
+-
+             if (ret == LDAP_SUCCESS && pre_e && configCopy.group_filter &&
+                 0 == slapi_filter_test_simple(pre_e, configCopy.group_filter))
+             {
+@@ -599,16 +583,6 @@ deferred_del_func(MemberofDeferredDelTask *task)
+     free_configCopy = PR_TRUE;
+     memberof_unlock_config();
+ 
+-    /* remove this DN from the
+-     * membership lists of groups
+-     */
+-    if ((ret = memberof_del_dn_from_groups(pb, &configCopy, sdn))) {
+-        slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                "deferred_del_func - Error deleting dn (%s) from group. Error (%d)\n",
+-                slapi_sdn_get_dn(sdn), ret);
+-        goto bail;
+-    }
+-
+     /* is the entry of interest as a group? */
+     if (e && configCopy.group_filter && 0 == slapi_filter_test_simple(e, configCopy.group_filter)) {
+         Slapi_Attr *attr = 0;
+@@ -1411,16 +1385,6 @@ memberof_postop_del(Slapi_PBlock *pb)
+         memberof_copy_config(&configCopy, memberof_get_config());
+         memberof_unlock_config();
+ 
+-        /* remove this DN from the
+-         * membership lists of groups
+-         */
+-        if ((ret = memberof_del_dn_from_groups(pb, &configCopy, sdn))) {
+-            slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                          "memberof_postop_del - Error deleting dn (%s) from group. Error (%d)\n",
+-                          slapi_sdn_get_dn(sdn), ret);
+-            goto bail;
+-        }
+-
+         /* is the entry of interest as a group? */
+         if (e && configCopy.group_filter && 0 == slapi_filter_test_simple(e, configCopy.group_filter)) {
+             Slapi_Attr *attr = 0;
+@@ -1451,34 +1415,6 @@ done:
+ }
+ 
+ 
+-/* Deletes a member dn from all groups that refer to it. */
+-static int
+-memberof_del_dn_from_groups(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *sdn)
+-{
+-    char *groupattrs[2] = {0, 0};
+-    int rc = LDAP_SUCCESS;
+-    int cached = 0;
+-
+-    /* Loop through each grouping attribute to find groups that have
+-     * dn as a member.  For any matches, delete the dn value from the
+-     * same grouping attribute. */
+-    for (size_t i = 0; config->groupattrs && config->groupattrs[i] && rc == LDAP_SUCCESS; i++) {
+-        memberof_del_dn_data data = {(char *)slapi_sdn_get_dn(sdn),
+-                                     config->groupattrs[i]};
+-
+-        groupattrs[0] = config->groupattrs[i];
+-
+-        slapi_log_err(SLAPI_LOG_PLUGIN, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                "memberof_del_dn_from_groups: Ancestors of %s   attr: %s\n",
+-                slapi_sdn_get_dn(sdn),
+-                groupattrs[0]);
+-        rc = memberof_call_foreach_dn(pb, sdn, config, groupattrs,
+-                                      memberof_del_dn_type_callback, &data, &cached, PR_FALSE);
+-    }
+-
+-    return rc;
+-}
+-
+ int
+ memberof_del_dn_type_callback(Slapi_Entry *e, void *callback_data)
+ {
+@@ -1837,21 +1773,6 @@ memberof_postop_modrdn(Slapi_PBlock *pb)
+          * attributes to refer to the new name. */
+         if (ret == LDAP_SUCCESS && pre_sdn && post_sdn) {
+             if (!memberof_entry_in_scope(&configCopy, post_sdn)) {
+-                /*
+-                 * After modrdn the group contains both the pre and post DN's as
+-                 * members, so we need to cleanup both in this case.
+-                 */
+-                if ((ret = memberof_del_dn_from_groups(pb, &configCopy, pre_sdn))) {
+-                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                                  "memberof_postop_modrdn - Delete dn failed for preop entry(%s), error (%d)\n",
+-                                  slapi_sdn_get_dn(pre_sdn), ret);
+-                }
+-                if ((ret = memberof_del_dn_from_groups(pb, &configCopy, post_sdn))) {
+-                    slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+-                                  "memberof_postop_modrdn - Delete dn failed for postop entry(%s), error (%d)\n",
+-                                  slapi_sdn_get_dn(post_sdn), ret);
+-                }
+-
+                 if (ret == LDAP_SUCCESS && pre_e && configCopy.group_filter &&
+                     0 == slapi_filter_test_simple(pre_e, configCopy.group_filter)) {
+                     /* is the entry of interest as a group? */
+-- 
+2.52.0
+
