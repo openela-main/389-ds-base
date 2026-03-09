@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.7.0
-Release:          10%{?dist}
+Release:          12%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -644,7 +644,7 @@ fi
 # Reload our sysctl before we restart (if we can)
 sysctl --system &> $output; true
 
-# Gather running instances, stop them, run index-check, then restart
+# Gather running instances, stop them, then restart
 instbase="%{_sysconfdir}/%{pkgname}"
 instances=""
 ninst=0
@@ -664,9 +664,6 @@ for dir in "$instbase"/slapd-* ; do
     else
        echo "instance $inst is not running" >> "$output" 2>&1 || :
     fi
-    # Run index-check on all instances (running or not)
-    # This fixes index ordering mismatches from older versions
-    dsctl "$inst_name" index-check --fix >> "$output2" 2>&1 || :
     ninst=$((ninst + 1))
 done
 
@@ -819,6 +816,9 @@ exit 0
 %endif
 
 %changelog
+* Thu Mar 05 2026 Viktor Ashirov <vashirov@redhat.com> - 2.7.0-12
+- Resolves: RHEL-153553 - 389-ds-base-2.7.0-10.el9_7 updates dse.ldif with lowercase DNs causing ipa-healthcheck errors
+
 * Thu Feb 19 2026 Viktor Ashirov <vashirov@redhat.com> - 2.7.0-10
 - Resolves: RHEL-123243 - Attribute uniqueness is not enforced upon modrdn operation [rhel-9.7.z]
 - Resolves: RHEL-123765 - 389-ds-base OpenScanHub Leaks Detected [rhel-9.7.z]
