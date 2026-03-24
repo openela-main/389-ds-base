@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}22%{?prerel}%{?dist}
+Release:          %{?relprefix}23%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -383,6 +383,8 @@ Patch82:          0082-Issue-7223-Detect-and-log-index-ordering-mismatch-du.patc
 Patch83:          0083-Issue-7223-Add-dsctl-index-check-command-for-offline.patch
 Patch84:          0084-Issue-7223-Use-lexicographical-order-for-ancestorid.patch
 Patch85:          0085-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
+Patch86:          0086-Security-fix-for-CVE-2025-14905.patch
+Patch87:          0087-Issue-7096-During-replication-online-total-init-the-.patch
 
 
 #Patch100:         cargo.patch
@@ -1043,6 +1045,10 @@ exit 0
 %doc README.md
 
 %changelog
+* Wed Mar 04 2026 Arun Bansal <arbansal@redhat.com> - 1.4.3.39-23
+- Resolves: RHEL-137074 - CVE-2025-14905 389-ds:1.4/389-ds-base: 389-ds-base: Remote Code Execution and Denial of Service via heap buffer overflow [rhel-8.10.z]
+- Resolves: RHEL-152098 - Scalability issue of replication online initialization with large database [rhel-8.10.z]
+
 * Wed Feb 18 2026 Viktor Ashirov <vashirov@redhat.com> - 1.4.3.39-22
 - Resolves: RHEL-148485 - Upgrading IDM to latest version: 389-ds-base and ipa-server breaks replication [rhel-8.10.z]
 
