@@ -1,0 +1,24 @@
+From fb8acf6141b069e250be3821c1e70ee7ed448720 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Wed, 11 Feb 2026 19:53:44 +0100
+Subject: [PATCH] Issue 6947 - Fix health_system_indexes_test.py
+
+---
+ .../tests/suites/healthcheck/health_system_indexes_test.py       | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py b/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py
+index 4cd4d0c70..3b3651b38 100644
+--- a/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py
++++ b/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py
+@@ -99,6 +99,7 @@ def run_healthcheck_and_flush_log(topology, instance, searched_code, json, searc
+         "memberof",
+     ]
+     args.dry_run = False
++    args.exclude_check = []
+ 
+     # If we are using BDB as a backend, we will get error DSBLE0006 on new versions
+     if (
+-- 
+2.52.0
+

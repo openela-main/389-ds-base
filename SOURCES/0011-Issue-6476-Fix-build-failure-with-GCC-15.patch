@@ -1,0 +1,3318 @@
+From 9043425312dcf1ff7bf9a211a3d5a387d346a9fa Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Tue, 28 Jan 2025 15:49:46 -0500
+Subject: [PATCH] Issue 6476 - Fix build failure with GCC 15
+
+Description:
+
+Most of the failures are our use of function pointer with a generic
+typedef with unknown parameters (e.g. IFP)
+
+There are other IFP we use, but they are not triggering build failures
+yet.
+
+Relates: https://github.com/389ds/389-ds-base/issues/6476
+
+Reviewed by: tbordaz & spichugi (Thanks!!)
+---
+ .../suites/replication/acceptance_test.py     |   4 +-
+ .../suites/replication/changelog_test.py      |  11 +-
+ ldap/include/avl.h                            |  15 +-
+ ldap/libraries/libavl/avl.c                   |  44 ++--
+ ldap/servers/plugins/acl/acllist.c            |  23 +-
+ ldap/servers/plugins/collation/orfilter.c     | 218 ++++++++---------
+ ldap/servers/plugins/pwdstorage/md5c.c        |  87 +++----
+ ldap/servers/plugins/roles/roles_cache.c      |  37 +--
+ ldap/servers/plugins/syntaxes/bin.c           |   3 +-
+ ldap/servers/plugins/syntaxes/syntax.h        |  21 +-
+ ldap/servers/plugins/syntaxes/syntax_common.c |   2 +-
+ ldap/servers/slapd/attrsyntax.c               |  23 +-
+ .../slapd/back-ldbm/db-bdb/bdb_import.c       |   8 +-
+ .../slapd/back-ldbm/db-mdb/mdb_import.c       |  21 +-
+ .../back-ldbm/db-mdb/mdb_import_threads.c     |  14 +-
+ .../slapd/back-ldbm/db-mdb/mdb_instance.c     |   6 +-
+ ldap/servers/slapd/back-ldbm/filterindex.c    |   2 +-
+ ldap/servers/slapd/back-ldbm/ldbm_attr.c      |  28 ++-
+ ldap/servers/slapd/back-ldbm/matchrule.c      |   6 +-
+ ldap/servers/slapd/back-ldbm/misc.c           |   2 +-
+ .../servers/slapd/back-ldbm/proto-back-ldbm.h |   2 +-
+ ldap/servers/slapd/back-ldbm/vlv.c            |   4 +-
+ ldap/servers/slapd/backend.c                  |  55 ++---
+ ldap/servers/slapd/dse.c                      |  16 +-
+ ldap/servers/slapd/entry.c                    |   4 +-
+ ldap/servers/slapd/filtercmp.c                |   4 +-
+ ldap/servers/slapd/getfilelist.c              |   8 +-
+ ldap/servers/slapd/pblock.c                   | 219 +++++++++---------
+ ldap/servers/slapd/pblock_v3.h                |   2 +-
+ ldap/servers/slapd/plugin.c                   |  10 +-
+ ldap/servers/slapd/plugin_mmr.c               |  20 +-
+ ldap/servers/slapd/plugin_mr.c                |  13 +-
+ ldap/servers/slapd/plugin_syntax.c            |  16 +-
+ ldap/servers/slapd/pw.c                       |   4 +-
+ ldap/servers/slapd/slap.h                     | 157 ++++++-------
+ ldap/servers/slapd/slapi-private.h            |   2 +-
+ ldap/servers/slapd/task.c                     |   2 +-
+ 37 files changed, 558 insertions(+), 555 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/replication/acceptance_test.py b/dirsrvtests/tests/suites/replication/acceptance_test.py
+index 547aee995..af3d4eaae 100644
+--- a/dirsrvtests/tests/suites/replication/acceptance_test.py
++++ b/dirsrvtests/tests/suites/replication/acceptance_test.py
+@@ -597,7 +597,7 @@ def test_double_delete(topo_m4, create_entry):
+         time.sleep(5)
+     else:
+         time.sleep(1)
+-        
++
+     log.info('Make searches to check if server is alive')
+     entries = get_repl_entries(topo_m4, TEST_ENTRY_NAME, ["uid"])
+     assert not entries, "Entry deletion {} wasn't replicated successfully".format(TEST_ENTRY_DN)
+@@ -688,7 +688,7 @@ def test_invalid_agmt(topo_m4):
+         assert False
+ 
+ 
+-def test_warining_for_invalid_replica(topo_m4):
++def test_warning_for_invalid_replica(topo_m4):
+     """Testing logs to indicate the inconsistency when configuration is performed.
+ 
+     :id: dd689d03-69b8-4bf9-a06e-2acd19d5e2c8
+diff --git a/dirsrvtests/tests/suites/replication/changelog_test.py b/dirsrvtests/tests/suites/replication/changelog_test.py
+index b12521789..b74650a69 100644
+--- a/dirsrvtests/tests/suites/replication/changelog_test.py
++++ b/dirsrvtests/tests/suites/replication/changelog_test.py
+@@ -14,6 +14,7 @@ import pytest
+ import time
+ import subprocess
+ import glob
++import re
+ from lib389.properties import TASK_WAIT
+ from lib389.replica import Replicas
+ from lib389.idm.user import UserAccounts
+@@ -46,10 +47,11 @@ else:
+     logging.getLogger(__name__).setLevel(logging.INFO)
+ log = logging.getLogger(__name__)
+ 
++
+ def _check_repl_changelog_backup(instance, backup_dir):
+     # Note: there is no way to check dbi on lmdb backup
+     # That said dbscan may perhaps do it ...
+-    if instance.get_db_lib() is 'bdb':
++    if instance.get_db_lib() == 'bdb':
+         if ds_supports_new_changelog():
+             backup_checkdir = os.path.join(backup_dir, DEFAULT_BENAME, BDB_CL_FILENAME)
+         else:
+@@ -60,6 +62,7 @@ def _check_repl_changelog_backup(instance, backup_dir):
+             log.fatal('test_changelog5: backup directory does not exist : {}*'.format(backup_checkdir))
+             assert False
+ 
++
+ def _perform_ldap_operations(topo):
+     """Add a test user, modify description, modrdn user and delete it"""
+ 
+@@ -760,7 +763,7 @@ def test_changelog_pagesize(topo):
+          3. Should not have any 4K page size in db_stat output
+     """
+ 
+-    s1=topo.ms["supplier1"]
++    s1 = topo.ms["supplier1"]
+     fs_pagesize = os.statvfs(s1.ds_paths.db_home_dir).f_bsize
+     if fs_pagesize != 4096:
+         pytest.skip("This test requires that database filesystem prefered block size is 4K.")
+@@ -770,8 +773,8 @@ def test_changelog_pagesize(topo):
+         log.debug(f"DEBUG: Running {cmd}")
+         output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.STDOUT)
+     except subprocess.CalledProcessError as e:
+-        self.log.error(f'Failed to gather db statistics {cmd}: "{e.output.decode()}')
+-        self.log.error(e)
++        log.error(f'Failed to gather db statistics {cmd}: "{e.output.decode()}')
++        log.error(e)
+         raise e
+     assert not re.match("^4096 *Page size", output, flags=re.MULTILINE)
+ 
+diff --git a/ldap/include/avl.h b/ldap/include/avl.h
+index cafe810ac..57086de23 100644
+--- a/ldap/include/avl.h
++++ b/ldap/include/avl.h
+@@ -64,14 +64,15 @@ typedef int (*IFP)(); /* takes undefined arguments */
+ /* avl routines */
+ #define avl_getone(x) (x == 0 ? 0 : (x)->avl_data)
+ #define avl_onenode(x) (x == 0 || ((x)->avl_left == 0 && (x)->avl_right == 0))
+-extern int avl_insert(Avlnode **root, void *data, IFP fcmp, IFP fdup);
+-extern caddr_t avl_delete(Avlnode **root, void *data, IFP fcmp);
+-extern caddr_t avl_find(Avlnode *root, void *data, IFP fcmp);
++
++extern int avl_insert(Avlnode **root, caddr_t data, int32_t(*fcmp)(caddr_t, caddr_t), int32_t(*fdup)(caddr_t, caddr_t));
++extern caddr_t avl_delete(Avlnode **root, caddr_t data, int32_t(*fcmp)(caddr_t, caddr_t));
++extern caddr_t avl_find(Avlnode *root, caddr_t data, int32_t(*fcmp)(caddr_t, caddr_t));
+ extern caddr_t avl_getfirst(Avlnode *root);
+ extern caddr_t avl_getnext(void);
+-extern int avl_dup_error(void);
+-extern int avl_apply(Avlnode *root, IFP fn, void *arg, int stopflag, int type);
+-extern int avl_free(Avlnode *root, IFP dfree);
++extern int avl_dup_error(caddr_t a, caddr_t b);
++extern int avl_apply(Avlnode *root, int32_t(*fn)(caddr_t, caddr_t), void *arg, int stopflag, int type);
++extern int avl_free(Avlnode *root, int32_t(*dfree)(caddr_t));
+ 
+ /* apply traversal types */
+ #define AVL_PREORDER 1
+@@ -80,6 +81,6 @@ extern int avl_free(Avlnode *root, IFP dfree);
+ /* what apply returns if it ran out of nodes */
+ #define AVL_NOMORE -6
+ 
+-caddr_t avl_find_lin(Avlnode *root, caddr_t data, IFP fcmp);
++caddr_t avl_find_lin(Avlnode *root, caddr_t data, int32_t(*fcmp)(caddr_t, caddr_t));
+ 
+ #endif /* _AVL */
+diff --git a/ldap/libraries/libavl/avl.c b/ldap/libraries/libavl/avl.c
+index 517e08098..84a50308a 100644
+--- a/ldap/libraries/libavl/avl.c
++++ b/ldap/libraries/libavl/avl.c
+@@ -69,8 +69,8 @@ ravl_insert(
+     Avlnode **iroot,
+     caddr_t data,
+     int *taller,
+-    IFP fcmp, /* comparison function */
+-    IFP fdup, /* function to call for duplicates */
++    int32_t (*fcmp)(caddr_t, caddr_t), /* comparison function */
++    int32_t (*fdup)(caddr_t, caddr_t), /* function to call for duplicates */
+     int depth)
+ {
+     int rc, cmp, tallersub;
+@@ -226,13 +226,13 @@ ravl_insert(
+ int
+ avl_insert(
+     Avlnode **root,
+-    void *data,
+-    IFP fcmp,
+-    IFP fdup)
++    caddr_t data,
++    int32_t (*fcmp)(caddr_t, caddr_t),
++    int32_t (*fdup)(caddr_t, caddr_t))
+ {
+     int taller;
+ 
+-    return ravl_insert(root, (caddr_t)data, &taller, fcmp, fdup, 0);
++    return ravl_insert(root, data, &taller, fcmp, fdup, 0);
+ }
+ 
+ /*
+@@ -374,7 +374,7 @@ static caddr_t
+ ravl_delete(
+     Avlnode **root,
+     caddr_t data,
+-    IFP fcmp,
++    int32_t (*fcmp)(caddr_t, caddr_t),
+     int *shorter)
+ {
+     int shortersubtree = 0;
+@@ -464,15 +464,15 @@ ravl_delete(
+  */
+ 
+ caddr_t
+-avl_delete(Avlnode **root, void *data, IFP fcmp)
++avl_delete(Avlnode **root, caddr_t data, int32_t(*fcmp)(caddr_t, caddr_t))
+ {
+     int shorter;
+ 
+-    return ravl_delete(root, (caddr_t)data, fcmp, &shorter);
++    return ravl_delete(root, data, fcmp, &shorter);
+ }
+ 
+ static int
+-avl_inapply(Avlnode *root, IFP fn, caddr_t arg, int stopflag)
++avl_inapply(Avlnode *root, int32_t(*fn)(caddr_t, caddr_t), caddr_t arg, int stopflag)
+ {
+     if (root == 0)
+         return (AVL_NOMORE);
+@@ -491,7 +491,7 @@ avl_inapply(Avlnode *root, IFP fn, caddr_t arg, int stopflag)
+ }
+ 
+ static int
+-avl_postapply(Avlnode *root, IFP fn, caddr_t arg, int stopflag)
++avl_postapply(Avlnode *root, int32_t(*fn)(caddr_t, caddr_t), caddr_t arg, int stopflag)
+ {
+     if (root == 0)
+         return (AVL_NOMORE);
+@@ -508,7 +508,7 @@ avl_postapply(Avlnode *root, IFP fn, caddr_t arg, int stopflag)
+ }
+ 
+ static int
+-avl_preapply(Avlnode *root, IFP fn, caddr_t arg, int stopflag)
++avl_preapply(Avlnode *root, int32_t(*fn)(caddr_t, caddr_t), caddr_t arg, int stopflag)
+ {
+     if (root == 0)
+         return (AVL_NOMORE);
+@@ -537,7 +537,7 @@ avl_preapply(Avlnode *root, IFP fn, caddr_t arg, int stopflag)
+ int
+ avl_apply(
+     Avlnode *root,
+-    IFP fn,
++    int32_t (*fn)(caddr_t, caddr_t),
+     void *arg,
+     int stopflag,
+     int type)
+@@ -572,9 +572,9 @@ int
+ avl_prefixapply(
+     Avlnode *root,
+     caddr_t data,
+-    IFP fmatch,
++    int32_t (*fmatch)(caddr_t, caddr_t),
+     caddr_t marg,
+-    IFP fcmp,
++    int32_t (*fcmp)(caddr_t, caddr_t, caddr_t),
+     caddr_t carg,
+     int stopflag)
+ {
+@@ -619,7 +619,7 @@ avl_prefixapply(
+  */
+ 
+ int
+-avl_free(Avlnode *root, IFP dfree)
++avl_free(Avlnode *root, int32_t (*dfree)(caddr_t))
+ {
+     int nleft, nright;
+ 
+@@ -649,11 +649,11 @@ avl_free(Avlnode *root, IFP dfree)
+  */
+ 
+ caddr_t
+-avl_find(Avlnode *root, void *data, IFP fcmp)
++avl_find(Avlnode *root, caddr_t data, int32_t (*fcmp)(caddr_t, caddr_t))
+ {
+     int cmp;
+ 
+-    while (root != 0 && (cmp = (*fcmp)((caddr_t)data, root->avl_data)) != 0) {
++    while (root != 0 && (cmp = (*fcmp)(data, root->avl_data)) != 0) {
+         if (cmp < 0)
+             root = root->avl_left;
+         else
+@@ -671,7 +671,7 @@ avl_find(Avlnode *root, void *data, IFP fcmp)
+  */
+ 
+ caddr_t
+-avl_find_lin(Avlnode *root, caddr_t data, IFP fcmp)
++avl_find_lin(Avlnode *root, caddr_t data, int32_t (*fcmp)(caddr_t, caddr_t))
+ {
+     caddr_t res;
+ 
+@@ -699,7 +699,7 @@ static int avl_nextlist = 0;
+ 
+ /* ARGSUSED */
+ static int
+-avl_buildlist(caddr_t data, int arg __attribute__((unused)))
++avl_buildlist(caddr_t data, caddr_t arg __attribute__((unused)))
+ {
+     static int slots = 0;
+ 
+@@ -766,8 +766,10 @@ avl_getnext(void)
+     return (avl_list[avl_nextlist++]);
+ }
+ 
++/* This is always called from avl_insert, where the dup function expects two
++ * caddr_t paramters */
+ int
+-avl_dup_error(void)
++avl_dup_error(caddr_t a __attribute__((unused)),  caddr_t b __attribute__((unused)))
+ {
+     return (-1);
+ }
+diff --git a/ldap/servers/plugins/acl/acllist.c b/ldap/servers/plugins/acl/acllist.c
+index e80c567c3..bf1168691 100644
+--- a/ldap/servers/plugins/acl/acllist.c
++++ b/ldap/servers/plugins/acl/acllist.c
+@@ -233,14 +233,14 @@ __acllist_add_aci(aci_t *aci)
+     slapi_sdn_set_ndn_byval(aciListHead->acic_sdn, slapi_sdn_get_ndn(aci->aci_sdn));
+ 
+     /* insert the aci */
+-    switch (avl_insert(&acllistRoot, aciListHead, __acllist_aciContainer_node_cmp,
++    switch (avl_insert(&acllistRoot, (caddr_t)aciListHead, __acllist_aciContainer_node_cmp,
+                        __acllist_aciContainer_node_dup)) {
+ 
+     case 1: /* duplicate ACL on the same entry */
+ 
+         /* Find the node that contains the acl. */
+-        if (NULL == (head = (AciContainer *)avl_find(acllistRoot, aciListHead,
+-                                                     (IFP)__acllist_aciContainer_node_cmp))) {
++        if (NULL == (head = (AciContainer *)avl_find(acllistRoot, (caddr_t)aciListHead,
++                                                     __acllist_aciContainer_node_cmp))) {
+             slapi_log_err(SLAPI_PLUGIN_ACL, plugin_name,
+                           "__acllist_add_aci - Can't insert the acl in the tree\n");
+             rv = 1;
+@@ -356,8 +356,8 @@ acllist_remove_aci_needsLock(const Slapi_DN *sdn, const struct berval *attr)
+     slapi_sdn_set_ndn_byval(aciListHead->acic_sdn, slapi_sdn_get_ndn(sdn));
+ 
+     /* now find it */
+-    if (NULL == (root = (AciContainer *)avl_find(acllistRoot, aciListHead,
+-                                                 (IFP)__acllist_aciContainer_node_cmp))) {
++    if (NULL == (root = (AciContainer *)avl_find(acllistRoot, (caddr_t)aciListHead,
++                                                 __acllist_aciContainer_node_cmp))) {
+         /* In that case we don't have any acl for this entry. cool !!! */
+ 
+         acllist_free_aciContainer(&aciListHead);
+@@ -389,7 +389,7 @@ acllist_remove_aci_needsLock(const Slapi_DN *sdn, const struct berval *attr)
+     slapi_log_err(SLAPI_LOG_ACL, plugin_name,
+                   "acllist_remove_aci_needsLock - Removing container[%d]=%s\n", root->acic_index,
+                   slapi_sdn_get_ndn(root->acic_sdn));
+-    dContainer = (AciContainer *)avl_delete(&acllistRoot, aciListHead,
++    dContainer = (AciContainer *)avl_delete(&acllistRoot, (caddr_t)aciListHead,
+                                             __acllist_aciContainer_node_cmp);
+     acllist_free_aciContainer(&dContainer);
+ 
+@@ -472,8 +472,9 @@ acllist_done_aciContainer(AciContainer *head)
+ }
+ 
+ static int
+-free_aci_avl_container(AciContainer *data)
++free_aci_avl_container(caddr_t d)
+ {
++    AciContainer *data = (AciContainer *)d;
+     aci_t *head, *next = NULL;
+ 
+     head = data->acic_list;
+@@ -658,7 +659,7 @@ acllist_init_scan(Slapi_PBlock *pb, int scope __attribute__((unused)), const cha
+ 
+         root = (AciContainer *)avl_find(acllistRoot,
+                                         (caddr_t)aclpb->aclpb_aclContainer,
+-                                        (IFP)__acllist_aciContainer_node_cmp);
++                                        __acllist_aciContainer_node_cmp);
+         if (index >= aclpb_max_selected_acls - 2) {
+             aclpb->aclpb_handles_index[0] = -1;
+             slapi_ch_free_string(&basedn);
+@@ -750,7 +751,7 @@ acllist_aciscan_update_scan(Acl_PBlock *aclpb, char *edn)
+ 
+             root = (AciContainer *)avl_find(acllistRoot,
+                                             (caddr_t)aclpb->aclpb_aclContainer,
+-                                            (IFP)__acllist_aciContainer_node_cmp);
++                                            __acllist_aciContainer_node_cmp);
+ 
+             slapi_log_err(SLAPI_LOG_ACL, plugin_name,
+                           "acllist_aciscan_update_scan - Searching AVL tree for update:%s: container:%d\n",
+@@ -910,8 +911,8 @@ acllist_moddn_aci_needsLock(Slapi_DN *oldsdn, char *newdn)
+     slapi_sdn_free(&aciListHead->acic_sdn);
+     aciListHead->acic_sdn = oldsdn;
+ 
+-    if (NULL == (head = (AciContainer *)avl_find(acllistRoot, aciListHead,
+-                                                 (IFP)__acllist_aciContainer_node_cmp))) {
++    if (NULL == (head = (AciContainer *)avl_find(acllistRoot, (caddr_t)aciListHead,
++                                                 __acllist_aciContainer_node_cmp))) {
+ 
+         slapi_log_err(SLAPI_PLUGIN_ACL, plugin_name,
+                       "acllist_moddn_aci_needsLock - Can't find the acl in the tree for moddn operation:olddn%s\n",
+diff --git a/ldap/servers/plugins/collation/orfilter.c b/ldap/servers/plugins/collation/orfilter.c
+index 1ed17c097..22fa7607d 100644
+--- a/ldap/servers/plugins/collation/orfilter.c
++++ b/ldap/servers/plugins/collation/orfilter.c
+@@ -54,7 +54,7 @@ typedef struct or_filter_t
+ static or_filter_t *
+ or_filter_get(Slapi_PBlock *pb)
+ {
+-    auto void *obj = NULL;
++    void *obj = NULL;
+     if (!slapi_pblock_get(pb, SLAPI_PLUGIN_OBJECT, &obj)) {
+         return (or_filter_t *)obj;
+     }
+@@ -64,7 +64,7 @@ or_filter_get(Slapi_PBlock *pb)
+ static int
+ or_filter_destroy(Slapi_PBlock *pb)
+ {
+-    auto or_filter_t * or = or_filter_get(pb);
++    or_filter_t * or = or_filter_get(pb);
+     slapi_log_err(SLAPI_LOG_FILTER, COLLATE_PLUGIN_SUBSYSTEM,
+                   "or_filter_destroy - (%p)\n", (void *) or);
+     if (or != NULL) {
+@@ -105,10 +105,10 @@ ss_match(struct berval *value,
+  *          -1  nothing in value will match; give up
+  */
+ {
+-    auto struct berval *vals[2];
+-    auto struct berval val;
+-    auto struct berval key;
+-    auto size_t attempts = MAX_CHAR_COMBINING;
++    struct berval *vals[2];
++    struct berval val;
++    struct berval key;
++    size_t attempts = MAX_CHAR_COMBINING;
+ 
+     vals[0] = &val;
+     vals[1] = NULL;
+@@ -117,9 +117,9 @@ ss_match(struct berval *value,
+     key.bv_val = key0->bv_val;
+     key.bv_len = key0->bv_len - 1;
+     while (1) {
+-        auto struct berval **vkeys = ix->ix_index(ix, vals, NULL);
++        struct berval **vkeys = ix->ix_index(ix, vals, NULL);
+         if (vkeys && vkeys[0]) {
+-            auto const struct berval *vkey = vkeys[0];
++            const struct berval *vkey = vkeys[0];
+             if (vkey->bv_len > key.bv_len) {
+                 if (--attempts <= 0) {
+                     break; /* No match at this starting point */
+@@ -138,7 +138,7 @@ ss_match(struct berval *value,
+         val.bv_len += LDAP_UTF8LEN(val.bv_val + val.bv_len);
+     }
+     if (value->bv_len > 0) {
+-        auto size_t one = LDAP_UTF8LEN(value->bv_val);
++        size_t one = LDAP_UTF8LEN(value->bv_val);
+         value->bv_len -= one;
+         value->bv_val += one;
+         return 1;
+@@ -153,12 +153,12 @@ ss_filter_match(or_filter_t * or, struct berval **vals)
+  *          >0  an LDAP error code
+  */
+ {
+-    auto int rc = -1; /* no match */
+-    auto indexer_t *ix = or->or_indexer;
++    int rc = -1; /* no match */
++    indexer_t *ix = or->or_indexer;
+     if (vals != NULL)
+         for (; *vals; ++vals) {
+-            auto struct berval v;
+-            auto struct berval **k = or->or_match_keys;
++            struct berval v;
++            struct berval **k = or->or_match_keys;
+             if (k == NULL || *k == NULL) {
+                 rc = 0; /* present */
+                 break;
+@@ -180,12 +180,12 @@ ss_filter_match(or_filter_t * or, struct berval **vals)
+                         break;
+                     }
+                 } else { /* final */
+-                    auto size_t attempts = MAX_CHAR_COMBINING;
+-                    auto char *limit = v.bv_val;
+-                    auto char *end;
+-                    auto struct berval **vkeys;
+-                    auto struct berval *final_vals[2];
+-                    auto struct berval key;
++                    size_t attempts = MAX_CHAR_COMBINING;
++                    char *limit = v.bv_val;
++                    char *end;
++                    struct berval **vkeys;
++                    struct berval *final_vals[2];
++                    struct berval key;
+ 
+                     rc = -1;
+                     final_vals[0] = &v;
+@@ -211,7 +211,7 @@ ss_filter_match(or_filter_t * or, struct berval **vals)
+                         v.bv_len = end - v.bv_val + 1;
+                         vkeys = ix->ix_index(ix, final_vals, NULL);
+                         if (vkeys && vkeys[0]) {
+-                            auto const struct berval *vkey = vkeys[0];
++                            const struct berval *vkey = vkeys[0];
+                             if (vkey->bv_len > key.bv_len) {
+                                 if (--attempts <= 0) {
+                                     break;
+@@ -239,11 +239,11 @@ ss_filter_match(or_filter_t * or, struct berval **vals)
+ static int
+ op_filter_match(or_filter_t * or, struct berval **vals)
+ {
+-    auto indexer_t *ix = or->or_indexer;
+-    auto struct berval **v = ix->ix_index(ix, vals, NULL);
++    indexer_t *ix = or->or_indexer;
++    struct berval **v = ix->ix_index(ix, vals, NULL);
+     if (v != NULL)
+         for (; *v; ++v) {
+-            auto struct berval **k = or->or_match_keys;
++            struct berval **k = or->or_match_keys;
+             if (k != NULL)
+                 for (; *k; ++k) {
+                     switch (or->or_op) {
+@@ -282,11 +282,11 @@ or_filter_match(void *obj, Slapi_Entry *entry, Slapi_Attr *attr)
+  *        >0  an LDAP error code
+  */
+ {
+-    auto int rc = -1; /* no match */
+-    auto or_filter_t * or = (or_filter_t *)obj;
++    int rc = -1; /* no match */
++    or_filter_t * or = (or_filter_t *)obj;
+     for (; attr != NULL; slapi_entry_next_attr(entry, attr, &attr)) {
+-        auto char *type = NULL;
+-        auto struct berval **vals = NULL;
++        char *type = NULL;
++        struct berval **vals = NULL;
+ 
+         /*
+  * XXXmcs 1-March-2001: This code would perform better if it did not make
+@@ -352,7 +352,7 @@ static struct berval *
+ slapi_ch_bvdup0(struct berval *val)
+ /* Return a copy of val, with a 0 byte following the end. */
+ {
+-    auto struct berval *result = (struct berval *)
++    struct berval *result = (struct berval *)
+         slapi_ch_malloc(sizeof(struct berval));
+     slapi_ber_bvcpy(result, val);
+     return result;
+@@ -372,12 +372,12 @@ static struct berval **
+ ss_filter_values(struct berval *pattern, int *query_op)
+ /* Split the pattern into its substrings and return them. */
+ {
+-    auto struct berval **result;
+-    auto struct berval val;
+-    auto size_t n;
+-    auto char *s;
+-    auto char *p;
+-    auto char *plimit = pattern->bv_val + pattern->bv_len;
++    struct berval **result;
++    struct berval val;
++    size_t n;
++    char *s;
++    char *p;
++    char *plimit = pattern->bv_val + pattern->bv_len;
+ 
+     /* Compute the length of the result array, and
+        the maximum bv_len of any of its elements. */
+@@ -389,7 +389,7 @@ ss_filter_values(struct berval *pattern, int *query_op)
+         case WILDCARD:
+             ++n;
+             {
+-                auto const size_t len = (p - s);
++                const size_t len = (p - s);
+                 if (val.bv_len < len)
+                     val.bv_len = len;
+             }
+@@ -402,8 +402,8 @@ ss_filter_values(struct berval *pattern, int *query_op)
+         }
+     }
+     if (n == 2) { /* no wildcards in pattern */
+-        auto struct berval **pvec = (struct berval **)slapi_ch_malloc(sizeof(struct berval *) * 2);
+-        auto struct berval *pv = slapi_ch_bvdup(pattern);
++        struct berval **pvec = (struct berval **)slapi_ch_malloc(sizeof(struct berval *) * 2);
++        struct berval *pv = slapi_ch_bvdup(pattern);
+         pvec[0] = pv;
+         pvec[1] = NULL;
+         ss_unescape(pv);
+@@ -413,7 +413,7 @@ ss_filter_values(struct berval *pattern, int *query_op)
+         return NULL;                             /* presence */
+     }
+     {
+-        auto const size_t len = (p - s);
++        const size_t len = (p - s);
+         if (val.bv_len < len)
+             val.bv_len = len;
+     }
+@@ -449,7 +449,7 @@ ss_filter_key(indexer_t *ix, struct berval *val)
+     struct berval *key = (struct berval *)slapi_ch_calloc(1, sizeof(struct berval));
+     if (val->bv_len > 0) {
+         struct berval **keys = NULL;
+-        auto struct berval *vals[2];
++        struct berval *vals[2];
+         vals[0] = val;
+         vals[1] = NULL;
+         keys = ix->ix_index(ix, vals, NULL);
+@@ -477,10 +477,10 @@ ss_filter_keys(indexer_t *ix, struct berval **values)
+        an empty key definitely implies an absent value.
+     */
+ {
+-    auto struct berval **keys = NULL;
++    struct berval **keys = NULL;
+     if (values != NULL) {
+-        auto size_t n; /* how many substring values */
+-        auto struct berval **val;
++        size_t n; /* how many substring values */
++        struct berval **val;
+         for (n = 0, val = values; *val != NULL; ++n, ++val)
+             ;
+         keys = (struct berval **)slapi_ch_malloc((n + 1) * sizeof(struct berval *));
+@@ -497,25 +497,25 @@ static int or_filter_index(Slapi_PBlock *pb);
+ static int
+ or_filter_create(Slapi_PBlock *pb)
+ {
+-    auto int rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION; /* failed to initialize */
+-    auto char *mrOID = NULL;
+-    auto char *mrTYPE = NULL;
+-    auto struct berval *mrVALUE = NULL;
+-    auto or_filter_t * or = NULL;
++    int rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION; /* failed to initialize */
++    char *mrOID = NULL;
++    char *mrTYPE = NULL;
++    struct berval *mrVALUE = NULL;
++    or_filter_t * or = NULL;
+ 
+     if (!slapi_pblock_get(pb, SLAPI_PLUGIN_MR_OID, &mrOID) && mrOID != NULL &&
+         !slapi_pblock_get(pb, SLAPI_PLUGIN_MR_TYPE, &mrTYPE) && mrTYPE != NULL &&
+         !slapi_pblock_get(pb, SLAPI_PLUGIN_MR_VALUE, &mrVALUE) && mrVALUE != NULL) {
+-        auto size_t len = mrVALUE->bv_len;
+-        auto indexer_t *ix = NULL;
+-        auto int op = SLAPI_OP_EQUAL;
+-        auto struct berval bv;
+-        auto int reusable = MRF_ANY_TYPE;
++        size_t len = mrVALUE->bv_len;
++        indexer_t *ix = NULL;
++        int op = SLAPI_OP_EQUAL;
++        struct berval bv;
++        int reusable = MRF_ANY_TYPE;
+ 
+         slapi_log_err(SLAPI_LOG_FILTER, COLLATE_PLUGIN_SUBSYSTEM,
+                       "or_filter_create - (oid %s; type %s)\n", mrOID, mrTYPE);
+         if (len > 1 && (ix = indexer_create(mrOID)) != NULL) {
+-            auto char *val = mrVALUE->bv_val;
++            char *val = mrVALUE->bv_val;
+             switch (val[0]) {
+             case '=':
+                 break;
+@@ -537,7 +537,7 @@ or_filter_create(Slapi_PBlock *pb)
+             bv.bv_val = (len > 0) ? val : NULL;
+         } else { /* mrOID does not identify an ordering rule. */
+             /* Is it an ordering rule OID with a relational operator suffix? */
+-            auto size_t oidlen = strlen(mrOID);
++            size_t oidlen = strlen(mrOID);
+             if (oidlen > 2 && mrOID[oidlen - 2] == '.') {
+                 op = atoi(mrOID + oidlen - 1);
+                 switch (op) {
+@@ -547,7 +547,7 @@ or_filter_create(Slapi_PBlock *pb)
+                 case SLAPI_OP_GREATER_OR_EQUAL:
+                 case SLAPI_OP_GREATER:
+                 case SLAPI_OP_SUBSTRING: {
+-                    auto char *or_oid = slapi_ch_strdup(mrOID);
++                    char *or_oid = slapi_ch_strdup(mrOID);
+                     or_oid[oidlen - 2] = '\0';
+                     ix = indexer_create(or_oid);
+                     if (ix != NULL) {
+@@ -575,7 +575,7 @@ or_filter_create(Slapi_PBlock *pb)
+                 or->or_values[1] = NULL;
+             }
+             {
+-                auto struct berval **val = or->or_values;
++                struct berval **val = or->or_values;
+                 if (val)
+                     for (; *val; ++val) {
+                         slapi_log_err(SLAPI_LOG_FILTER, COLLATE_PLUGIN_SUBSYSTEM,
+@@ -607,7 +607,7 @@ or_filter_create(Slapi_PBlock *pb)
+ static indexer_t *
+ op_indexer_get(Slapi_PBlock *pb)
+ {
+-    auto void *obj = NULL;
++    void *obj = NULL;
+     if (!slapi_pblock_get(pb, SLAPI_PLUGIN_OBJECT, &obj)) {
+         return (indexer_t *)obj;
+     }
+@@ -617,7 +617,7 @@ op_indexer_get(Slapi_PBlock *pb)
+ static int
+ op_indexer_destroy(Slapi_PBlock *pb)
+ {
+-    auto indexer_t *ix = op_indexer_get(pb);
++    indexer_t *ix = op_indexer_get(pb);
+     slapi_log_err(SLAPI_LOG_FILTER, COLLATE_PLUGIN_SUBSYSTEM,
+                   "op_indexer_destroy - (%p)\n", (void *)ix);
+     if (ix != NULL) {
+@@ -632,8 +632,8 @@ static int
+ op_index_entry(Slapi_PBlock *pb)
+ /* Compute collation keys (when writing an entry). */
+ {
+-    auto indexer_t *ix = op_indexer_get(pb);
+-    auto int rc;
++    indexer_t *ix = op_indexer_get(pb);
++    int rc;
+     struct berval **values;
+     if (ix != NULL && ix->ix_index != NULL &&
+         !slapi_pblock_get(pb, SLAPI_PLUGIN_MR_VALUES, &values) &&
+@@ -651,10 +651,10 @@ static int
+ op_index_search(Slapi_PBlock *pb)
+ /* Compute collation keys (when searching for entries). */
+ {
+-    auto or_filter_t * or = or_filter_get(pb);
+-    auto int rc = LDAP_OPERATIONS_ERROR;
++    or_filter_t * or = or_filter_get(pb);
++    int rc = LDAP_OPERATIONS_ERROR;
+     if (or != NULL) {
+-        auto indexer_t *ix = or->or_indexer;
++        indexer_t *ix = or->or_indexer;
+         struct berval **values;
+         if (or->or_index_keys == NULL && ix != NULL && ix->ix_index != NULL && !slapi_pblock_get(pb, SLAPI_PLUGIN_MR_VALUES, &values)) {
+             or->or_index_keys = slapi_ch_bvecdup(ix->ix_index(ix, values, NULL));
+@@ -688,7 +688,7 @@ ss_indexer_free(ss_indexer_t *ss)
+ static ss_indexer_t *
+ ss_indexer_get(Slapi_PBlock *pb)
+ {
+-    auto void *obj = NULL;
++    void *obj = NULL;
+     if (!slapi_pblock_get(pb, SLAPI_PLUGIN_OBJECT, &obj)) {
+         return (ss_indexer_t *)obj;
+     }
+@@ -698,7 +698,7 @@ ss_indexer_get(Slapi_PBlock *pb)
+ static void
+ ss_indexer_destroy(Slapi_PBlock *pb)
+ {
+-    auto ss_indexer_t *ss = ss_indexer_get(pb);
++    ss_indexer_t *ss = ss_indexer_get(pb);
+     slapi_log_err(SLAPI_LOG_FILTER, COLLATE_PLUGIN_SUBSYSTEM,
+                   "ss_indexer_destroy - (%p)\n", (void *)ss);
+     if (ss) {
+@@ -722,9 +722,9 @@ static int
+ long_enough(struct berval *bval, size_t enough)
+ {
+     if (bval) {
+-        auto size_t len = 0;
+-        auto char *next = bval->bv_val;
+-        auto char *last = next + bval->bv_len;
++        size_t len = 0;
++        char *next = bval->bv_val;
++        char *last = next + bval->bv_len;
+         while (next < last) {
+             LDAP_UTF8INC(next);
+             if (++len >= enough) {
+@@ -742,23 +742,23 @@ static int
+ ss_index_entry(Slapi_PBlock *pb)
+ /* Compute substring index keys (when writing an entry). */
+ {
+-    auto int rc = LDAP_OPERATIONS_ERROR;
+-    auto size_t substringsLen = 0;
++    int rc = LDAP_OPERATIONS_ERROR;
++    size_t substringsLen = 0;
+     struct berval **values;
+-    auto ss_indexer_t *ss = ss_indexer_get(pb);
+-    auto indexer_t *ix = ss ? ss->ss_indexer : NULL;
++    ss_indexer_t *ss = ss_indexer_get(pb);
++    indexer_t *ix = ss ? ss->ss_indexer : NULL;
+     if (ix != NULL && ix->ix_index != NULL &&
+         !slapi_pblock_get(pb, SLAPI_PLUGIN_MR_VALUES, &values)) {
+-        auto struct berval *substrings = NULL;
+-        auto struct berval **prefixes = NULL;
+-        auto struct berval **value;
++        struct berval *substrings = NULL;
++        struct berval **prefixes = NULL;
++        struct berval **value;
+         for (value = values; *value != NULL; ++value) {
+-            auto struct berval substring;
++            struct berval substring;
+             substring.bv_val = (*value)->bv_val;
+             substring.bv_len = (*value)->bv_len;
+             if (long_enough(&substring, SS_INDEX_LENGTH - 1)) {
+-                auto struct berval *prefix = &ss_index_initial;
+-                auto size_t offset;
++                struct berval *prefix = &ss_index_initial;
++                size_t offset;
+                 for (offset = 0; 1; ++offset) {
+                     ++substringsLen;
+                     substrings = (struct berval *)
+@@ -782,9 +782,9 @@ ss_index_entry(Slapi_PBlock *pb)
+             }
+         }
+         if (substrings != NULL) {
+-            auto struct berval **vector = (struct berval **)
++            struct berval **vector = (struct berval **)
+                 slapi_ch_malloc((substringsLen + 1) * sizeof(struct berval *));
+-            auto size_t i;
++            size_t i;
+             for (i = 0; i < substringsLen; ++i)
+                 vector[i] = &(substrings[i]);
+             vector[substringsLen] = NULL;
+@@ -804,21 +804,21 @@ static int
+ ss_index_search(Slapi_PBlock *pb)
+ /* Compute substring search keys (when searching for entries). */
+ {
+-    auto int rc = LDAP_OPERATIONS_ERROR;
+-    auto or_filter_t * or = or_filter_get(pb);
++    int rc = LDAP_OPERATIONS_ERROR;
++    or_filter_t * or = or_filter_get(pb);
+     if (or) {
+         if (or->or_index_keys == NULL /* not yet computed */ &&
+             or->or_values && or->or_indexer && or->or_indexer->ix_index) {
+-            auto size_t substringsLen = 0;
+-            auto struct berval *substrings = NULL;
+-            auto struct berval **prefixes = NULL;
+-            auto struct berval **value;
++            size_t substringsLen = 0;
++            struct berval *substrings = NULL;
++            struct berval **prefixes = NULL;
++            struct berval **value;
+             for (value = or->or_values; *value != NULL; ++value) {
+-                auto size_t offset;
+-                auto struct berval substring;
++                size_t offset;
++                struct berval substring;
+                 substring.bv_val = (*value)->bv_val;
+                 for (offset = 0; 1; ++offset, LDAP_UTF8INC(substring.bv_val)) {
+-                    auto struct berval *prefix = NULL;
++                    struct berval *prefix = NULL;
+                     substring.bv_len = (*value)->bv_len - (substring.bv_val - (*value)->bv_val);
+                     if (offset == 0 && value == or->or_values) {
+                         if (long_enough(&substring, SS_INDEX_LENGTH - 1)) {
+@@ -845,10 +845,10 @@ ss_index_search(Slapi_PBlock *pb)
+                 }
+             }
+             if (substrings != NULL) {
+-                auto indexer_t *ix = or->or_indexer;
+-                auto struct berval **vector = (struct berval **)
++                indexer_t *ix = or->or_indexer;
++                struct berval **vector = (struct berval **)
+                     slapi_ch_malloc((substringsLen + 1) * sizeof(struct berval *));
+-                auto size_t i;
++                size_t i;
+                 for (i = 0; i < substringsLen; ++i)
+                     vector[i] = &(substrings[i]);
+                 vector[substringsLen] = NULL;
+@@ -872,10 +872,10 @@ static int
+ ss_indexable(struct berval **values)
+ /* at least one of the values is long enough to index */
+ {
+-    auto struct berval **val = values;
++    struct berval **val = values;
+     if (val)
+         for (; *val; ++val) {
+-            auto struct berval value;
++            struct berval value;
+             value.bv_val = (*val)->bv_val;
+             value.bv_len = (*val)->bv_len;
+             if (val == values) { /* initial */
+@@ -899,12 +899,12 @@ static int
+ or_filter_index(Slapi_PBlock *pb)
+ /* Return an indexer and values that accelerate the given filter. */
+ {
+-    auto or_filter_t * or = or_filter_get(pb);
+-    auto int rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION;
+-    auto IFP mrINDEX_FN = NULL;
+-    auto struct berval **mrVALUES = NULL;
+-    auto char *mrOID = NULL;
+-    auto int mrQUERY_OPERATOR;
++    or_filter_t * or = or_filter_get(pb);
++    int rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION;
++    int32_t (*mrINDEX_FN)(Slapi_PBlock *) = NULL;
++    struct berval **mrVALUES = NULL;
++    char *mrOID = NULL;
++    int mrQUERY_OPERATOR;
+     if (or && or->or_indexer && or->or_indexer->ix_index) {
+         switch (or->or_op) {
+         case SLAPI_OP_LESS:
+@@ -920,7 +920,7 @@ or_filter_index(Slapi_PBlock *pb)
+         case SLAPI_OP_SUBSTRING:
+             if (ss_indexable(or->or_values)) {
+                 if (or->or_oid == NULL) {
+-                    auto const size_t len = strlen(or->or_indexer->ix_oid);
++                    const size_t len = strlen(or->or_indexer->ix_oid);
+                     or->or_oid = slapi_ch_malloc(len + 3);
+                     memcpy(or->or_oid, or->or_indexer->ix_oid, len);
+                     sprintf(or->or_oid + len, ".%1i", SLAPI_OP_SUBSTRING);
+@@ -952,15 +952,15 @@ or_filter_index(Slapi_PBlock *pb)
+ static int
+ or_indexer_create(Slapi_PBlock *pb)
+ {
+-    auto int rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION; /* failed to initialize */
+-    auto char *mrOID = NULL;
+-    auto void *mrOBJECT = NULL;
++    int rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION; /* failed to initialize */
++    char *mrOID = NULL;
++    void *mrOBJECT = NULL;
+     if (slapi_pblock_get(pb, SLAPI_PLUGIN_MR_OID, &mrOID) || mrOID == NULL) {
+         slapi_log_err(SLAPI_LOG_FILTER, COLLATE_PLUGIN_SUBSYSTEM,
+                       "or_indexer_create - No OID parameter\n");
+     } else {
+-        auto indexer_t *ix = indexer_create(mrOID);
+-        auto char *mrTYPE = NULL;
++        indexer_t *ix = indexer_create(mrOID);
++        char *mrTYPE = NULL;
+         slapi_pblock_get(pb, SLAPI_PLUGIN_MR_TYPE, &mrTYPE);
+         slapi_log_err(SLAPI_LOG_FILTER, "or_indexer_create", "(oid %s; type %s)\n",
+                       mrOID, mrTYPE ? mrTYPE : "<NULL>");
+@@ -977,14 +977,14 @@ or_indexer_create(Slapi_PBlock *pb)
+             }
+         } else { /* mrOID does not identify an ordering rule. */
+             /* Is it an ordering rule OID with the substring suffix? */
+-            auto size_t oidlen = strlen(mrOID);
++            size_t oidlen = strlen(mrOID);
+             if (oidlen > 2 && mrOID[oidlen - 2] == '.' &&
+                 atoi(mrOID + oidlen - 1) == SLAPI_OP_SUBSTRING) {
+-                auto char *or_oid = slapi_ch_strdup(mrOID);
++                char *or_oid = slapi_ch_strdup(mrOID);
+                 or_oid[oidlen - 2] = '\0';
+                 ix = indexer_create(or_oid);
+                 if (ix != NULL) {
+-                    auto ss_indexer_t *ss = (ss_indexer_t *)slapi_ch_malloc(sizeof(ss_indexer_t));
++                    ss_indexer_t *ss = (ss_indexer_t *)slapi_ch_malloc(sizeof(ss_indexer_t));
+                     ss->ss_indexer = ix;
+                     oidlen = strlen(ix->ix_oid);
+                     ss->ss_oid = slapi_ch_malloc(oidlen + 3);
+diff --git a/ldap/servers/plugins/pwdstorage/md5c.c b/ldap/servers/plugins/pwdstorage/md5c.c
+index e7085a68d..8075dcb80 100644
+--- a/ldap/servers/plugins/pwdstorage/md5c.c
++++ b/ldap/servers/plugins/pwdstorage/md5c.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2005-2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -69,20 +69,17 @@ static unsigned char PADDING[64] = {
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+ 
+-/* F, G, H and I are basic MD5 functions.
+- */
++/* F, G, H and I are basic MD5 functions. */
+ #define F(x, y, z) (((x) & (y)) | ((~(x)) & (z)))
+ #define G(x, y, z) (((x) & (z)) | ((y) & (~(z))))
+ #define H(x, y, z) ((x) ^ (y) ^ (z))
+ #define I(x, y, z) ((y) ^ ((x) | (~(z))))
+ 
+-/* ROTATE_LEFT rotates x left n bits.
+- */
++/* ROTATE_LEFT rotates x left n bits. */
+ #define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
+ 
+ /* FF, GG, HH, and II transformations for rounds 1, 2, 3, and 4.
+-Rotation is separate from addition to prevent recomputation.
+- */
++ * Rotation is separate from addition to prevent recomputation. */
+ #define FF(a, b, c, d, x, s, ac)                     \
+     {                                                \
+         (a) += F((b), (c), (d)) + (x) + (UINT4)(ac); \
+@@ -108,14 +105,11 @@ Rotation is separate from addition to prevent recomputation.
+         (a) += (b);                                  \
+     }
+ 
+-/* MD5 initialization. Begins an MD5 operation, writing a new context.
+- */
+-void mta_MD5Init(context)
+-    mta_MD5_CTX *context; /* context */
++/* MD5 initialization. Begins an MD5 operation, writing a new context. */
++void mta_MD5Init(mta_MD5_CTX *context)
+ {
+     context->count[0] = context->count[1] = 0;
+-    /* Load magic initialization constants.
+-*/
++    /* Load magic initialization constants */
+     context->state[0] = 0x67452301;
+     context->state[1] = 0xefcdab89;
+     context->state[2] = 0x98badcfe;
+@@ -123,13 +117,9 @@ void mta_MD5Init(context)
+ }
+ 
+ /* MD5 block update operation. Continues an MD5 message-digest
+-  operation, processing another message block, and updating the
+-  context.
+- */
+-void mta_MD5Update(context, input, inputLen)
+-    mta_MD5_CTX *context;   /* context */
+-const unsigned char *input; /* input block */
+-unsigned int inputLen;      /* length of input block */
++ * operation, processing another message block, and updating the
++ * context. */
++void mta_MD5Update(mta_MD5_CTX *context, const unsigned char *input, unsigned int inputLen)
+ {
+     unsigned int i, index, partLen;
+ 
+@@ -143,8 +133,7 @@ unsigned int inputLen;      /* length of input block */
+ 
+     partLen = 64 - index;
+ 
+-    /* Transform as many times as possible.
+-*/
++    /* Transform as many times as possible. */
+     if (inputLen >= partLen) {
+         MD5_memcpy((POINTER)&context->buffer[index], (POINTER)input, partLen);
+         MD5Transform(context->state, context->buffer);
+@@ -162,10 +151,8 @@ unsigned int inputLen;      /* length of input block */
+ }
+ 
+ /* MD5 finalization. Ends an MD5 message-digest operation, writing the
+-  the message digest and zeroizing the context.
+- */
+-void mta_MD5Final(digest, context) unsigned char digest[16]; /* message digest */
+-mta_MD5_CTX *context;                                        /* context */
++ * the message digest and zeroizing the context. */
++void mta_MD5Final(unsigned char digest[16], mta_MD5_CTX *context)
+ {
+     unsigned char bits[8];
+     unsigned int index, padLen;
+@@ -173,8 +160,7 @@ mta_MD5_CTX *context;                                        /* context */
+     /* Save number of bits */
+     Encode(bits, context->count, 8);
+ 
+-    /* Pad out to 56 mod 64.
+-*/
++    /* Pad out to 56 mod 64.*/
+     index = (unsigned int)((context->count[0] >> 3) & 0x3f);
+     padLen = (index < 56) ? (56 - index) : (120 - index);
+     mta_MD5Update(context, PADDING, padLen);
+@@ -185,16 +171,12 @@ mta_MD5_CTX *context;                                        /* context */
+     /* Store state in digest */
+     Encode(digest, context->state, 16);
+ 
+-    /* Zeroize sensitive information.
+-*/
++    /* Zeroize sensitive information.*/
+     MD5_memset((POINTER)context, 0, sizeof(*context));
+ }
+ 
+-/* MD5 basic transformation. Transforms state based on block.
+- */
+-static void MD5Transform(state, block)
+-    UINT4 state[4];
+-const unsigned char block[64];
++/* MD5 basic transformation. Transforms state based on block. */
++static void MD5Transform(UINT4 state[4], const unsigned char block[64])
+ {
+     UINT4 a = state[0], b = state[1], c = state[2], d = state[3], x[16];
+ 
+@@ -277,17 +259,13 @@ const unsigned char block[64];
+     state[2] += c;
+     state[3] += d;
+ 
+-    /* Zeroize sensitive information.
+-*/
++    /* Zeroize sensitive information. */
+     MD5_memset((POINTER)x, 0, sizeof(x));
+ }
+ 
+ /* Encodes input (UINT4) into output (unsigned char). Assumes len is
+-  a multiple of 4.
+- */
+-static void Encode(output, input, len) unsigned char *output;
+-const UINT4 *input;
+-unsigned int len;
++ * a multiple of 4. */
++static void Encode(unsigned char *output, const UINT4 *input, unsigned int len)
+ {
+     unsigned int i, j;
+ 
+@@ -300,12 +278,8 @@ unsigned int len;
+ }
+ 
+ /* Decodes input (unsigned char) into output (UINT4). Assumes len is
+-  a multiple of 4.
+- */
+-static void Decode(output, input, len)
+-    UINT4 *output;
+-const unsigned char *input;
+-unsigned int len;
++ * a multiple of 4. */
++static void Decode(UINT4 *output, const unsigned char *input, unsigned int len)
+ {
+     unsigned int i, j;
+ 
+@@ -314,13 +288,8 @@ unsigned int len;
+                     (((UINT4)input[j + 2]) << 16) | (((UINT4)input[j + 3]) << 24);
+ }
+ 
+-/* Note: Replace "for loop" with standard memcpy if possible.
+- */
+-
+-static void MD5_memcpy(output, input, len)
+-    POINTER output;
+-const POINTER input;
+-unsigned int len;
++/* Note: Replace "for loop" with standard memcpy if possible. */
++static void MD5_memcpy(POINTER output, const POINTER input, unsigned int len)
+ {
+     unsigned int i;
+ 
+@@ -328,12 +297,8 @@ unsigned int len;
+         output[i] = input[i];
+ }
+ 
+-/* Note: Replace "for loop" with standard memset if possible.
+- */
+-static void MD5_memset(output, value, len)
+-    POINTER output;
+-int value;
+-unsigned int len;
++/* Note: Replace "for loop" with standard memset if possible. */
++static void MD5_memset(POINTER output, int value, unsigned int len)
+ {
+     unsigned int i;
+ 
+diff --git a/ldap/servers/plugins/roles/roles_cache.c b/ldap/servers/plugins/roles/roles_cache.c
+index 60f5a919a..9fadcdfc4 100644
+--- a/ldap/servers/plugins/roles/roles_cache.c
++++ b/ldap/servers/plugins/roles/roles_cache.c
+@@ -156,8 +156,8 @@ static int roles_is_inscope(Slapi_Entry *entry_to_check, role_object *this_role)
+ static void berval_set_string(struct berval *bv, const char *string);
+ static void roles_cache_role_def_delete(roles_cache_def *role_def);
+ static void roles_cache_role_def_free(roles_cache_def *role_def);
+-static void roles_cache_role_object_free(role_object *this_role);
+-static int roles_cache_role_object_nested_free(role_object_nested *this_role);
++static int roles_cache_role_object_free(caddr_t this_role);
++static int roles_cache_role_object_nested_free(caddr_t this_role);
+ static int roles_cache_dump(caddr_t data, caddr_t arg);
+ static int roles_cache_add_entry_cb(Slapi_Entry *e, void *callback_data);
+ static void roles_cache_result_cb(int rc, void *callback_data);
+@@ -578,11 +578,11 @@ roles_cache_update(roles_cache_def *suffix_to_update)
+         if ((operation == SLAPI_OPERATION_MODIFY) ||
+             (operation == SLAPI_OPERATION_DELETE)) {
+ 
+-            to_delete = (role_object *)avl_delete(&(suffix_to_update->avl_tree), dn, roles_cache_find_node);
+-            roles_cache_role_object_free(to_delete);
++            to_delete = (role_object *)avl_delete(&(suffix_to_update->avl_tree), (caddr_t)dn, roles_cache_find_node);
++            roles_cache_role_object_free((caddr_t)to_delete);
+             to_delete = NULL;
+             if (slapi_is_loglevel_set(SLAPI_LOG_PLUGIN)) {
+-                avl_apply(suffix_to_update->avl_tree, (IFP)roles_cache_dump, &rc, -1, AVL_INORDER);
++                avl_apply(suffix_to_update->avl_tree, roles_cache_dump, &rc, -1, AVL_INORDER);
+             }
+         }
+         if ((operation == SLAPI_OPERATION_MODIFY) ||
+@@ -1513,7 +1513,7 @@ roles_cache_listroles_ext(vattr_context *c, Slapi_Entry *entry, int return_value
+             /* XXX really need a mutex for this read operation ? */
+             slapi_rwlock_rdlock(roles_cache->cache_lock);
+ 
+-            avl_apply(roles_cache->avl_tree, (IFP)roles_cache_build_nsrole, &arg, -1, AVL_INORDER);
++            avl_apply(roles_cache->avl_tree, roles_cache_build_nsrole, &arg, -1, AVL_INORDER);
+ 
+             slapi_rwlock_unlock(roles_cache->cache_lock);
+ 
+@@ -1630,7 +1630,7 @@ roles_check(Slapi_Entry *entry_to_check, Slapi_DN *role_dn, int *present)
+     }
+     slapi_rwlock_unlock(global_lock);
+ 
+-    this_role = (role_object *)avl_find(roles_cache->avl_tree, role_dn, (IFP)roles_cache_find_node);
++    this_role = (role_object *)avl_find(roles_cache->avl_tree, (caddr_t)role_dn, roles_cache_find_node);
+ 
+     /* MAB: For some reason the assumption made by this function (the role exists and is in scope)
+      * does not seem to be true... this_role might be NULL after the avl_find call (is the avl_tree
+@@ -1768,7 +1768,7 @@ roles_is_entry_member_of_object_ext(vattr_context *c, caddr_t data, caddr_t argu
+         case ROLE_TYPE_NESTED: {
+             /* Go through the tree of the nested DNs */
+             get_nsrole->hint++;
+-            avl_apply(this_role->avl_tree, (IFP)roles_check_nested, get_nsrole, 0, AVL_INORDER);
++            avl_apply(this_role->avl_tree, roles_check_nested, get_nsrole, 0, AVL_INORDER);
+             get_nsrole->hint--;
+ 
+             /* kexcoff?? */
+@@ -1904,12 +1904,12 @@ roles_check_nested(caddr_t data, caddr_t arg)
+         }
+ 
+         if (slapi_is_loglevel_set(SLAPI_LOG_PLUGIN)) {
+-            avl_apply(roles_cache->avl_tree, (IFP)roles_cache_dump, &rc, -1, AVL_INORDER);
++            avl_apply(roles_cache->avl_tree, roles_cache_dump, &rc, -1, AVL_INORDER);
+         }
+ 
+         this_role = (role_object *)avl_find(roles_cache->avl_tree,
+-                                            current_nested_role->dn,
+-                                            (IFP)roles_cache_find_node);
++                                            (caddr_t)current_nested_role->dn,
++                                            roles_cache_find_node);
+ 
+         if (this_role == NULL) {
+             /* the nested role doesn't exist */
+@@ -2029,7 +2029,7 @@ roles_cache_role_def_free(roles_cache_def *role_def)
+ 
+     slapi_lock_mutex(role_def->stop_lock);
+ 
+-    avl_free(role_def->avl_tree, (IFP)roles_cache_role_object_free);
++    avl_free(role_def->avl_tree, roles_cache_role_object_free);
+     slapi_sdn_free(&(role_def->suffix_dn));
+     slapi_destroy_rwlock(role_def->cache_lock);
+     role_def->cache_lock = NULL;
+@@ -2060,14 +2060,16 @@ roles_cache_role_def_free(roles_cache_def *role_def)
+ /* roles_cache_role_object_free
+    ----------------------------
+ */
+-static void
+-roles_cache_role_object_free(role_object *this_role)
++static int
++roles_cache_role_object_free(caddr_t tr)
+ {
++    role_object *this_role = (role_object *)tr;
++
+     slapi_log_err(SLAPI_LOG_PLUGIN,
+                   ROLES_PLUGIN_SUBSYSTEM, "--> roles_cache_role_object_free\n");
+ 
+     if (this_role == NULL) {
+-        return;
++        return 0;
+     }
+ 
+     switch (this_role->type) {
+@@ -2097,14 +2099,17 @@ roles_cache_role_object_free(role_object *this_role)
+ 
+     slapi_log_err(SLAPI_LOG_PLUGIN,
+                   ROLES_PLUGIN_SUBSYSTEM, "<-- roles_cache_role_object_free\n");
++    return 0;
+ }
+ 
+ /* roles_cache_role_object_nested_free
+    ------------------------------------
+ */
+ static int
+-roles_cache_role_object_nested_free(role_object_nested *this_role)
++roles_cache_role_object_nested_free(caddr_t tr)
+ {
++    role_object_nested *this_role = (role_object_nested *)tr;
++
+     slapi_log_err(SLAPI_LOG_PLUGIN,
+                   ROLES_PLUGIN_SUBSYSTEM, "--> roles_cache_role_object_nested_free\n");
+ 
+diff --git a/ldap/servers/plugins/syntaxes/bin.c b/ldap/servers/plugins/syntaxes/bin.c
+index ab67cecf9..f793f3539 100644
+--- a/ldap/servers/plugins/syntaxes/bin.c
++++ b/ldap/servers/plugins/syntaxes/bin.c
+@@ -139,7 +139,8 @@ static struct mr_plugin_def mr_plugin_table[] = {
+         NULL,
+         bin_compare,
+         NULL /* mr_normalize */
+-    }};
++    }
++};
+ /*
+ certificateExactMatch
+ certificateListExactMatch
+diff --git a/ldap/servers/plugins/syntaxes/syntax.h b/ldap/servers/plugins/syntaxes/syntax.h
+index c743532c1..7e53c3586 100644
+--- a/ldap/servers/plugins/syntaxes/syntax.h
++++ b/ldap/servers/plugins/syntaxes/syntax.h
+@@ -104,21 +104,22 @@ struct mr_plugin_def
+     Slapi_PluginDesc mr_plg_desc;         /* for SLAPI_PLUGIN_DESCRIPTION */
+     const char **mr_names;                /* list of oid and names, NULL terminated SLAPI_PLUGIN_MR_NAMES */
+     /* these are optional for new style mr plugins */
+-    IFP mr_filter_create;  /* old style factory function SLAPI_PLUGIN_MR_FILTER_CREATE_FN */
+-    IFP mr_indexer_create; /* old style factory function SLAPI_PLUGIN_MR_INDEXER_CREATE_FN */
++    int32_t (*mr_filter_create)(Slapi_PBlock *);  /* old style factory function SLAPI_PLUGIN_MR_FILTER_CREATE_FN */
++    int32_t (*mr_indexer_create)(Slapi_PBlock *); /* old style factory function SLAPI_PLUGIN_MR_INDEXER_CREATE_FN */
+     /* new style syntax plugin functions */
+     /* not all functions will apply to all matching rule types */
+     /* e.g. a SUBSTR rule will not have a filter_ava func */
+-    IFP mr_filter_ava;         /* SLAPI_PLUGIN_MR_FILTER_AVA */
+-    IFP mr_filter_sub;         /* SLAPI_PLUGIN_MR_FILTER_SUB */
+-    IFP mr_values2keys;        /* SLAPI_PLUGIN_MR_VALUES2KEYS */
+-    IFP mr_assertion2keys_ava; /* SLAPI_PLUGIN_MR_ASSERTION2KEYS_AVA */
+-    IFP mr_assertion2keys_sub; /* SLAPI_PLUGIN_MR_ASSERTION2KEYS_SUB */
+-    IFP mr_compare;            /* SLAPI_PLUGIN_MR_COMPARE - only for ORDERING */
+-    VFPV mr_normalize;
++    int32_t (*mr_filter_ava)(Slapi_PBlock *, struct berval *, Slapi_Value **, int32_t, Slapi_Value **); /* SLAPI_PLUGIN_MR_FILTER_AVA */
++    int32_t (*mr_filter_sub)(Slapi_PBlock *, char *, char **, char *, Slapi_Value **); /* SLAPI_PLUGIN_MR_FILTER_SUB */
++    int32_t (*mr_values2keys)(Slapi_PBlock *, Slapi_Value **, Slapi_Value ***, int32_t);  /* SLAPI_PLUGIN_MR_VALUES2KEYS */
++    int32_t (*mr_assertion2keys_ava)(Slapi_PBlock *, Slapi_Value *, Slapi_Value ***, int32_t);
++    int32_t (*mr_assertion2keys_sub)(Slapi_PBlock *, char *, char **, char *, Slapi_Value ***); /* SLAPI_PLUGIN_MR_ASSERTION2KEYS_SUB */
++    int32_t (*mr_compare)(struct berval *, struct berval *); /* SLAPI_PLUGIN_MR_COMPARE - only for ORDERING */
++    void (*mr_normalize)(Slapi_PBlock *, char *, int32_t, char **);
+ };
+ 
+-int syntax_register_matching_rule_plugins(struct mr_plugin_def mr_plugin_table[], size_t mr_plugin_table_size, IFP matching_rule_plugin_init);
++int syntax_register_matching_rule_plugins(struct mr_plugin_def mr_plugin_table[], size_t mr_plugin_table_size,
++                                          int32_t (*matching_rule_plugin_init)(Slapi_PBlock *));
+ int syntax_matching_rule_plugin_init(Slapi_PBlock *pb, struct mr_plugin_def mr_plugin_table[], size_t mr_plugin_table_size);
+ 
+ #endif
+diff --git a/ldap/servers/plugins/syntaxes/syntax_common.c b/ldap/servers/plugins/syntaxes/syntax_common.c
+index 821d4d557..7407f0b9c 100644
+--- a/ldap/servers/plugins/syntaxes/syntax_common.c
++++ b/ldap/servers/plugins/syntaxes/syntax_common.c
+@@ -16,7 +16,7 @@ int
+ syntax_register_matching_rule_plugins(
+     struct mr_plugin_def mr_plugin_table[],
+     size_t mr_plugin_table_size,
+-    IFP matching_rule_plugin_init)
++    int32_t (*matching_rule_plugin_init)(Slapi_PBlock *))
+ {
+     int rc = -1;
+     size_t ii;
+diff --git a/ldap/servers/slapd/attrsyntax.c b/ldap/servers/slapd/attrsyntax.c
+index 6bbcb05ac..e03ea6478 100644
+--- a/ldap/servers/slapd/attrsyntax.c
++++ b/ldap/servers/slapd/attrsyntax.c
+@@ -608,10 +608,11 @@ attr_syntax_exists(const char *attr_name)
+ 
+ static void default_dirstring_normalize_int(char *s, int trim_spaces);
+ 
+-static int
+-default_dirstring_filter_ava(struct berval *bvfilter __attribute__((unused)),
+-                             Slapi_Value **bvals __attribute__((unused)),
+-                             int ftype __attribute__((unused)),
++static int32_t
++default_dirstring_filter_ava(Slapi_PBlock *pb __attribute__((unused)),
++                             const struct berval *bv __attribute__((unused)),
++                             Slapi_Value **vals __attribute__((unused)),
++                             int32_t ftype __attribute__((unused)),
+                              Slapi_Value **retVal __attribute__((unused)))
+ {
+     return (0);
+@@ -621,7 +622,7 @@ static int
+ default_dirstring_values2keys(Slapi_PBlock *pb __attribute__((unused)),
+                               Slapi_Value **bvals,
+                               Slapi_Value ***ivals,
+-                              int ftype)
++                              int32_t ftype)
+ {
+     int numbvals = 0;
+     Slapi_Value **nbvals, **nbvlp;
+@@ -664,11 +665,11 @@ default_dirstring_values2keys(Slapi_PBlock *pb __attribute__((unused)),
+     return (0);
+ }
+ 
+-static int
++static int32_t
+ default_dirstring_assertion2keys_ava(Slapi_PBlock *pb __attribute__((unused)),
+                                      Slapi_Value *val __attribute__((unused)),
+                                      Slapi_Value ***ivals __attribute__((unused)),
+-                                     int ftype __attribute__((unused)))
++                                     int32_t ftype __attribute__((unused)))
+ {
+     return (0);
+ }
+@@ -759,11 +760,11 @@ attr_syntax_default_plugin(const char *nameoroid)
+     pi->plg_syntax_oid = slapi_ch_strdup(nameoroid);
+ 
+ 
+-    pi->plg_syntax_filter_ava = (IFP)default_dirstring_filter_ava;
+-    pi->plg_syntax_values2keys = (IFP)default_dirstring_values2keys;
+-    pi->plg_syntax_assertion2keys_ava = (IFP)default_dirstring_assertion2keys_ava;
++    pi->plg_syntax_filter_ava = default_dirstring_filter_ava;
++    pi->plg_syntax_values2keys = default_dirstring_values2keys;
++    pi->plg_syntax_assertion2keys_ava = default_dirstring_assertion2keys_ava;
+     pi->plg_syntax_compare = (IFP)default_dirstring_cmp;
+-    pi->plg_syntax_normalize = (VFPV)default_dirstring_normalize;
++    pi->plg_syntax_normalize = default_dirstring_normalize;
+ 
+     return (pi);
+ }
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+index 2bb6b0267..23dd7983f 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+@@ -1298,8 +1298,10 @@ bdb_update_subordinatecounts(backend *be, ImportJob *job, DB_TXN *txn)
+ 
+ /* Function used to gather a list of indexed attrs */
+ static int
+-bdb_import_attr_callback(void *node, void *param)
++bdb_import_attr_callback(caddr_t n, caddr_t p)
+ {
++    void *node = (void *)n;
++    void *param  = (void *)p;
+     ImportJob *job = (ImportJob *)param;
+     struct attrinfo *a = (struct attrinfo *)node;
+ 
+@@ -2215,9 +2217,9 @@ bdb_public_bdb_import_main(void *arg)
+         /* Here, we get an AVL tree which contains nodes for all attributes
+          * in the schema.  Given this tree, we need to identify those nodes
+          * which are marked for indexing. */
+-        avl_apply(job->inst->inst_attrs, (IFP)bdb_import_attr_callback,
++        avl_apply(job->inst->inst_attrs, bdb_import_attr_callback,
+                   (caddr_t)job, -1, AVL_INORDER);
+-        vlv_getindices((IFP)bdb_import_attr_callback, (void *)job, be);
++        vlv_getindices(bdb_import_attr_callback, (void *)job, be);
+     }
+ 
+     /* Determine how much index buffering space to allocate to each index */
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
+index d0efc1bca..f945f5a59 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
+@@ -347,9 +347,11 @@ dbmdb_update_subordinatecounts(backend *be, ImportJob *job, dbi_txn_t *txn)
+ }
+ 
+ /* Function used to gather a list of indexed attrs */
+-static int
+-dbmdb_import_attr_callback(void *node, void *param)
++static int32_t
++dbmdb_import_attr_callback(caddr_t n, caddr_t p)
+ {
++    void *node = (void *)n;
++    void *param  = (void *)p;
+     ImportJob *job = (ImportJob *)param;
+     struct attrinfo *a = (struct attrinfo *)node;
+ 
+@@ -788,11 +790,11 @@ dbmdb_import_all_done(ImportJob *job, int ret)
+             /* Bring backend online again:
+              * In lmdb case, the import framework is also used for reindexing
+              * while in bdb case reindexing uses its own code.
+-             * So dbmdb_import_all_done is called either after 
++             * So dbmdb_import_all_done is called either after
+              * dbmdb_ldif2db or after dbmdb_db2index while
+              * bdb_import_all_done is only called after bdb_ldif2db.
+              *
+-             * dbmdb_db2index uses instance_set_busy_and_readonly 
++             * dbmdb_db2index uses instance_set_busy_and_readonly
+              * while dbmdb_ldif2db uses slapi_mtn_be_disable
+              * and these functions have to be reverted accordingly.
+              */
+@@ -821,9 +823,12 @@ dbmdb_import_all_done(ImportJob *job, int ret)
+ 
+ /* vlv_getindices callback that truncate vlv index (in reindex case) */
+ static int
+-truncate_index_dbi(struct attrinfo *ai, ImportCtx_t *ctx)
++truncate_index_dbi(caddr_t a, caddr_t c)
+ {
++    struct attrinfo *ai = (struct attrinfo *)a;
++    ImportCtx_t *ctx = (ImportCtx_t *)c;
+     int rc = 0;
++
+     if (is_reindexed_attr(ai->ai_type, ctx, ctx->indexVlvs)) {
+         backend *be = ctx->job->inst->inst_be;
+         dbmdb_dbi_t *dbi = NULL;
+@@ -878,9 +883,9 @@ dbmdb_public_dbmdb_import_main(void *arg)
+         /* Here, we get an AVL tree which contains nodes for all attributes
+          * in the schema.  Given this tree, we need to identify those nodes
+          * which are marked for indexing. */
+-        avl_apply(job->inst->inst_attrs, (IFP)dbmdb_import_attr_callback,
++        avl_apply(job->inst->inst_attrs, dbmdb_import_attr_callback,
+                   (caddr_t)job, -1, AVL_INORDER);
+-        vlv_getindices((IFP)dbmdb_import_attr_callback, (void *)job, be);
++        vlv_getindices(dbmdb_import_attr_callback, (void *)job, be);
+     }
+ 
+     /* insure all dbi get open */
+@@ -901,7 +906,7 @@ dbmdb_public_dbmdb_import_main(void *arg)
+             pthread_mutex_unlock(&job->wire_lock);
+             break;
+         case IM_INDEX:
+-            vlv_getindices((IFP)truncate_index_dbi, ctx, job->inst->inst_be);
++            vlv_getindices(truncate_index_dbi, ctx, job->inst->inst_be);
+         default:
+             break;
+     }
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
+index 6978bf5e3..545099b5f 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
+@@ -2895,7 +2895,7 @@ look4indexinfo(ImportCtx_t *ctx, const char *attrname)
+ {
+     MdbIndexInfo_t searched_mii = {0};
+     searched_mii.name = (char*) attrname;
+-    return (MdbIndexInfo_t *)avl_find(ctx->indexes, &searched_mii, cmp_mii);
++    return (MdbIndexInfo_t *)avl_find(ctx->indexes, (caddr_t)&searched_mii, cmp_mii);
+ }
+ 
+ /* Prepare key and data for updating parentid or ancestorid indexes */
+@@ -3460,7 +3460,7 @@ dbmdb_add_import_index(ImportCtx_t *ctx, const char *name, IndexInfo *ii)
+ 
+     DBG_LOG(DBGMDB_LEVEL_OTHER,"Calling dbmdb_open_dbi_from_filename for %s flags = 0x%x", mii->name, dbi_flags);
+     dbmdb_open_dbi_from_filename(&mii->dbi, job->inst->inst_be, mii->name, mii->ai, dbi_flags);
+-    avl_insert(&ctx->indexes, mii, cmp_mii, NULL);
++    avl_insert(&ctx->indexes, (caddr_t)mii, cmp_mii, NULL);
+ }
+ 
+ /*
+@@ -3486,7 +3486,7 @@ dbmdb_open_redirect_db(ImportCtx_t *ctx)
+     mii->ai = ai;
+     mii->flags = MII_SKIP | MII_NOATTR;
+     dbmdb_open_dbi_from_filename(&mii->dbi, be, mii->name, mii->ai, dbi_flags);
+-    avl_insert(&ctx->indexes, mii, cmp_mii, NULL);
++    avl_insert(&ctx->indexes, (caddr_t)mii, cmp_mii, NULL);
+     ctx->redirect = mii;
+ }
+ 
+@@ -3532,11 +3532,13 @@ dbmdb_build_import_index_list(ImportCtx_t *ctx)
+ 
+ }
+ 
+-void
+-free_ii(MdbIndexInfo_t *ii)
++static int32_t
++free_ii(caddr_t i)
+ {
++    MdbIndexInfo_t *ii = (MdbIndexInfo_t *)i;
+     slapi_ch_free_string(&ii->name);
+     slapi_ch_free((void**)&ii);
++    return 0;
+ }
+ 
+ /*
+@@ -4338,7 +4340,7 @@ dbmdb_free_import_ctx(ImportJob *job)
+         dbmdb_import_q_destroy(&ctx->bulkq);
+         slapi_ch_free((void**)&ctx->id2entry->name);
+         slapi_ch_free((void**)&ctx->id2entry);
+-        avl_free(ctx->indexes, (IFP) free_ii);
++        avl_free(ctx->indexes, free_ii);
+         ctx->indexes = NULL;
+         charray_free(ctx->indexAttrs);
+         charray_free(ctx->indexVlvs);
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_instance.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_instance.c
+index 682fd70e2..145811237 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_instance.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_instance.c
+@@ -336,8 +336,10 @@ int add_dbi(dbi_open_ctx_t *octx, backend *be, const char *fname, int flags)
+ 
+ /* avlapply callback to open/create the dbi needed to handle an index */
+ static int
+-add_index_dbi(struct attrinfo *ai, dbi_open_ctx_t *octx)
++add_index_dbi(caddr_t attr, caddr_t otx)
+ {
++    struct attrinfo *ai = (struct attrinfo *)attr;
++    dbi_open_ctx_t *octx = (dbi_open_ctx_t *)otx;
+     int flags = octx->ctx->readonly ? MDB_RDONLY: MDB_CREATE;
+     char *rcdbname = NULL;
+ 
+@@ -473,7 +475,7 @@ dbmdb_open_all_files(dbmdb_ctx_t *ctx, backend *be)
+         }
+         if (be->vlvSearchList_lock) {
+             /* vlv search list is initialized so we can use it */
+-            vlv_getindices((IFP)add_index_dbi, &octx, be);
++            vlv_getindices(add_index_dbi, &octx, be);
+         } else if (vlv_list) {
+             char *rcdbname = NULL;
+             for (size_t i=0; rc == 0 && vlv_list[i]; i++) {
+diff --git a/ldap/servers/slapd/back-ldbm/filterindex.c b/ldap/servers/slapd/back-ldbm/filterindex.c
+index 8bb22570b..c01a58ccd 100644
+--- a/ldap/servers/slapd/back-ldbm/filterindex.c
++++ b/ldap/servers/slapd/back-ldbm/filterindex.c
+@@ -462,7 +462,7 @@ extensible_candidates(
+         case SLAPI_OP_EQUAL:
+         case SLAPI_OP_GREATER_OR_EQUAL:
+         case SLAPI_OP_GREATER: {
+-            IFP mrINDEX = NULL;
++            int32_t (*mrINDEX)(Slapi_PBlock *) = NULL;
+             void *mrOBJECT = NULL;
+             struct berval **mrVALUES = NULL;
+             char *mrOID = NULL;
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_attr.c b/ldap/servers/slapd/back-ldbm/ldbm_attr.c
+index 30bfd1349..7fe6f1405 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_attr.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_attr.c
+@@ -68,7 +68,7 @@ attrinfo_delete(struct attrinfo **pp)
+ }
+ 
+ static int
+-attrinfo_internal_delete(caddr_t data, caddr_t arg __attribute__((unused)))
++attrinfo_internal_delete(caddr_t data)
+ {
+     struct attrinfo *n = (struct attrinfo *)data;
+     attrinfo_delete(&n);
+@@ -85,16 +85,19 @@ attrinfo_deletetree(ldbm_instance *inst)
+ static int
+ ainfo_type_cmp(
+     char *type,
+-    struct attrinfo *a)
++    caddr_t val)
+ {
++    struct attrinfo *a = (struct attrinfo *)val;
+     return (strcasecmp(type, a->ai_type));
+ }
+ 
+ static int
+ ainfo_cmp(
+-    struct attrinfo *a,
+-    struct attrinfo *b)
++    caddr_t val1,
++    caddr_t val2)
+ {
++    struct attrinfo *a = (struct attrinfo *)val1;
++    struct attrinfo *b = (struct attrinfo *)val2;
+     return (strcasecmp(a->ai_type, b->ai_type));
+ }
+ 
+@@ -102,7 +105,7 @@ void
+ attrinfo_delete_from_tree(backend *be, struct attrinfo *ai)
+ {
+     ldbm_instance *inst = (ldbm_instance *)be->be_instance_info;
+-    avl_delete(&inst->inst_attrs, ai, ainfo_cmp);
++    avl_delete(&inst->inst_attrs, (caddr_t)ai, ainfo_cmp);
+ }
+ 
+ /*
+@@ -117,9 +120,12 @@ attrinfo_delete_from_tree(backend *be, struct attrinfo *ai)
+ 
+ static int
+ ainfo_dup(
+-    struct attrinfo *a,
+-    struct attrinfo *b)
++    caddr_t val1,
++    caddr_t val2)
+ {
++    struct attrinfo *a = (struct attrinfo *)val1;
++    struct attrinfo *b = (struct attrinfo *)val2;
++
+     /* merge duplicate indexing information */
+     if (b->ai_indexmask == 0 || b->ai_indexmask == INDEX_OFFLINE) {
+         a->ai_indexmask = INDEX_OFFLINE; /* turns off all indexes */
+@@ -203,7 +209,7 @@ attr_index_parse_idlistsize_values(Slapi_Attr *attr, struct index_idlistsizeinfo
+     char *lasts = NULL;
+     char *val;
+     int syntaxcheck = config_get_syntaxcheck();
+-    IFP syntax_validate_fn = syntaxcheck ? attr->a_plugin->plg_syntax_validate : NULL;
++    int32_t (*syntax_validate_fn)(struct berval *) = syntaxcheck ? attr->a_plugin->plg_syntax_validate : NULL;
+     char staticfiltstrbuf[1024];                     /* for small filter strings */
+     char *filtstrbuf = staticfiltstrbuf;             /* default if not malloc'd */
+     size_t filtstrbuflen = sizeof(staticfiltstrbuf); /* default if not malloc'd */
+@@ -880,7 +886,7 @@ attr_index_config(
+                 *  It would improve speed to save the indexer, for future use.
+                 * But, for simplicity, we destroy it now:
+                 */
+-                IFP mrDESTROY = NULL;
++                int32_t (*mrDESTROY)(Slapi_PBlock *) = NULL;
+                 if (!slapi_pblock_get(pb, SLAPI_PLUGIN_DESTROY_FN, &mrDESTROY) &&
+                     mrDESTROY != NULL) {
+                     mrDESTROY(pb);
+@@ -941,7 +947,7 @@ attr_index_config(
+         }
+     }
+ 
+-    if (avl_insert(&inst->inst_attrs, a, ainfo_cmp, ainfo_dup) != 0) {
++    if (avl_insert(&inst->inst_attrs, (caddr_t)a, ainfo_cmp, ainfo_dup) != 0) {
+         /* duplicate - existing version updated */
+         attrinfo_delete(&a);
+     }
+@@ -964,7 +970,7 @@ attr_create_empty(backend *be, char *type, struct attrinfo **ai)
+     struct attrinfo *a = attrinfo_new();
+     slapi_attr_init(&a->ai_sattr, type);
+     a->ai_type = slapi_ch_strdup(type);
+-    if (avl_insert(&inst->inst_attrs, a, ainfo_cmp, ainfo_dup) != 0) {
++    if (avl_insert(&inst->inst_attrs, (caddr_t)a, ainfo_cmp, ainfo_dup) != 0) {
+         /* duplicate - existing version updated */
+         attrinfo_delete(&a);
+         ainfo_get(be, type, &a);
+diff --git a/ldap/servers/slapd/back-ldbm/matchrule.c b/ldap/servers/slapd/back-ldbm/matchrule.c
+index 5365e8acf..85ff87b95 100644
+--- a/ldap/servers/slapd/back-ldbm/matchrule.c
++++ b/ldap/servers/slapd/back-ldbm/matchrule.c
+@@ -79,7 +79,7 @@ int
+ destroy_matchrule_indexer(Slapi_PBlock *pb)
+ {
+     Slapi_Value **keys = NULL;
+-    IFP mrDESTROY = NULL;
++    int32_t (*mrDESTROY)(Slapi_PBlock *) = NULL;
+     if (!slapi_pblock_get(pb, SLAPI_PLUGIN_DESTROY_FN, &mrDESTROY)) {
+         if (mrDESTROY != NULL) {
+             mrDESTROY(pb);
+@@ -109,7 +109,7 @@ destroy_matchrule_indexer(Slapi_PBlock *pb)
+ int
+ matchrule_values_to_keys(Slapi_PBlock *pb, Slapi_Value **input_values, struct berval ***output_values)
+ {
+-    IFP mrINDEX = NULL;
++    int32_t (*mrINDEX)(Slapi_PBlock *) = NULL;
+ 
+     slapi_pblock_get(pb, SLAPI_PLUGIN_MR_INDEX_FN, &mrINDEX);
+     slapi_pblock_set(pb, SLAPI_PLUGIN_MR_VALUES, input_values);
+@@ -130,7 +130,7 @@ matchrule_values_to_keys(Slapi_PBlock *pb, Slapi_Value **input_values, struct be
+ int
+ matchrule_values_to_keys_sv(Slapi_PBlock *pb, Slapi_Value **input_values, Slapi_Value ***output_values)
+ {
+-    IFP mrINDEX = NULL;
++    int32_t (*mrINDEX)(Slapi_PBlock *) = NULL;
+ 
+     slapi_pblock_get(pb, SLAPI_PLUGIN_MR_INDEX_SV_FN, &mrINDEX);
+     if (NULL == mrINDEX) { /* old school - does not have SV function */
+diff --git a/ldap/servers/slapd/back-ldbm/misc.c b/ldap/servers/slapd/back-ldbm/misc.c
+index 309cc8a94..4ced0f1da 100644
+--- a/ldap/servers/slapd/back-ldbm/misc.c
++++ b/ldap/servers/slapd/back-ldbm/misc.c
+@@ -329,7 +329,7 @@ ldbm_txn_ruv_modify_context(Slapi_PBlock *pb, modify_context *mc)
+     Slapi_Mods *smods = NULL;
+     struct backentry *bentry;
+     entry_address bentry_addr;
+-    IFP fn = NULL;
++    int32_t (*fn)(Slapi_PBlock *, char **, Slapi_Mods **) = NULL;
+     int rc = 0;
+     back_txn txn = {NULL};
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h b/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
+index f16c37d73..29d196f39 100644
+--- a/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
++++ b/ldap/servers/slapd/back-ldbm/proto-back-ldbm.h
+@@ -499,7 +499,7 @@ int vlv_trim_candidates_txn(backend *be, const IDList *candidates, const sort_sp
+ int vlv_trim_candidates(backend *be, const IDList *candidates, const sort_spec *sort_control, const struct vlv_request *vlv_request_control, IDList **filteredCandidates, struct vlv_response *pResponse);
+ int vlv_parse_request_control(backend *be, struct berval *vlv_spec_ber, struct vlv_request *vlvp);
+ int vlv_make_response_control(Slapi_PBlock *pb, const struct vlv_response *vlvp);
+-void vlv_getindices(IFP callback_fn, void *param, backend *be);
++void vlv_getindices(int32_t (*callback_fn)(caddr_t, caddr_t),  void *param, backend *be);
+ void vlv_print_access_log(Slapi_PBlock *pb, struct vlv_request *vlvi, struct vlv_response *vlvo);
+ void vlv_grok_new_import_entry(const struct backentry *e, backend *be, int *seen_them_all);
+ IDList *vlv_find_index_by_filter(struct backend *be, const char *base, Slapi_Filter *f);
+diff --git a/ldap/servers/slapd/back-ldbm/vlv.c b/ldap/servers/slapd/back-ldbm/vlv.c
+index a1cd226f4..b5dd1ea55 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv.c
++++ b/ldap/servers/slapd/back-ldbm/vlv.c
+@@ -673,7 +673,7 @@ vlv_getindexnames(backend *be)
+ /* Return the list of VLV indices to the import code. Added read lock */
+ 
+ void
+-vlv_getindices(IFP callback_fn, void *param, backend *be)
++vlv_getindices(int32_t (*callback_fn)(caddr_t, caddr_t), void *param, backend *be)
+ {
+     /* Traverse the list, calling the import code's callback function */
+     struct vlvSearch *ps = NULL;
+@@ -683,7 +683,7 @@ vlv_getindices(IFP callback_fn, void *param, backend *be)
+     for (; ps != NULL; ps = ps->vlv_next) {
+         struct vlvIndex *pi = ps->vlv_index;
+         for (; pi != NULL; pi = pi->vlv_next) {
+-            callback_fn(pi->vlv_attrinfo, param);
++            callback_fn((caddr_t)(pi->vlv_attrinfo), (caddr_t)param);
+         }
+     }
+     slapi_rwlock_unlock(be->vlvSearchList_lock);
+diff --git a/ldap/servers/slapd/backend.c b/ldap/servers/slapd/backend.c
+index 0a2555a9b..cf3c2ebbc 100644
+--- a/ldap/servers/slapd/backend.c
++++ b/ldap/servers/slapd/backend.c
+@@ -502,6 +502,7 @@ slapi_be_getentrypoint(Slapi_Backend *be, int entrypoint, void **ret_fnptr, Slap
+     return 0;
+ }
+ 
++
+ int
+ slapi_be_setentrypoint(Slapi_Backend *be, int entrypoint, void *ret_fnptr, Slapi_PBlock *pb)
+ {
+@@ -517,61 +518,61 @@ slapi_be_setentrypoint(Slapi_Backend *be, int entrypoint, void *ret_fnptr, Slapi
+ 
+     switch (entrypoint) {
+     case SLAPI_PLUGIN_DB_BIND_FN:
+-        be->be_bind = (IFP)ret_fnptr;
++        be->be_bind = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_UNBIND_FN:
+-        be->be_unbind = (IFP)ret_fnptr;
++        be->be_unbind = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_SEARCH_FN:
+-        be->be_search = (IFP)ret_fnptr;
++        be->be_search = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_COMPARE_FN:
+-        be->be_compare = (IFP)ret_fnptr;
++        be->be_compare = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_MODIFY_FN:
+-        be->be_modify = (IFP)ret_fnptr;
++        be->be_modify = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_MODRDN_FN:
+-        be->be_modrdn = (IFP)ret_fnptr;
++        be->be_modrdn = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_ADD_FN:
+-        be->be_add = (IFP)ret_fnptr;
++        be->be_add = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_DELETE_FN:
+-        be->be_delete = (IFP)ret_fnptr;
++        be->be_delete = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_ABANDON_FN:
+-        be->be_abandon = (IFP)ret_fnptr;
++        be->be_abandon = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_CONFIG_FN:
+-        be->be_config = (IFP)ret_fnptr;
++        be->be_config = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_CLOSE_FN:
+-        be->be_close = (IFP)ret_fnptr;
++        be->be_close = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_START_FN:
+-        be->be_start = (IFP)ret_fnptr;
++        be->be_start = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_RESULT_FN:
+-        be->be_result = (IFP)ret_fnptr;
++        be->be_result = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_LDIF2DB_FN:
+-        be->be_ldif2db = (IFP)ret_fnptr;
++        be->be_ldif2db = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_DB2LDIF_FN:
+-        be->be_db2ldif = (IFP)ret_fnptr;
++        be->be_db2ldif = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_ARCHIVE2DB_FN:
+-        be->be_archive2db = (IFP)ret_fnptr;
++        be->be_archive2db = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_DB2ARCHIVE_FN:
+-        be->be_db2archive = (IFP)ret_fnptr;
++        be->be_db2archive = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_NEXT_SEARCH_ENTRY_FN:
+-        be->be_next_search_entry = (IFP)ret_fnptr;
++        be->be_next_search_entry = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_NEXT_SEARCH_ENTRY_EXT_FN:
+-        be->be_next_search_entry_ext = (IFP)ret_fnptr;
++        be->be_next_search_entry_ext = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_SEARCH_RESULTS_RELEASE_FN:
+         be->be_search_results_release = (VFPP)ret_fnptr;
+@@ -580,19 +581,19 @@ slapi_be_setentrypoint(Slapi_Backend *be, int entrypoint, void *ret_fnptr, Slapi
+         be->be_prev_search_results = (VFP)ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_TEST_FN:
+-        be->be_dbtest = (IFP)ret_fnptr;
++        be->be_dbtest = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_RMDB_FN:
+-        be->be_rmdb = (IFP)ret_fnptr;
++        be->be_rmdb = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_SEQ_FN:
+-        be->be_seq = (IFP)ret_fnptr;
++        be->be_seq = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_DB_DB2INDEX_FN:
+-        be->be_db2index = (IFP)ret_fnptr;
++        be->be_db2index = ret_fnptr;
+         break;
+     case SLAPI_PLUGIN_CLEANUP_FN:
+-        be->be_cleanup = (IFP)ret_fnptr;
++        be->be_cleanup = ret_fnptr;
+         break;
+     default:
+         slapi_log_err(SLAPI_LOG_ERR, "slapi_be_setentrypoint",
+@@ -682,7 +683,7 @@ slapi_back_ctrl_info(Slapi_Backend *be, int cmd, void *info)
+ int
+ slapi_back_transaction_begin(Slapi_PBlock *pb)
+ {
+-    IFP txn_begin;
++    int32_t (*txn_begin)(Slapi_PBlock *);
+     if (slapi_pblock_get(pb, SLAPI_PLUGIN_DB_BEGIN_FN, (void *)&txn_begin) ||
+         !txn_begin) {
+         return SLAPI_BACK_TRANSACTION_NOT_SUPPORTED;
+@@ -695,7 +696,7 @@ slapi_back_transaction_begin(Slapi_PBlock *pb)
+ int
+ slapi_back_transaction_commit(Slapi_PBlock *pb)
+ {
+-    IFP txn_commit;
++    int32_t (*txn_commit)(Slapi_PBlock *);
+     if (slapi_pblock_get(pb, SLAPI_PLUGIN_DB_COMMIT_FN, (void *)&txn_commit) ||
+         !txn_commit) {
+         return SLAPI_BACK_TRANSACTION_NOT_SUPPORTED;
+@@ -708,7 +709,7 @@ slapi_back_transaction_commit(Slapi_PBlock *pb)
+ int
+ slapi_back_transaction_abort(Slapi_PBlock *pb)
+ {
+-    IFP txn_abort;
++    int32_t (*txn_abort)(Slapi_PBlock *);
+     if (slapi_pblock_get(pb, SLAPI_PLUGIN_DB_ABORT_FN, (void *)&txn_abort) ||
+         !txn_abort) {
+         return SLAPI_BACK_TRANSACTION_NOT_SUPPORTED;
+diff --git a/ldap/servers/slapd/dse.c b/ldap/servers/slapd/dse.c
+index a0db367b2..bec3e32f4 100644
+--- a/ldap/servers/slapd/dse.c
++++ b/ldap/servers/slapd/dse.c
+@@ -120,7 +120,7 @@ typedef struct dse_search_set
+ 
+ static int dse_permission_to_write(struct dse *pdse, int loglevel);
+ static int dse_write_file_nolock(struct dse *pdse);
+-static int dse_apply_nolock(struct dse *pdse, IFP fp, caddr_t arg);
++static int dse_apply_nolock(struct dse *pdse, int32_t (*fp)(caddr_t, caddr_t), caddr_t arg);
+ static int dse_replace_entry(struct dse *pdse, Slapi_Entry *e, int write_file, int use_lock);
+ static dse_search_set *dse_search_set_new(void);
+ static void dse_search_set_delete(dse_search_set *ss);
+@@ -257,7 +257,7 @@ dse_find_node(struct dse *pdse, const Slapi_DN *dn)
+         slapi_entry_set_sdn(fe, dn);
+         searchNode.entry = fe;
+ 
+-        n = (struct dse_node *)avl_find(pdse->dse_tree, &searchNode, entry_dn_cmp);
++        n = (struct dse_node *)avl_find(pdse->dse_tree, (caddr_t)&searchNode, entry_dn_cmp);
+ 
+         slapi_entry_free(fe);
+     }
+@@ -491,7 +491,7 @@ dse_new_with_filelist(char *filename, char *tmpfilename, char *backfilename, cha
+ }
+ 
+ static int
+-dse_internal_delete_entry(caddr_t data, caddr_t arg __attribute__((unused)))
++dse_internal_delete_entry(caddr_t data)
+ {
+     struct dse_node *n = (struct dse_node *)data;
+     dse_node_delete(&n);
+@@ -1290,9 +1290,9 @@ dse_add_entry_pb(struct dse *pdse, Slapi_Entry *e, Slapi_PBlock *pb)
+     /* keep write lock during both tree update and file write operations */
+     dse_lock_write(pdse, DSE_USE_LOCK);
+     if (merge) {
+-        rc = avl_insert(&(pdse->dse_tree), n, entry_dn_cmp, dupentry_merge);
++        rc = avl_insert(&(pdse->dse_tree), (caddr_t)n, entry_dn_cmp, dupentry_merge);
+     } else {
+-        rc = avl_insert(&(pdse->dse_tree), n, entry_dn_cmp, dupentry_disallow);
++        rc = avl_insert(&(pdse->dse_tree), (caddr_t)n, entry_dn_cmp, dupentry_disallow);
+     }
+     if (-1 != rc) {
+         /* update num sub of parent with no lock; we already hold the write lock */
+@@ -1479,7 +1479,7 @@ dse_replace_entry(struct dse *pdse, Slapi_Entry *e, int write_file, int use_lock
+     if (NULL != e) {
+         struct dse_node *n = dse_node_new(e);
+         dse_lock_write(pdse, use_lock);
+-        rc = avl_insert(&(pdse->dse_tree), n, entry_dn_cmp, dupentry_replace);
++        rc = avl_insert(&(pdse->dse_tree), (caddr_t)n, entry_dn_cmp, dupentry_replace);
+         if (write_file)
+             dse_write_file_nolock(pdse);
+         /* If the entry was replaced i.e. not added as a new entry, we need to
+@@ -1554,7 +1554,7 @@ dse_read_next_entry(char *buf, char **lastp)
+  * searching, a read lock, for modifying in place, a write lock
+  */
+ static int
+-dse_apply_nolock(struct dse *pdse, IFP fp, caddr_t arg)
++dse_apply_nolock(struct dse *pdse, int32_t (*fp)(caddr_t, caddr_t), caddr_t arg)
+ {
+     avl_apply(pdse->dse_tree, fp, arg, STOP_TRAVERSAL, AVL_INORDER);
+     return 1;
+@@ -1576,7 +1576,7 @@ dse_delete_entry(struct dse *pdse, Slapi_PBlock *pb, const Slapi_Entry *e)
+ 
+     /* keep write lock for both tree deleting and file writing */
+     dse_lock_write(pdse, DSE_USE_LOCK);
+-    if ((deleted_node = (struct dse_node *)avl_delete(&pdse->dse_tree, n, entry_dn_cmp))) {
++    if ((deleted_node = (struct dse_node *)avl_delete(&pdse->dse_tree, (caddr_t)n, entry_dn_cmp))) {
+         dse_node_delete(&deleted_node);
+     }
+     dse_node_delete(&n);
+diff --git a/ldap/servers/slapd/entry.c b/ldap/servers/slapd/entry.c
+index 235410e45..6040eb419 100644
+--- a/ldap/servers/slapd/entry.c
++++ b/ldap/servers/slapd/entry.c
+@@ -709,7 +709,7 @@ entry_attrs_add(entry_attrs *ea, const char *atname, int atarrayindex)
+     ead->ead_attrarrayindex = atarrayindex;
+     ead->ead_attrtypename = atname; /* a reference, not a strdup! */
+ 
+-    avl_insert(&(ea->ea_attrlist), ead, attr_type_node_cmp, avl_dup_error);
++    avl_insert(&(ea->ea_attrlist), (caddr_t)ead, attr_type_node_cmp, avl_dup_error);
+ }
+ 
+ /*
+@@ -723,7 +723,7 @@ entry_attrs_find(entry_attrs *ea, char *type)
+     entry_attr_data *foundead;
+ 
+     tmpead.ead_attrtypename = type;
+-    foundead = (entry_attr_data *)avl_find(ea->ea_attrlist, &tmpead,
++    foundead = (entry_attr_data *)avl_find(ea->ea_attrlist, (caddr_t)&tmpead,
+                                            attr_type_node_cmp);
+     return (NULL != foundead) ? foundead->ead_attrarrayindex : -1;
+ }
+diff --git a/ldap/servers/slapd/filtercmp.c b/ldap/servers/slapd/filtercmp.c
+index 3e17796e9..0d8764b5a 100644
+--- a/ldap/servers/slapd/filtercmp.c
++++ b/ldap/servers/slapd/filtercmp.c
+@@ -86,7 +86,7 @@ get_mr_normval(char *oid, char *type, struct berval **inval, struct berval ***ou
+ {
+     Slapi_PBlock *pb = slapi_pblock_new();
+     unsigned int sort_indicator = SLAPI_PLUGIN_MR_USAGE_SORT;
+-    IFP mrIndex = NULL;
++    int32_t (*mrIndex)(Slapi_PBlock *) = NULL;
+ 
+     if (!pb) {
+         return NULL;
+@@ -118,7 +118,7 @@ get_mr_normval(char *oid, char *type, struct berval **inval, struct berval ***ou
+ static void
+ done_mr_normval(Slapi_PBlock *pb)
+ {
+-    IFP mrDestroy = NULL;
++    int32_t (*mrDestroy)(Slapi_PBlock *) = NULL;
+ 
+     if (slapi_pblock_get(pb, SLAPI_PLUGIN_DESTROY_FN, &mrDestroy) == 0) {
+         if (mrDestroy)
+diff --git a/ldap/servers/slapd/getfilelist.c b/ldap/servers/slapd/getfilelist.c
+index dd5deb282..2fd164baf 100644
+--- a/ldap/servers/slapd/getfilelist.c
++++ b/ldap/servers/slapd/getfilelist.c
+@@ -46,9 +46,11 @@ struct path_wrapper
+     int order;
+ };
+ 
+-static int
+-path_wrapper_cmp(struct path_wrapper *p1, struct path_wrapper *p2)
++static int32_t
++path_wrapper_cmp(caddr_t pwc1, caddr_t pwc2)
+ {
++    struct path_wrapper *p1 = (struct path_wrapper *)pwc1;
++    struct path_wrapper *p2 = (struct path_wrapper *)pwc2;
+     if (p1->order < p2->order) {
+         /* p1 is "earlier" so put it first */
+         return -1;
+@@ -217,7 +219,7 @@ get_filelist(
+                 pw_ptr->path = slapi_ch_smprintf("%s/%s", dirname, dirent->name);
+                 pw_ptr->filename = slapi_ch_strdup(dirent->name);
+                 pw_ptr->order = i;
+-                avl_insert(&filetree, pw_ptr, path_wrapper_cmp, 0);
++                avl_insert(&filetree, (caddr_t)pw_ptr, path_wrapper_cmp, 0);
+                 num++;
+             }
+         }
+diff --git a/ldap/servers/slapd/pblock.c b/ldap/servers/slapd/pblock.c
+index 3801326c4..76e26cb86 100644
+--- a/ldap/servers/slapd/pblock.c
++++ b/ldap/servers/slapd/pblock.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2005-2025 Red Hat, Inc.
+  * Copyright (C) 2009 Hewlett-Packard Development Company, L.P.
+  * All rights reserved.
+  *
+@@ -783,25 +783,25 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_bind;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_bind;
+         break;
+     case SLAPI_PLUGIN_DB_UNBIND_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_unbind;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_unbind;
+         break;
+     case SLAPI_PLUGIN_DB_SEARCH_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_search;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_search;
+         break;
+     case SLAPI_PLUGIN_DB_NEXT_SEARCH_ENTRY_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_next_search_entry;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_next_search_entry;
+         break;
+     case SLAPI_PLUGIN_DB_NEXT_SEARCH_ENTRY_EXT_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+@@ -825,37 +825,37 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_compare;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_compare;
+         break;
+     case SLAPI_PLUGIN_DB_MODIFY_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_modify;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_modify;
+         break;
+     case SLAPI_PLUGIN_DB_MODRDN_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_modrdn;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_modrdn;
+         break;
+     case SLAPI_PLUGIN_DB_ADD_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_add;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_add;
+         break;
+     case SLAPI_PLUGIN_DB_DELETE_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_delete;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_delete;
+         break;
+     case SLAPI_PLUGIN_DB_ABANDON_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_abandon;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_abandon;
+         break;
+     case SLAPI_PLUGIN_DB_CONFIG_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+@@ -867,7 +867,7 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         (*(IFP *)value) = pblock->pb_plugin->plg_close;
+         break;
+     case SLAPI_PLUGIN_CLEANUP_FN:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_cleanup;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_cleanup;
+         break;
+     case SLAPI_PLUGIN_START_FN:
+         (*(IFP *)value) = pblock->pb_plugin->plg_start;
+@@ -876,22 +876,22 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         (*(IFP *)value) = pblock->pb_plugin->plg_poststart;
+         break;
+     case SLAPI_PLUGIN_DB_WIRE_IMPORT_FN:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_wire_import;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_wire_import;
+         break;
+     case SLAPI_PLUGIN_DB_GET_INFO_FN:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_get_info;
++        (*(int32_t (**)(struct backend *, int32_t,  void **))value) = pblock->pb_plugin->plg_get_info;
+         break;
+     case SLAPI_PLUGIN_DB_SET_INFO_FN:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_set_info;
++        (*(int32_t (**)(struct backend *, int32_t,  void **))value) = pblock->pb_plugin->plg_set_info;
+         break;
+     case SLAPI_PLUGIN_DB_CTRL_INFO_FN:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_ctrl_info;
++        (*(int32_t (**)(struct backend *, int32_t,  void **))value) = pblock->pb_plugin->plg_ctrl_info;
+         break;
+     case SLAPI_PLUGIN_DB_SEQ_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_seq;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_seq;
+         break;
+     case SLAPI_PLUGIN_DB_ENTRY_FN:
+         (*(IFP *)value) = SLAPI_PBLOCK_GET_PLUGIN_RELATED_POINTER(pblock,
+@@ -915,55 +915,55 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_ldif2db;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_ldif2db;
+         break;
+     case SLAPI_PLUGIN_DB_DB2LDIF_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_db2ldif;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_db2ldif;
+         break;
+     case SLAPI_PLUGIN_DB_COMPACT_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_dbcompact;
++        (*(int32_t (**)(struct backend *, bool))value) = pblock->pb_plugin->plg_dbcompact;
+         break;
+     case SLAPI_PLUGIN_DB_DB2INDEX_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_db2index;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_db2index;
+         break;
+     case SLAPI_PLUGIN_DB_ARCHIVE2DB_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_archive2db;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_archive2db;
+         break;
+     case SLAPI_PLUGIN_DB_DB2ARCHIVE_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_db2archive;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_db2archive;
+         break;
+     case SLAPI_PLUGIN_DB_UPGRADEDB_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_upgradedb;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_upgradedb;
+         break;
+     case SLAPI_PLUGIN_DB_UPGRADEDNFORMAT_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_upgradednformat;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_upgradednformat;
+         break;
+     case SLAPI_PLUGIN_DB_DBVERIFY_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_dbverify;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_dbverify;
+         break;
+     case SLAPI_PLUGIN_DB_BEGIN_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+@@ -1007,7 +1007,7 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+             pblock->pb_plugin->plg_type != SLAPI_PLUGIN_BETXNEXTENDEDOP) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_exhandler;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_exhandler;
+         break;
+     case SLAPI_PLUGIN_EXT_OP_OIDLIST:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_EXTENDEDOP &&
+@@ -1028,7 +1028,7 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+             pblock->pb_plugin->plg_type != SLAPI_PLUGIN_BETXNEXTENDEDOP) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_be_exhandler;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Backend **))value) = pblock->pb_plugin->plg_be_exhandler;
+         break;
+ 
+     /* preoperation plugin functions */
+@@ -1474,31 +1474,32 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_syntax_filter_ava;
++        (*(int32_t (**)(Slapi_PBlock *, const struct berval *, Slapi_Value **,
++                        int32_t,  Slapi_Value **))value) = pblock->pb_plugin->plg_syntax_filter_ava;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_FILTER_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_syntax_filter_sub;
++        (*(int32_t (**)(Slapi_PBlock*, char *, char **, char *, Slapi_Value**))value) = pblock->pb_plugin->plg_syntax_filter_sub;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_VALUES2KEYS:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_syntax_values2keys;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Value **, Slapi_Value ***, int32_t))value) = pblock->pb_plugin->plg_syntax_values2keys;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_ASSERTION2KEYS_AVA:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_syntax_assertion2keys_ava;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Value *, Slapi_Value ***, int32_t))value) = pblock->pb_plugin->plg_syntax_assertion2keys_ava;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_ASSERTION2KEYS_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_syntax_assertion2keys_sub;
++        (*(int32_t (**)(Slapi_PBlock *, char *, char **, char *, Slapi_Value ***))value) = pblock->pb_plugin->plg_syntax_assertion2keys_sub;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_NAMES:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+@@ -1535,13 +1536,13 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_syntax_validate;
++        (*(int32_t (**)(struct berval *))value) = pblock->pb_plugin->plg_syntax_validate;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_NORMALIZE:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        (*(VFPV *)value) = pblock->pb_plugin->plg_syntax_normalize;
++        (*(void (**)(Slapi_PBlock *, char *, int32_t,  char **))value) = pblock->pb_plugin->plg_syntax_normalize;
+         break;
+ 
+     /* controls we know about */
+@@ -1799,11 +1800,12 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+     /* matching rule plugin functions */
+     case SLAPI_PLUGIN_MR_FILTER_CREATE_FN:
+         SLAPI_PLUGIN_TYPE_CHECK(pblock, SLAPI_PLUGIN_MATCHINGRULE);
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_filter_create;
++
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_mr_filter_create;
+         break;
+     case SLAPI_PLUGIN_MR_INDEXER_CREATE_FN:
+         SLAPI_PLUGIN_TYPE_CHECK(pblock, SLAPI_PLUGIN_MATCHINGRULE);
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_indexer_create;
++        (*(int32_t (**)(Slapi_PBlock *))value) = pblock->pb_plugin->plg_mr_indexer_create;
+         break;
+     case SLAPI_PLUGIN_MR_FILTER_MATCH_FN:
+         if (pblock->pb_mr != NULL) {
+@@ -1904,31 +1906,31 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_filter_ava;
++        (*(int32_t (**)(Slapi_PBlock *, const struct berval *, Slapi_Value **, int32_t,  Slapi_Value **))value) = pblock->pb_plugin->plg_mr_filter_ava;
+         break;
+     case SLAPI_PLUGIN_MR_FILTER_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_filter_sub;
++        (*(int32_t (**)(Slapi_PBlock *, char *, char **, char*, Slapi_Value **))value) = pblock->pb_plugin->plg_mr_filter_sub;
+         break;
+     case SLAPI_PLUGIN_MR_VALUES2KEYS:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_values2keys;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Value **, Slapi_Value ***, int32_t))value) = pblock->pb_plugin->plg_mr_values2keys;
+         break;
+     case SLAPI_PLUGIN_MR_ASSERTION2KEYS_AVA:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_assertion2keys_ava;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Value *, Slapi_Value ***, int32_t))value) = pblock->pb_plugin->plg_mr_assertion2keys_ava;
+         break;
+     case SLAPI_PLUGIN_MR_ASSERTION2KEYS_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_assertion2keys_sub;
++        (*(int32_t (**)(Slapi_PBlock *, char *, char **, char *, Slapi_Value ***))value) = pblock->pb_plugin->plg_mr_assertion2keys_sub;
+         break;
+     case SLAPI_PLUGIN_MR_FLAGS:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+@@ -1946,13 +1948,13 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mr_compare;
++        (*(int32_t (**)(struct berval *, struct berval *))value) = pblock->pb_plugin->plg_mr_compare;
+         break;
+     case SLAPI_PLUGIN_MR_NORMALIZE:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        (*(VFPV *)value) = pblock->pb_plugin->plg_mr_normalize;
++        (*(void (**)(Slapi_PBlock *, char *, int32_t,  char **))value) = pblock->pb_plugin->plg_mr_normalize;
+         break;
+ 
+     /* seq arguments */
+@@ -2145,9 +2147,9 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         break;
+     case SLAPI_TXN_RUV_MODS_FN:
+         if (pblock->pb_intop != NULL) {
+-            (*(IFP *)value) = pblock->pb_intop->pb_txn_ruv_mods_fn;
++            (*(int32_t(**)(Slapi_PBlock *, char **, Slapi_Mods **))value) = pblock->pb_intop->pb_txn_ruv_mods_fn;
+         } else {
+-            (*(IFP *)value) = NULL;
++            (*(int32_t(**)(Slapi_PBlock *, char **, Slapi_Mods **))value) = NULL;
+         }
+         break;
+ 
+@@ -2221,24 +2223,25 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+         (*(IFP *)value) = pblock->pb_plugin->plg_acl_init;
+         break;
+     case SLAPI_PLUGIN_ACL_SYNTAX_CHECK:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_acl_syntax_check;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Entry *, char **))value) = pblock->pb_plugin->plg_acl_syntax_check;
+         break;
+     case SLAPI_PLUGIN_ACL_ALLOW_ACCESS:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_acl_access_allowed;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Entry *, char **, struct berval *,
++                        int32_t,  int32_t,  char **))value) = pblock->pb_plugin->plg_acl_access_allowed;
+         break;
+     case SLAPI_PLUGIN_ACL_MODS_ALLOWED:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_acl_mods_allowed;
++        (*(int32_t (**)(Slapi_PBlock *, Slapi_Entry *, LDAPMod **, void *))value) = pblock->pb_plugin->plg_acl_mods_allowed;
+         break;
+     case SLAPI_PLUGIN_ACL_MODS_UPDATE:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_acl_mods_update;
++        (*(int32_t (**)(Slapi_PBlock *, int32_t,  Slapi_DN *, void *))value) = pblock->pb_plugin->plg_acl_mods_update;
+         break;
+     /* MMR Plugin */
+     case SLAPI_PLUGIN_MMR_BETXN_PREOP:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mmr_betxn_preop;
+-	break;
++        (*(int32_t (**)(Slapi_PBlock *, int32_t))value) = pblock->pb_plugin->plg_mmr_betxn_preop;
++	    break;
+     case SLAPI_PLUGIN_MMR_BETXN_POSTOP:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_mmr_betxn_postop;
+-	break;
++        (*(int32_t (**)(Slapi_PBlock *, int32_t))value) = pblock->pb_plugin->plg_mmr_betxn_postop;
++	    break;
+ 
+     case SLAPI_REQUESTOR_DN:
+         /* NOTE: It's not a copy of the DN */
+@@ -2362,11 +2365,11 @@ slapi_pblock_get(Slapi_PBlock *pblock, int arg, void *value)
+ 
+     /* entry fetch/store plugin */
+     case SLAPI_PLUGIN_ENTRY_FETCH_FUNC:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_entryfetchfunc;
++        (*(int32_t (**)(char **, uint32_t *))value) = pblock->pb_plugin->plg_entryfetchfunc;
+         break;
+ 
+     case SLAPI_PLUGIN_ENTRY_STORE_FUNC:
+-        (*(IFP *)value) = pblock->pb_plugin->plg_entrystorefunc;
++        (*(int32_t (**)(char **, uint32_t *))value) = pblock->pb_plugin->plg_entrystorefunc;
+         break;
+ 
+     case SLAPI_PLUGIN_ENABLED:
+@@ -2723,25 +2726,25 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_bind = (IFP)value;
++        pblock->pb_plugin->plg_bind = value;
+         break;
+     case SLAPI_PLUGIN_DB_UNBIND_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_unbind = (IFP)value;
++        pblock->pb_plugin->plg_unbind = value;
+         break;
+     case SLAPI_PLUGIN_DB_SEARCH_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_search = (IFP)value;
++        pblock->pb_plugin->plg_search = value;
+         break;
+     case SLAPI_PLUGIN_DB_NEXT_SEARCH_ENTRY_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_next_search_entry = (IFP)value;
++        pblock->pb_plugin->plg_next_search_entry = value;
+         break;
+     case SLAPI_PLUGIN_DB_NEXT_SEARCH_ENTRY_EXT_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+@@ -2765,37 +2768,37 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_compare = (IFP)value;
++        pblock->pb_plugin->plg_compare = value;
+         break;
+     case SLAPI_PLUGIN_DB_MODIFY_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_modify = (IFP)value;
++        pblock->pb_plugin->plg_modify = value;
+         break;
+     case SLAPI_PLUGIN_DB_MODRDN_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_modrdn = (IFP)value;
++        pblock->pb_plugin->plg_modrdn = value;
+         break;
+     case SLAPI_PLUGIN_DB_ADD_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_add = (IFP)value;
++        pblock->pb_plugin->plg_add = value;
+         break;
+     case SLAPI_PLUGIN_DB_DELETE_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_delete = (IFP)value;
++        pblock->pb_plugin->plg_delete = value;
+         break;
+     case SLAPI_PLUGIN_DB_ABANDON_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_abandon = (IFP)value;
++        pblock->pb_plugin->plg_abandon = value;
+         break;
+     case SLAPI_PLUGIN_DB_CONFIG_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+@@ -2807,7 +2810,7 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         pblock->pb_plugin->plg_close = (IFP)value;
+         break;
+     case SLAPI_PLUGIN_CLEANUP_FN:
+-        pblock->pb_plugin->plg_cleanup = (IFP)value;
++        pblock->pb_plugin->plg_cleanup = value;
+         break;
+     case SLAPI_PLUGIN_START_FN:
+         pblock->pb_plugin->plg_start = (IFP)value;
+@@ -2816,22 +2819,22 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         pblock->pb_plugin->plg_poststart = (IFP)value;
+         break;
+     case SLAPI_PLUGIN_DB_WIRE_IMPORT_FN:
+-        pblock->pb_plugin->plg_wire_import = (IFP)value;
++        pblock->pb_plugin->plg_wire_import = value;
+         break;
+     case SLAPI_PLUGIN_DB_GET_INFO_FN:
+-        pblock->pb_plugin->plg_get_info = (IFP)value;
++        pblock->pb_plugin->plg_get_info = value;
+         break;
+     case SLAPI_PLUGIN_DB_SET_INFO_FN:
+-        pblock->pb_plugin->plg_set_info = (IFP)value;
++        pblock->pb_plugin->plg_set_info = value;
+         break;
+     case SLAPI_PLUGIN_DB_CTRL_INFO_FN:
+-        pblock->pb_plugin->plg_ctrl_info = (IFP)value;
++        pblock->pb_plugin->plg_ctrl_info = value;
+         break;
+     case SLAPI_PLUGIN_DB_SEQ_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_seq = (IFP)value;
++        pblock->pb_plugin->plg_seq = value;
+         break;
+     case SLAPI_PLUGIN_DB_ENTRY_FN:
+         pblock->pb_plugin->plg_entry = (IFP)value;
+@@ -2852,49 +2855,49 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_ldif2db = (IFP)value;
++        pblock->pb_plugin->plg_ldif2db = value;
+         break;
+     case SLAPI_PLUGIN_DB_DB2LDIF_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_db2ldif = (IFP)value;
++        pblock->pb_plugin->plg_db2ldif = value;
+         break;
+     case SLAPI_PLUGIN_DB_DB2INDEX_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_db2index = (IFP)value;
++        pblock->pb_plugin->plg_db2index = value;
+         break;
+     case SLAPI_PLUGIN_DB_ARCHIVE2DB_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_archive2db = (IFP)value;
++        pblock->pb_plugin->plg_archive2db = value;
+         break;
+     case SLAPI_PLUGIN_DB_DB2ARCHIVE_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_db2archive = (IFP)value;
++        pblock->pb_plugin->plg_db2archive = value;
+         break;
+     case SLAPI_PLUGIN_DB_UPGRADEDB_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_upgradedb = (IFP)value;
++        pblock->pb_plugin->plg_upgradedb = value;
+         break;
+     case SLAPI_PLUGIN_DB_UPGRADEDNFORMAT_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_upgradednformat = (IFP)value;
++        pblock->pb_plugin->plg_upgradednformat = value;
+         break;
+     case SLAPI_PLUGIN_DB_DBVERIFY_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_dbverify = (IFP)value;
++        pblock->pb_plugin->plg_dbverify = value;
+         break;
+     case SLAPI_PLUGIN_DB_BEGIN_FN:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+@@ -2934,7 +2937,7 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_DATABASE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_dbcompact = (IFP)value;
++        pblock->pb_plugin->plg_dbcompact = value;
+         break;
+ 
+     /* extendedop plugin functions */
+@@ -2943,7 +2946,7 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+             pblock->pb_plugin->plg_type != SLAPI_PLUGIN_BETXNEXTENDEDOP) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_exhandler = (IFP)value;
++        pblock->pb_plugin->plg_exhandler = value;
+         break;
+     case SLAPI_PLUGIN_EXT_OP_OIDLIST:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_EXTENDEDOP &&
+@@ -2965,7 +2968,7 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+             pblock->pb_plugin->plg_type != SLAPI_PLUGIN_BETXNEXTENDEDOP) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_be_exhandler = (IFP)value;
++        pblock->pb_plugin->plg_be_exhandler = value;
+         break;
+ 
+     /* preoperation plugin functions */
+@@ -3331,31 +3334,31 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_filter_ava = (IFP)value;
++        pblock->pb_plugin->plg_syntax_filter_ava = value;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_FILTER_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_filter_sub = (IFP)value;
++        pblock->pb_plugin->plg_syntax_filter_sub = value;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_VALUES2KEYS:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_values2keys = (IFP)value;
++        pblock->pb_plugin->plg_syntax_values2keys = value;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_ASSERTION2KEYS_AVA:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_assertion2keys_ava = (IFP)value;
++        pblock->pb_plugin->plg_syntax_assertion2keys_ava = value;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_ASSERTION2KEYS_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_assertion2keys_sub = (IFP)value;
++        pblock->pb_plugin->plg_syntax_assertion2keys_sub = value;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_NAMES:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+@@ -3391,13 +3394,13 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_validate = (IFP)value;
++        pblock->pb_plugin->plg_syntax_validate = value;
+         break;
+     case SLAPI_PLUGIN_SYNTAX_NORMALIZE:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_SYNTAX) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_syntax_normalize = (VFPV)value;
++        pblock->pb_plugin->plg_syntax_normalize = value;
+         break;
+     case SLAPI_ENTRY_PRE_OP:
+         _pblock_assert_pb_intop(pblock);
+@@ -3723,11 +3726,11 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+     /* matching rule plugin functions */
+     case SLAPI_PLUGIN_MR_FILTER_CREATE_FN:
+         SLAPI_PLUGIN_TYPE_CHECK(pblock, SLAPI_PLUGIN_MATCHINGRULE);
+-        pblock->pb_plugin->plg_mr_filter_create = (IFP)value;
++        pblock->pb_plugin->plg_mr_filter_create = value;
+         break;
+     case SLAPI_PLUGIN_MR_INDEXER_CREATE_FN:
+         SLAPI_PLUGIN_TYPE_CHECK(pblock, SLAPI_PLUGIN_MATCHINGRULE);
+-        pblock->pb_plugin->plg_mr_indexer_create = (IFP)value;
++        pblock->pb_plugin->plg_mr_indexer_create = value;
+         break;
+     case SLAPI_PLUGIN_MR_FILTER_MATCH_FN:
+         _pblock_assert_pb_mr(pblock);
+@@ -3789,31 +3792,31 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_filter_ava = (IFP)value;
++        pblock->pb_plugin->plg_mr_filter_ava = value;
+         break;
+     case SLAPI_PLUGIN_MR_FILTER_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_filter_sub = (IFP)value;
++        pblock->pb_plugin->plg_mr_filter_sub = value;
+         break;
+     case SLAPI_PLUGIN_MR_VALUES2KEYS:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_values2keys = (IFP)value;
++        pblock->pb_plugin->plg_mr_values2keys = value;
+         break;
+     case SLAPI_PLUGIN_MR_ASSERTION2KEYS_AVA:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_assertion2keys_ava = (IFP)value;
++        pblock->pb_plugin->plg_mr_assertion2keys_ava = value;
+         break;
+     case SLAPI_PLUGIN_MR_ASSERTION2KEYS_SUB:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_assertion2keys_sub = (IFP)value;
++        pblock->pb_plugin->plg_mr_assertion2keys_sub = value;
+         break;
+     case SLAPI_PLUGIN_MR_FLAGS:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+@@ -3832,13 +3835,13 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_compare = (IFP)value;
++        pblock->pb_plugin->plg_mr_compare = value;
+         break;
+     case SLAPI_PLUGIN_MR_NORMALIZE:
+         if (pblock->pb_plugin->plg_type != SLAPI_PLUGIN_MATCHINGRULE) {
+             return (-1);
+         }
+-        pblock->pb_plugin->plg_mr_normalize = (VFPV)value;
++        pblock->pb_plugin->plg_mr_normalize = value;
+         break;
+ 
+     /* seq arguments */
+@@ -3957,7 +3960,7 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         break;
+     case SLAPI_TXN_RUV_MODS_FN:
+         _pblock_assert_pb_intop(pblock);
+-        pblock->pb_intop->pb_txn_ruv_mods_fn = (IFP)value;
++        pblock->pb_intop->pb_txn_ruv_mods_fn = value;
+         break;
+ 
+     /* Search results set */
+@@ -4027,23 +4030,23 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+         break;
+ 
+     case SLAPI_PLUGIN_ACL_SYNTAX_CHECK:
+-        pblock->pb_plugin->plg_acl_syntax_check = (IFP)value;
++        pblock->pb_plugin->plg_acl_syntax_check = value;
+         break;
+     case SLAPI_PLUGIN_ACL_ALLOW_ACCESS:
+-        pblock->pb_plugin->plg_acl_access_allowed = (IFP)value;
++        pblock->pb_plugin->plg_acl_access_allowed = value;
+         break;
+     case SLAPI_PLUGIN_ACL_MODS_ALLOWED:
+-        pblock->pb_plugin->plg_acl_mods_allowed = (IFP)value;
++        pblock->pb_plugin->plg_acl_mods_allowed = value;
+         break;
+     case SLAPI_PLUGIN_ACL_MODS_UPDATE:
+-        pblock->pb_plugin->plg_acl_mods_update = (IFP)value;
++        pblock->pb_plugin->plg_acl_mods_update = value;
+         break;
+     /* MMR Plugin */
+     case SLAPI_PLUGIN_MMR_BETXN_PREOP:
+-	pblock->pb_plugin->plg_mmr_betxn_preop = (IFP) value;
++	pblock->pb_plugin->plg_mmr_betxn_preop = value;
+ 	break;
+     case SLAPI_PLUGIN_MMR_BETXN_POSTOP:
+-	pblock->pb_plugin->plg_mmr_betxn_postop = (IFP) value;
++	pblock->pb_plugin->plg_mmr_betxn_postop = value;
+ 	break;
+ 
+     case SLAPI_CLIENT_DNS:
+@@ -4106,11 +4109,11 @@ slapi_pblock_set(Slapi_PBlock *pblock, int arg, void *value)
+ 
+     /* entry fetch store */
+     case SLAPI_PLUGIN_ENTRY_FETCH_FUNC:
+-        pblock->pb_plugin->plg_entryfetchfunc = (IFP)value;
++        pblock->pb_plugin->plg_entryfetchfunc = value;
+         break;
+ 
+     case SLAPI_PLUGIN_ENTRY_STORE_FUNC:
+-        pblock->pb_plugin->plg_entrystorefunc = (IFP)value;
++        pblock->pb_plugin->plg_entrystorefunc = value;
+         break;
+ 
+     case SLAPI_PLUGIN_ENABLED:
+diff --git a/ldap/servers/slapd/pblock_v3.h b/ldap/servers/slapd/pblock_v3.h
+index ef15ee457..82dcb8ebf 100644
+--- a/ldap/servers/slapd/pblock_v3.h
++++ b/ldap/servers/slapd/pblock_v3.h
+@@ -117,7 +117,7 @@ typedef struct _slapi_pblock_intop
+     void *op_stack_elem;
+ 
+     void *pb_txn;           /* transaction ID */
+-    IFP pb_txn_ruv_mods_fn; /* Function to fetch RUV mods for txn */
++    int32_t (*pb_txn_ruv_mods_fn)(Slapi_PBlock *, char **, Slapi_Mods **); /* Function to fetch RUV mods for txn */
+     passwdPolicy *pwdpolicy;
+     LDAPControl **pb_ctrls_arg;      /* allows to pass controls as arguments before
+                                    operation object is created  */
+diff --git a/ldap/servers/slapd/plugin.c b/ldap/servers/slapd/plugin.c
+index 1528d5593..52d25e19e 100644
+--- a/ldap/servers/slapd/plugin.c
++++ b/ldap/servers/slapd/plugin.c
+@@ -663,7 +663,7 @@ slapi_send_ldap_intermediate(Slapi_PBlock *pb, LDAPControl **ectrls, char *respo
+ int
+ slapi_send_ldap_search_entry(Slapi_PBlock *pb, Slapi_Entry *e, LDAPControl **ectrls, char **attrs, int attrsonly)
+ {
+-    IFP fn = NULL;
++    int32_t (*fn)(Slapi_PBlock *, Slapi_Entry *, LDAPControl **, char **, int32_t) = NULL;
+     slapi_pblock_get(pb, SLAPI_PLUGIN_DB_ENTRY_FN, (void *)&fn);
+     if (NULL == fn) {
+         return -1;
+@@ -698,7 +698,7 @@ slapi_send_ldap_result_from_pb(Slapi_PBlock *pb)
+     int err;
+     char *matched;
+     char *text;
+-    IFP fn = NULL;
++    int32_t (*fn)(Slapi_PBlock*, int32_t, char*, char*, int32_t, struct berval **) = NULL;
+ 
+     slapi_pblock_get(pb, SLAPI_RESULT_CODE, &err);
+     slapi_pblock_get(pb, SLAPI_RESULT_TEXT, &text);
+@@ -713,7 +713,7 @@ slapi_send_ldap_result_from_pb(Slapi_PBlock *pb)
+ void
+ slapi_send_ldap_result(Slapi_PBlock *pb, int err, char *matched, char *text, int nentries, struct berval **urls)
+ {
+-    IFP fn = NULL;
++    int32_t (*fn)(Slapi_PBlock*, int32_t, char*, char*, int32_t, struct berval **) = NULL;
+     Slapi_Operation *operation;
+     long op_type;
+ 
+@@ -751,7 +751,7 @@ slapi_send_ldap_result(Slapi_PBlock *pb, int err, char *matched, char *text, int
+ int
+ slapi_send_ldap_referral(Slapi_PBlock *pb, Slapi_Entry *e, struct berval **refs, struct berval ***urls)
+ {
+-    IFP fn = NULL;
++    int32_t (*fn)(Slapi_PBlock*, Slapi_Entry*, struct berval **, struct berval ***) = NULL;
+     slapi_pblock_get(pb, SLAPI_PLUGIN_DB_REFERRAL_FN, (void *)&fn);
+     if (NULL == fn) {
+         return -1;
+@@ -1964,7 +1964,7 @@ plugin_call_func(struct slapdplugin *list, int operation, Slapi_PBlock *pb, int
+     int count = 0;
+ 
+     for (; list != NULL; list = list->plg_next) {
+-        IFP func = NULL;
++        int32_t (*func)(Slapi_PBlock *) = NULL;
+ 
+         slapi_pblock_set(pb, SLAPI_PLUGIN, list);
+         set_db_default_result_handlers(pb); /* JCM: What's this do? Is it needed here? */
+diff --git a/ldap/servers/slapd/plugin_mmr.c b/ldap/servers/slapd/plugin_mmr.c
+index f58120543..845e8f0ad 100644
+--- a/ldap/servers/slapd/plugin_mmr.c
++++ b/ldap/servers/slapd/plugin_mmr.c
+@@ -1,10 +1,10 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2005-2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+- * See LICENSE for details. 
++ * See LICENSE for details.
+  * END COPYRIGHT BLOCK **/
+ 
+ #ifdef HAVE_CONFIG_H
+@@ -19,11 +19,11 @@
+ #include "slap.h"
+ 
+ int
+-plugin_call_mmr_plugin_preop ( Slapi_PBlock *pb, Slapi_Entry *e, int flags)
++plugin_call_mmr_plugin_preop(Slapi_PBlock *pb, Slapi_Entry *e, int flags)
+ {
+-	struct slapdplugin	*p;
+-	int			rc = LDAP_INSUFFICIENT_ACCESS;
+-	Operation	*operation;
++	struct slapdplugin *p;
++	int rc = LDAP_INSUFFICIENT_ACCESS;
++	Operation *operation;
+ 
+ 	slapi_pblock_get (pb, SLAPI_OPERATION, &operation);
+ 
+@@ -45,11 +45,11 @@ plugin_call_mmr_plugin_preop ( Slapi_PBlock *pb, Slapi_Entry *e, int flags)
+ }
+ 
+ int
+-plugin_call_mmr_plugin_postop ( Slapi_PBlock *pb, Slapi_Entry *e, int flags)
++plugin_call_mmr_plugin_postop(Slapi_PBlock *pb, Slapi_Entry *e, int flags)
+ {
+-	struct slapdplugin	*p;
+-	int			rc = LDAP_INSUFFICIENT_ACCESS;
+-	Operation	*operation;
++	struct slapdplugin *p;
++	int rc = LDAP_INSUFFICIENT_ACCESS;
++	Operation *operation;
+ 
+ 	slapi_pblock_get (pb, SLAPI_OPERATION, &operation);
+ 
+diff --git a/ldap/servers/slapd/plugin_mr.c b/ldap/servers/slapd/plugin_mr.c
+index 67051a5ff..757355dbc 100644
+--- a/ldap/servers/slapd/plugin_mr.c
++++ b/ldap/servers/slapd/plugin_mr.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2005-2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -35,7 +35,7 @@ struct mr_private
+     const struct berval *value;   /* orig value from filter */
+     int ftype;                    /* filter type */
+     int op;                       /* query op type */
+-    IFP match_fn;                 /* match func to use */
++    int32_t (*match_fn)(Slapi_PBlock *, const struct berval *, Slapi_Value **, int32_t, Slapi_Value **); /* match func to use */
+     /* note - substring matching rules not currently supported */
+     char *initial;                  /* these are for substring matches */
+     char *any[2];                   /* at most one value for extensible filter */
+@@ -225,7 +225,7 @@ int /* an LDAP error code, hopefully LDAP_SUCCESS */
+     int rc;
+     char *oid;
+     if (!(rc = slapi_pblock_get(opb, SLAPI_PLUGIN_MR_OID, &oid))) {
+-        IFP createFn = NULL;
++        int32_t (*createFn)(Slapi_PBlock *) = NULL;
+         struct slapdplugin *mrp = plugin_mr_find_registered(oid);
+         if (mrp != NULL) {
+             /* Great the matching OID -> MR plugin was already found, just reuse it */
+@@ -251,7 +251,6 @@ int /* an LDAP error code, hopefully LDAP_SUCCESS */
+             rc = LDAP_UNAVAILABLE_CRITICAL_EXTENSION;
+ 
+             for (mrp = get_plugin_list(PLUGIN_LIST_MATCHINGRULE); mrp != NULL; mrp = mrp->plg_next) {
+-
+                 Slapi_PBlock *pb = slapi_pblock_new();
+                 mr_indexer_init_pb(opb, pb);
+                 slapi_pblock_set(pb, SLAPI_PLUGIN, mrp);
+@@ -263,8 +262,8 @@ int /* an LDAP error code, hopefully LDAP_SUCCESS */
+                 }
+ 
+                 if (createFn && !createFn(pb)) {
+-                    IFP indexFn = NULL;
+-                    IFP indexSvFn = NULL;
++                    int32_t (*indexFn)(void) = NULL;
++                    int32_t (*indexSvFn)(void) = NULL;
+                     /* These however, are in the pblock direct, so we need to copy them. */
+                     slapi_pblock_get(pb, SLAPI_PLUGIN_MR_INDEX_FN, &indexFn);
+                     slapi_pblock_get(pb, SLAPI_PLUGIN_MR_INDEX_SV_FN, &indexSvFn);
+@@ -624,7 +623,7 @@ static int
+ attempt_mr_filter_create(mr_filter_t *f, struct slapdplugin *mrp, Slapi_PBlock *pb)
+ {
+     int rc;
+-    IFP mrf_create = NULL;
++    int32_t  (*mrf_create)(Slapi_PBlock *) = NULL;
+     f->mrf_match = NULL;
+     slapi_pblock_init(pb);
+     if (!(rc = slapi_pblock_set(pb, SLAPI_PLUGIN, mrp)) &&
+diff --git a/ldap/servers/slapd/plugin_syntax.c b/ldap/servers/slapd/plugin_syntax.c
+index f8a133f96..68f7bcb4b 100644
+--- a/ldap/servers/slapd/plugin_syntax.c
++++ b/ldap/servers/slapd/plugin_syntax.c
+@@ -1,6 +1,6 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
++ * Copyright (C) 2005-2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * License: GPL (version 3 or any later version).
+@@ -95,7 +95,7 @@ plugin_call_syntax_filter_ava_sv(
+     int useDeletedValues)
+ {
+     int rc;
+-    IFP ava_fn = NULL;
++    int32_t (*ava_fn)(Slapi_PBlock *, const struct berval *, Slapi_Value **, int32_t, Slapi_Value **) = NULL;
+ 
+     slapi_log_err(SLAPI_LOG_FILTER,
+                   "plugin_call_syntax_filter_ava_sv", "=> %s=%s\n", ava->ava_type,
+@@ -207,7 +207,7 @@ plugin_call_syntax_filter_sub_sv(
+     struct subfilt *fsub)
+ {
+     int rc;
+-    IFP sub_fn = NULL;
++    int32_t (*sub_fn)(Slapi_PBlock *, char *, char **, char*, Slapi_Value **) = NULL;
+     int filter_normalized = 0;
+ 
+     slapi_log_err(SLAPI_LOG_FILTER,
+@@ -396,7 +396,7 @@ slapi_entry_syntax_check(
+                 /* iterate through each value to check if it's valid */
+                 while (val != NULL) {
+                     bval = slapi_value_get_berval(val);
+-                    if ((a->a_plugin->plg_syntax_validate(bval)) != 0) {
++                    if ((a->a_plugin->plg_syntax_validate((struct berval *)bval)) != 0) {
+                         if (syntaxlogging) {
+                             slapi_log_err(SLAPI_LOG_ERR, "slapi_entry_syntax_check",
+                                           "\"%s\": (%s) value #%d invalid per syntax\n",
+@@ -586,7 +586,7 @@ slapi_attr_values2keys_sv_pb(
+ {
+     int rc;
+     struct slapdplugin *pi = NULL;
+-    IFP v2k_fn = NULL;
++    int32_t (*v2k_fn)(Slapi_PBlock*, Slapi_Value**, Slapi_Value***, int32_t) = NULL;
+ 
+     if ((sattr->a_plugin == NULL)) {
+         /* could be lazy plugin initialization, get it now */
+@@ -748,7 +748,7 @@ slapi_attr_assertion2keys_ava_sv(
+ {
+     int rc;
+     struct slapdplugin *pi = NULL;
+-    IFP a2k_fn = NULL;
++    int32_t (*a2k_fn)(Slapi_PBlock *, Slapi_Value *, Slapi_Value ***, int32_t) = NULL;
+ 
+     slapi_log_err(SLAPI_LOG_FILTER,
+                   "slapi_attr_assertion2keys_ava_sv", "=>\n");
+@@ -880,7 +880,7 @@ slapi_attr_assertion2keys_sub_sv_pb(
+     Slapi_PBlock *work_pb = NULL;
+     struct slapdplugin *pi = NULL;
+     struct slapdplugin *origpi = NULL;
+-    IFP a2k_fn = NULL;
++    int32_t (*a2k_fn)(Slapi_PBlock *, char *, char **, char *, Slapi_Value ***) = NULL;
+ 
+     slapi_log_err(SLAPI_LOG_FILTER,
+                   "slapi_attr_assertion2keys_sub_sv_pb", "=>\n");
+@@ -951,7 +951,7 @@ slapi_attr_value_normalize_ext(
+     unsigned long filter_type)
+ {
+     Slapi_Attr myattr = {0};
+-    VFPV norm_fn = NULL;
++    void (*norm_fn)(Slapi_PBlock *, char *, int32_t, char **) = NULL;
+ 
+     if (!sattr) {
+         sattr = slapi_attr_init(&myattr, type);
+diff --git a/ldap/servers/slapd/pw.c b/ldap/servers/slapd/pw.c
+index 65e491590..cda1c404f 100644
+--- a/ldap/servers/slapd/pw.c
++++ b/ldap/servers/slapd/pw.c
+@@ -3243,7 +3243,7 @@ slapi_pw_set_entry_ext(Slapi_Entry *entry, Slapi_Value **vals, int flags)
+ }
+ 
+ int
+-pw_copy_entry_ext(Slapi_Entry *src_e, Slapi_Entry *dest_e)
++pw_copy_entry_ext(const Slapi_Entry *src_e, Slapi_Entry *dest_e)
+ {
+     struct slapi_pw_entry_ext *src_extp = NULL;
+     struct slapi_pw_entry_ext *dest_extp = NULL;
+@@ -3254,7 +3254,7 @@ pw_copy_entry_ext(Slapi_Entry *src_e, Slapi_Entry *dest_e)
+ 
+     src_extp = (struct slapi_pw_entry_ext *)slapi_get_object_extension(
+         pw_entry_objtype,
+-        src_e,
++        (void *)src_e,
+         pw_entry_handle);
+     if (NULL == src_extp) {
+         return LDAP_NO_SUCH_ATTRIBUTE;
+diff --git a/ldap/servers/slapd/slap.h b/ldap/servers/slapd/slap.h
+index f2395cfa2..fee5a6ab5 100644
+--- a/ldap/servers/slapd/slap.h
++++ b/ldap/servers/slapd/slap.h
+@@ -1,7 +1,7 @@
+ /** BEGIN COPYRIGHT BLOCK
+  * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2009 Red Hat, Inc.
+  * Copyright (C) 2009 Hewlett-Packard Development Company, L.P.
++ * Copyright (C) 2009-2025 Red Hat, Inc.
+  * All rights reserved.
+  *
+  * Contributors:
+@@ -870,10 +870,10 @@ struct slapi_entry
+ struct attrs_in_extension
+ {
+     char *ext_type;
+-    IFP ext_get;
+-    IFP ext_set;
+-    IFP ext_copy;
+-    IFP ext_get_size;
++    int32_t (*ext_get)(Slapi_Entry *, Slapi_Value ***);
++    int32_t (*ext_set)(Slapi_Entry *, Slapi_Value **, int32_t);
++    int32_t (*ext_copy)(const Slapi_Entry *, Slapi_Entry *);
++    int32_t (*ext_get_size)(Slapi_Entry *, size_t *);
+ };
+ 
+ extern struct attrs_in_extension attrs_in_extension[];
+@@ -1045,7 +1045,7 @@ struct slapdplugin
+     int plg_precedence;                     /* for plugin execution ordering */
+     struct slapdplugin *plg_group;          /* pointer to the group to which this plugin belongs */
+     struct pluginconfig plg_conf;           /* plugin configuration parameters */
+-    IFP plg_cleanup;                        /* cleanup function */
++    int32_t (*plg_cleanup)(Slapi_PBlock *); /* cleanup function */
+     IFP plg_start;                          /* start function */
+     IFP plg_poststart;                      /* poststart function */
+     int plg_closed;                         /* mark plugin as closed */
+@@ -1055,47 +1055,47 @@ struct slapdplugin
+     Slapi_Counter *plg_op_counter;          /* operation counter, used for shutdown */
+ 
+     /* NOTE: These LDIF2DB and DB2LDIF fn pointers are internal only for now.
+-   I don't believe you can get these functions from a plug-in and
+-   then call them without knowing what IFP or VFP0 are.  (These aren't
+-   declared in slapi-plugin.h.)  More importantly, it's a pretty ugly
+-   way to get to these functions. (Do we want people to get locked into
+-   this?)
+-
+-   The correct way to do this would be to expose these functions as
+-   front-end API functions. We can fix this for the next release.
+-   (No one has the time right now.)
+- */
++     * I don't believe you can get these functions from a plug-in and
++     * then call them without knowing what IFP or VFP0 are.  (These aren't
++     * declared in slapi-plugin.h.)  More importantly, it's a pretty ugly
++     * way to get to these functions. (Do we want people to get locked into
++     * this?)
++     *
++     * The correct way to do this would be to expose these functions as
++     * front-end API functions. We can fix this for the next release.
++     * (No one has the time right now.)
++     */
+     union
+     { /* backend database plugin structure */
+         struct plg_un_database_backend
+         {
+-            IFP plg_un_db_bind;              /* bind */
+-            IFP plg_un_db_unbind;            /* unbind */
+-            IFP plg_un_db_search;            /* search */
+-            IFP plg_un_db_next_search_entry; /* iterate */
++            int32_t (*plg_un_db_bind)(Slapi_PBlock *);                  /* bind */
++            int32_t (*plg_un_db_unbind)(Slapi_PBlock *);                /* undbind */
++            int32_t (*plg_un_db_search)(Slapi_PBlock *);                /* search */
++            int32_t (*plg_un_db_next_search_entry)(Slapi_PBlock *);     /* iterate */
+             IFP plg_un_db_next_search_entry_ext;
+-            VFPP plg_un_db_search_results_release; /* PAGED RESULTS */
+-            VFP plg_un_db_prev_search_results;     /* PAGED RESULTS */
+-            IFP plg_un_db_entry_release;
+-            IFP plg_un_db_compare;              /* compare */
+-            IFP plg_un_db_modify;               /* modify */
+-            IFP plg_un_db_modrdn;               /* modrdn */
+-            IFP plg_un_db_add;                  /* add */
+-            IFP plg_un_db_delete;               /* delete */
+-            IFP plg_un_db_abandon;              /* abandon */
+-            IFP plg_un_db_config;               /* config */
+-            IFP plg_un_db_seq;                  /* sequence */
+-            IFP plg_un_db_entry;                /* entry send */
+-            IFP plg_un_db_referral;             /* referral send */
+-            IFP plg_un_db_result;               /* result send */
+-            IFP plg_un_db_ldif2db;              /* ldif 2 database */
+-            IFP plg_un_db_db2ldif;              /* database 2 ldif */
+-            IFP plg_un_db_db2index;             /* database 2 index */
+-            IFP plg_un_db_dbcompact;            /* compact database */
+-            IFP plg_un_db_archive2db;           /* ldif 2 database */
+-            IFP plg_un_db_db2archive;           /* database 2 ldif */
+-            IFP plg_un_db_upgradedb;            /* convert old idl to new */
+-            IFP plg_un_db_upgradednformat;      /* convert old dn format to new */
++            VFPP plg_un_db_search_results_release;                      /* Paged results */
++            VFP plg_un_db_prev_search_results;                          /* Paged results */
++            int32_t (*plg_un_db_entry_release)(Slapi_PBlock *, void *); /* Releas entry from cache */
++            int32_t (*plg_un_db_compare)(Slapi_PBlock *);               /* compare */
++            int32_t (*plg_un_db_modify)(Slapi_PBlock *);                /* modify */
++            int32_t (*plg_un_db_modrdn)(Slapi_PBlock *);                /* modrdn */
++            int32_t (*plg_un_db_add)(Slapi_PBlock *);                   /* add */
++            int32_t (*plg_un_db_delete)(Slapi_PBlock *);                /* delete */
++            int32_t (*plg_un_db_abandon)(Slapi_PBlock *);               /* abandon */
++            IFP plg_un_db_config;                                       /* config */
++            int32_t (*plg_un_db_seq)(Slapi_PBlock *);                   /* sequence */
++            IFP plg_un_db_entry;                                        /* entry send */
++            IFP plg_un_db_referral;                                     /* referral send */
++            IFP plg_un_db_result;
++            int32_t (*plg_un_db_ldif2db)(Slapi_PBlock *);               /* ldif 2 database */
++            int32_t (*plg_un_db_db2ldif)(Slapi_PBlock *);               /* database 2 ldif */
++            int32_t (*plg_un_db_db2index)(Slapi_PBlock *);              /* database 2 index */
++            int32_t (*plg_un_db_dbcompact)(Slapi_Backend *, bool);      /* compact database */
++            int32_t (*plg_un_db_archive2db)(Slapi_PBlock *);            /* ldif 2 database */
++            int32_t (*plg_un_db_db2archive)(Slapi_PBlock *);            /* database 2 ldif */
++            int32_t (*plg_un_db_upgradedb)(Slapi_PBlock *);             /* convert old idl to new */
++            int32_t (*plg_un_db_upgradednformat)(Slapi_PBlock *);       /* convert old dn format to new */
+             IFP plg_un_db_begin;                /* dbase txn begin */
+             IFP plg_un_db_commit;               /* dbase txn commit */
+             IFP plg_un_db_abort;                /* dbase txn abort */
+@@ -1105,12 +1105,12 @@ struct slapdplugin
+             IFP plg_un_db_register_dn_callback; /* Register a function to call when a operation is applied to a given DN */
+             IFP plg_un_db_register_oc_callback; /* Register a function to call when a operation is applied to a given ObjectClass */
+             IFP plg_un_db_init_instance;        /* initializes new db instance */
+-            IFP plg_un_db_wire_import;          /* fast replica update */
+-            IFP plg_un_db_verify;               /* verify db files */
+-            IFP plg_un_db_add_schema;           /* add schema */
+-            IFP plg_un_db_get_info;             /* get info */
+-            IFP plg_un_db_set_info;             /* set info */
+-            IFP plg_un_db_ctrl_info;            /* ctrl info */
++            int32_t (*plg_un_db_wire_import)(Slapi_PBlock *); /* fast replica update */
++            int32_t (*plg_un_db_verify)(Slapi_PBlock *);      /* verify db files */
++            IFP plg_un_db_add_schema;                         /* add schema */
++            int32_t (*plg_un_db_get_info)(Slapi_Backend *, int32_t, void **);  /* get info */
++            int32_t (*plg_un_db_set_info)(Slapi_Backend *, int32_t, void **);  /* set info */
++            int32_t (*plg_un_db_ctrl_info)(Slapi_Backend *, int32_t, void **); /* ctrl info */
+         } plg_un_db;
+ #define plg_bind plg_un.plg_un_db.plg_un_db_bind
+ #define plg_unbind plg_un.plg_un_db.plg_un_db_unbind
+@@ -1155,10 +1155,10 @@ struct slapdplugin
+         {
+             char **plg_un_pe_exoids;      /* exop oids */
+             char **plg_un_pe_exnames;     /* exop names (may be NULL) */
+-            IFP plg_un_pe_exhandler;      /* handler */
++            int32_t (*plg_un_pe_exhandler)(Slapi_PBlock *); /* handler */
+             IFP plg_un_pe_pre_exhandler;  /* pre extop */
+             IFP plg_un_pe_post_exhandler; /* post extop */
+-            IFP plg_un_pe_be_exhandler;   /* handler to retrieve the be name for the operation */
++            int32_t (*plg_un_pe_be_exhandler)(Slapi_PBlock *, Slapi_Backend **); /* handler to retrieve the be name for the operation */
+         } plg_un_pe;
+ #define plg_exoids plg_un.plg_un_pe.plg_un_pe_exoids
+ #define plg_exnames plg_un.plg_un_pe.plg_un_pe_exnames
+@@ -1294,20 +1294,20 @@ struct slapdplugin
+         /* matching rule plugin structure */
+         struct plg_un_matching_rule
+         {
+-            IFP plg_un_mr_filter_create;  /* factory function */
+-            IFP plg_un_mr_indexer_create; /* factory function */
++            int32_t (*plg_un_mr_filter_create)(Slapi_PBlock *);  /* factory function */
++            int32_t (*plg_un_mr_indexer_create)(Slapi_PBlock *);  /* factory function */
+             /* new style syntax plugin functions */
+             /* not all functions will apply to all matching rule types */
+             /* e.g. a SUBSTR rule will not have a filter_ava func */
+-            IFP plg_un_mr_filter_ava;
+-            IFP plg_un_mr_filter_sub;
+-            IFP plg_un_mr_values2keys;
+-            IFP plg_un_mr_assertion2keys_ava;
+-            IFP plg_un_mr_assertion2keys_sub;
++            int32_t (*plg_un_mr_filter_ava)(Slapi_PBlock *, const struct berval *, Slapi_Value **, int32_t, Slapi_Value **);
++            int32_t (*plg_un_mr_filter_sub)(Slapi_PBlock *, char *, char **, char*, Slapi_Value **);
++            int32_t (*plg_un_mr_values2keys)(Slapi_PBlock *, Slapi_Value **, Slapi_Value ***, int32_t);
++            int32_t (*plg_un_mr_assertion2keys_ava)(Slapi_PBlock *, Slapi_Value *, Slapi_Value ***, int32_t);
++            int32_t (*plg_un_mr_assertion2keys_sub)(Slapi_PBlock *, char *, char **, char *, Slapi_Value ***);
+             int plg_un_mr_flags;
+             char **plg_un_mr_names;
+-            IFP plg_un_mr_compare; /* only for ORDERING */
+-            VFPV plg_un_mr_normalize;
++            int32_t (*plg_un_mr_compare)(struct berval *, struct berval *); /* only for ORDERING */
++            void (*plg_un_mr_normalize)(Slapi_PBlock *, char *, int32_t,  char **);
+         } plg_un_mr;
+ #define plg_mr_filter_create plg_un.plg_un_mr.plg_un_mr_filter_create
+ #define plg_mr_indexer_create plg_un.plg_un_mr.plg_un_mr_indexer_create
+@@ -1324,25 +1324,25 @@ struct slapdplugin
+         /* syntax plugin structure */
+         struct plg_un_syntax_struct
+         {
+-            IFP plg_un_syntax_filter_ava;
++            int32_t (*plg_un_syntax_filter_ava)(Slapi_PBlock *, const struct berval *, Slapi_Value **, int32_t, Slapi_Value **);
+             IFP plg_un_syntax_filter_ava_sv;
+-            IFP plg_un_syntax_filter_sub;
++            int32_t (*plg_un_syntax_filter_sub)(Slapi_PBlock*, char *, char **, char *, Slapi_Value**);
+             IFP plg_un_syntax_filter_sub_sv;
+-            IFP plg_un_syntax_values2keys;
++            int32_t (*plg_un_syntax_values2keys)(Slapi_PBlock*, Slapi_Value**, Slapi_Value***, int32_t);
+             IFP plg_un_syntax_values2keys_sv;
+-            IFP plg_un_syntax_assertion2keys_ava;
+-            IFP plg_un_syntax_assertion2keys_sub;
++            int32_t (*plg_un_syntax_assertion2keys_ava)(Slapi_PBlock*, Slapi_Value*, Slapi_Value***, int32_t);
++            int32_t (*plg_un_syntax_assertion2keys_sub)(Slapi_PBlock*, char*, char**, char*, Slapi_Value***);
+             int plg_un_syntax_flags;
+             /*
+-   from slapi-plugin.h
+-#define SLAPI_PLUGIN_SYNTAX_FLAG_ORKEYS        1
+-#define SLAPI_PLUGIN_SYNTAX_FLAG_ORDERING    2
+-*/
++             * from slapi-plugin.h
++#define SLAPI_PLUGIN_SYNTAX_FLAG_ORKEYS    1
++#define SLAPI_PLUGIN_SYNTAX_FLAG_ORDERING  2
++             */
+             char **plg_un_syntax_names;
+             char *plg_un_syntax_oid;
+             IFP plg_un_syntax_compare;
+-            IFP plg_un_syntax_validate;
+-            VFPV plg_un_syntax_normalize;
++            int32_t (*plg_un_syntax_validate)(struct berval *);
++            void (*plg_un_syntax_normalize)(Slapi_PBlock *, char *, int32_t,  char **);
+         } plg_un_syntax;
+ #define plg_syntax_filter_ava plg_un.plg_un_syntax.plg_un_syntax_filter_ava
+ #define plg_syntax_filter_sub plg_un.plg_un_syntax.plg_un_syntax_filter_sub
+@@ -1359,10 +1359,11 @@ struct slapdplugin
+         struct plg_un_acl_struct
+         {
+             IFP plg_un_acl_init;
+-            IFP plg_un_acl_syntax_check;
+-            IFP plg_un_acl_access_allowed;
+-            IFP plg_un_acl_mods_allowed;
+-            IFP plg_un_acl_mods_update;
++            int32_t (*plg_un_acl_syntax_check)(Slapi_PBlock *, Slapi_Entry *, char **);
++            int32_t (*plg_un_acl_access_allowed)(Slapi_PBlock *, Slapi_Entry*, char **, struct berval *, int32_t, int32_t, char **);
++            int32_t (*plg_un_acl_mods_allowed)(Slapi_PBlock *, Slapi_Entry *, LDAPMod **, void *);
++            int32_t (*plg_un_acl_mods_update)(Slapi_PBlock *, int32_t, Slapi_DN *, void *);
++
+         } plg_un_acl;
+ #define plg_acl_init plg_un.plg_un_acl.plg_un_acl_init
+ #define plg_acl_syntax_check plg_un.plg_un_acl.plg_un_acl_syntax_check
+@@ -1372,8 +1373,8 @@ struct slapdplugin
+ 
+         struct plg_un_mmr_struct
+         {
+-            IFP plg_un_mmr_betxn_preop;
+-            IFP plg_un_mmr_betxn_postop;
++            int32_t (*plg_un_mmr_betxn_preop)(Slapi_PBlock *, int32_t);
++            int32_t (*plg_un_mmr_betxn_postop)(Slapi_PBlock *, int32_t);
+         } plg_un_mmr;
+ #define plg_mmr_betxn_preop 		plg_un.plg_un_mmr.plg_un_mmr_betxn_preop
+ #define plg_mmr_betxn_postop 		plg_un.plg_un_mmr.plg_un_mmr_betxn_postop
+@@ -1394,8 +1395,8 @@ struct slapdplugin
+         /* entry fetch/store */
+         struct plg_un_entry_fetch_store_struct
+         {
+-            IFP plg_un_entry_fetch_func;
+-            IFP plg_un_entry_store_func;
++            int32_t (*plg_un_entry_fetch_func)(char **, uint32_t *);
++            int32_t (*plg_un_entry_store_func)(char **, uint32_t *);
+         } plg_un_entry_fetch_store;
+ #define plg_entryfetchfunc plg_un.plg_un_entry_fetch_store.plg_un_entry_fetch_func
+ #define plg_entrystorefunc plg_un.plg_un_entry_fetch_store.plg_un_entry_store_func
+diff --git a/ldap/servers/slapd/slapi-private.h b/ldap/servers/slapd/slapi-private.h
+index ec4b540c3..533c4e428 100644
+--- a/ldap/servers/slapd/slapi-private.h
++++ b/ldap/servers/slapd/slapi-private.h
+@@ -1409,7 +1409,7 @@ int slapi_add_internal_attr_syntax(const char *name, const char *oid, const char
+ 
+ /* pw.c */
+ void pw_exp_init(void);
+-int pw_copy_entry_ext(Slapi_Entry *src_e, Slapi_Entry *dest_e);
++int pw_copy_entry_ext(const Slapi_Entry *src_e, Slapi_Entry *dest_e);
+ int pw_get_ext_size(Slapi_Entry *e, size_t *size);
+ 
+ /* op_shared.c */
+diff --git a/ldap/servers/slapd/task.c b/ldap/servers/slapd/task.c
+index c14af83e0..d2a9a1b48 100644
+--- a/ldap/servers/slapd/task.c
++++ b/ldap/servers/slapd/task.c
+@@ -2036,7 +2036,7 @@ task_upgradedb_add(Slapi_PBlock *pb __attribute__((unused)),
+     int32_t task_flags = SLAPI_TASK_RUNNING_AS_TASK;
+     slapi_pblock_set(mypb, SLAPI_TASK_FLAGS, &task_flags);
+ 
+-    rv = (be->be_database->plg_upgradedb)(&mypb);
++    rv = (be->be_database->plg_upgradedb)(mypb);
+     if (rv == 0) {
+         slapi_entry_attr_set_charptr(e, TASK_LOG_NAME, "");
+         slapi_entry_attr_set_charptr(e, TASK_STATUS_NAME, "");
+-- 
+2.52.0
+

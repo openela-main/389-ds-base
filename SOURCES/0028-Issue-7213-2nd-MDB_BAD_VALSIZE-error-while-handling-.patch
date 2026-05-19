@@ -1,0 +1,32 @@
+From a7f8eb79dde03ac771de2335a2acb4aed48483a2 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 13 Feb 2026 16:27:25 +0100
+Subject: [PATCH] Issue 7213 - (2nd) MDB_BAD_VALSIZE error while handling VLV
+ (#7258)
+
+Decription:
+Disable test_vlv_long_attribute_value on BDB as it hangs sometimes in
+CI, blocking other pipelines.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7213
+
+Reviewed by: @progier389 (Thanks!)
+---
+ dirsrvtests/tests/suites/vlv/regression_test.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dirsrvtests/tests/suites/vlv/regression_test.py b/dirsrvtests/tests/suites/vlv/regression_test.py
+index 1cc03c303..94001af62 100644
+--- a/dirsrvtests/tests/suites/vlv/regression_test.py
++++ b/dirsrvtests/tests/suites/vlv/regression_test.py
+@@ -1178,6 +1178,7 @@ def test_vlv_with_mr(vlv_setup_with_uid_mr):
+ 
+ 
+ 
++@pytest.mark.skipif(get_default_db_lib() == "bdb", reason="Hangs on BDB")
+ def test_vlv_long_attribute_value(topology_st, request):
+     """
+     Test VLV with an entry containing a very long attribute value (2K).
+-- 
+2.52.0
+

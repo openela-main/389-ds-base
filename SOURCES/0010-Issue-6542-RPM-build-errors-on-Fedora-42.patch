@@ -1,0 +1,43 @@
+From 70d323d4d9ca4d1d682ab4a273178946922c6929 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 24 Jan 2025 11:10:45 +0100
+Subject: [PATCH] Issue 6542 - RPM build errors on Fedora 42
+
+Bug Description:
+Fedora 42 has unified `/bin` and `/sbin`: https://fedoraproject.org/wiki/Changes/Unify_bin_and_sbin
+https://docs.fedoraproject.org/en-US/packaging-guidelines/#_merged_file_system_layout
+
+This change causes RPM build to fail with:
+```
+RPM build errors:
+    File not found: /builddir/build/BUILD/389-ds-base-3.1.2-build/BUILDROOT/usr/bin/openldap_to_ds
+```
+
+Fix Description:
+Patch `setup.py.in` based on Fedora or RHEL version that support unified
+`/bin` and `/sbin`.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/6542
+
+Reviewed by: @mreynolds389, @droideck (Thanks!)
+---
+ rpm/389-ds-base.spec.in | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/rpm/389-ds-base.spec.in b/rpm/389-ds-base.spec.in
+index 258d94698..44a158ce5 100644
+--- a/rpm/389-ds-base.spec.in
++++ b/rpm/389-ds-base.spec.in
+@@ -522,6 +522,9 @@ autoreconf -fiv
+ 
+ %if 0%{?rhel} > 7 || 0%{?fedora}
+ # lib389
++%if 0%{?fedora} >= 42 || 0%{?rhel} >= 11
++  sed -i "/prefix/s@sbin@bin@g" src/lib389/setup.py.in
++%endif
+ make src/lib389/setup.py
+ pushd ./src/lib389
+ %py3_build
+-- 
+2.52.0
+

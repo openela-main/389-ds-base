@@ -1,0 +1,877 @@
+From 35237d57daf6fdf20a42c3cef27130ba70f0cdc2 Mon Sep 17 00:00:00 2001
+From: Akshay Adhikari <aadhikar@redhat.com>
+Date: Tue, 18 Nov 2025 21:57:10 +0530
+Subject: [PATCH] Issue 7076, 6992, 6784, 6214 - Fix CI test failures (#7077)
+
+- Fixed import test bugs in regression_test.py (cleanup handler, LDIF permissions) -
+  https://github.com/389ds/389-ds-base/issues/6992
+- Fixed ModRDN cache corruption on failed operations (parent update check, cache cleanup)
+- Fixed attribute uniqueness test fixture cleanup in attruniq_test.py
+- mproved test stability by fixing race conditions in replication, healthcheck,
+  web UI, memberOf, and basic tests.
+- Fixed entrycache_eviction_test.py to track incremental log counts instead of cumulative -
+  https://github.com/389ds/389-ds-base/issues/6784
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7076
+Relates: https://github.com/389ds/389-ds-base/issues/6992
+Relates: https://github.com/389ds/389-ds-base/issues/6784
+Fixes: https://github.com/389ds/389-ds-base/issues/6214
+
+Reviewed by: @vashirov, @progier389 (Thanks!)
+---
+ dirsrvtests/tests/suites/basic/basic_test.py  |   4 +-
+ .../healthcheck/health_system_indexes_test.py |   3 +
+ .../tests/suites/import/regression_test.py    | 388 +++++++++++++++++-
+ .../suites/memberof_plugin/fixup_test.py      |   8 +-
+ .../tests/suites/plugins/attruniq_test.py     |  84 ++--
+ .../suites/replication/regression_m2_test.py  |   4 +
+ .../replication/repl_log_monitoring_test.py   |   8 +-
+ .../suites/webui/database/database_test.py    |   1 +
+ ldap/servers/slapd/back-ldbm/ldbm_modrdn.c    |  44 +-
+ 9 files changed, 481 insertions(+), 63 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/basic/basic_test.py b/dirsrvtests/tests/suites/basic/basic_test.py
+index be825efe9..e9b611439 100644
+--- a/dirsrvtests/tests/suites/basic/basic_test.py
++++ b/dirsrvtests/tests/suites/basic/basic_test.py
+@@ -593,7 +593,7 @@ def test_basic_import_export(topology_st, import_example_ldif):
+     #
+     # Test online/offline LDIF imports
+     #
+-    topology_st.standalone.start()
++    topology_st.standalone.restart()
+     # topology_st.standalone.config.set('nsslapd-errorlog-level', '1')
+ 
+     # Generate a test ldif (50k entries)
+@@ -691,6 +691,8 @@ def test_basic_backup(topology_st, import_example_ldif):
+ 
+     log.info('Running test_basic_backup...')
+ 
++    topology_st.standalone.restart()
++
+     backup_dir = topology_st.standalone.get_bak_dir() + '/backup_test_online'
+     log.info(f'Backup directory is {backup_dir}')
+ 
+diff --git a/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py b/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py
+index 571465562..4cd4d0c70 100644
+--- a/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py
++++ b/dirsrvtests/tests/suites/healthcheck/health_system_indexes_test.py
+@@ -172,6 +172,7 @@ def test_missing_parentid(topology_st, log_buffering_enabled):
+     log.info("Re-add the parentId index")
+     backend = Backends(standalone).get("userRoot")
+     backend.add_index("parentid", ["eq"], matching_rules=["integerOrderingMatch"])
++    standalone.restart()
+ 
+     run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=CMD_OUTPUT)
+     run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=JSON_OUTPUT)
+@@ -215,6 +216,7 @@ def test_missing_matching_rule(topology_st, log_buffering_enabled):
+     log.info("Re-add the integerOrderingMatch matching rule")
+     parentid_index = Index(standalone, PARENTID_DN)
+     parentid_index.add("nsMatchingRule", "integerOrderingMatch")
++    standalone.restart()
+ 
+     run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=CMD_OUTPUT)
+     run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=JSON_OUTPUT)
+@@ -445,6 +447,7 @@ def test_multiple_missing_indexes(topology_st, log_buffering_enabled):
+     backend = Backends(standalone).get("userRoot")
+     backend.add_index("parentid", ["eq"], matching_rules=["integerOrderingMatch"])
+     backend.add_index("nsuniqueid", ["eq"])
++    standalone.restart()
+ 
+     run_healthcheck_and_flush_log(topology_st, standalone, json=False, searched_code=CMD_OUTPUT)
+     run_healthcheck_and_flush_log(topology_st, standalone, json=True, searched_code=JSON_OUTPUT)
+diff --git a/dirsrvtests/tests/suites/import/regression_test.py b/dirsrvtests/tests/suites/import/regression_test.py
+index 18611de35..bdbb516e8 100644
+--- a/dirsrvtests/tests/suites/import/regression_test.py
++++ b/dirsrvtests/tests/suites/import/regression_test.py
+@@ -5,6 +5,7 @@
+ # See LICENSE for details.
+ # --- END COPYRIGHT BLOCK ---
+ #
++from abc import ABC, abstractmethod
+ from decimal import *
+ import ldap
+ import logging
+@@ -16,9 +17,9 @@ from lib389.backend import Backends
+ from lib389.properties import TASK_WAIT
+ from lib389.topologies import topology_st as topo
+ from lib389.dbgen import dbgen_users
+-from lib389._constants import DEFAULT_SUFFIX
++from lib389._constants import DEFAULT_SUFFIX, DEFAULT_BENAME
+ from lib389.tasks import *
+-from lib389.idm.user import UserAccounts
++from lib389.idm.user import UserAccounts, UserAccount
+ from lib389.idm.directorymanager import DirectoryManager
+ from lib389.dbgen import *
+ from lib389.utils import *
+@@ -92,7 +93,203 @@ class AddDelUsers(threading.Thread):
+         return self._ran
+ 
+ 
+-def test_replay_import_operation(topo):
++def get_backend_by_name(inst, bename):
++    bes = Backends(inst)
++    bename = bename.lower()
++    be = [ be for be in bes if be.get_attr_val_utf8_l('cn') == bename ]
++    return be[0] if len(be) == 1 else None
++
++
++class LogHandler():
++    def __init__(self, logfd, patterns):
++        self.logfd = logfd
++        self.patterns = [ p.lower() for p in patterns ]
++        self.pos = logfd.tell()
++        self.last_result = None
++
++    def zero(self):
++        return [0 for _ in range(len(self.patterns))]
++
++    def countCaptures(self):
++        res = self.zero()
++        self.logfd.seek(self.pos)
++        for line in iter(self.logfd.readline, ''):
++            # Ignore autotune messages that may confuse the counts
++            if 'bdb_start_autotune' in line:
++                continue
++            # Ignore LMDB size warnings that may confuse the counts
++            if 'dbmdb_ctx_t_db_max_size_set' in line:
++                continue
++            log.info(f'ERROR LOG line is {line.strip()}')
++            for idx,pattern in enumerate(self.patterns):
++                if pattern in line.lower():
++                    res[idx] += 1
++        self.pos = self.logfd.tell()
++        self.last_result = res
++        log.info(f'ERROR LOG counts are: {res}')
++        return res
++
++    def seek2end(self):
++        self.pos = os.fstat(self.logfd.fileno()).st_size
++
++    def check(self, idx, val):
++        count = self.last_result[idx]
++        assert count == val , f"Should have {val} '{self.patterns[idx]}' messages but got: {count} - idx = {idx}"
++
++
++class IEHandler(ABC):
++    def __init__(self, inst, errlog, ldifname, bename=DEFAULT_BENAME, suffix=None):
++        self.inst = inst
++        self.errlog = errlog
++        self.ldifname = ldifname
++        self.bename = bename
++        self.suffix = suffix
++        self.ldif = ldifname if ldifname.startswith('/') else f'{inst.get_ldif_dir()}/{ldifname}.ldif'
++
++    @abstractmethod
++    def get_name(self):
++        pass
++
++    @abstractmethod
++    def _run_task_b(self):
++        pass
++
++    @abstractmethod
++    def _run_task_s(self):
++        pass
++
++    @abstractmethod
++    def _run_offline(self):
++        pass
++
++    @abstractmethod
++    def _set_log_pattern(self, success):
++        pass
++
++    def run(self, extra_checks, success=True):
++        if self.errlog:
++            self._set_log_pattern(success)
++            self.errlog.seek2end()
++
++        if self.inst.status():
++            if self.bename:
++                log.info(f"Performing online {self.get_name()} of backend {self.bename} into LDIF file {self.ldif}")
++                r = self._run_task_b()
++            else:
++                log.info(f"Performing online {self.get_name()} of suffix {self.suffix} into LDIF file {self.ldif}")
++                r = self._run_task_s()
++            r.wait()
++            time.sleep(1)
++        else:
++            if self.bename:
++                log.info(f"Performing offline {self.get_name()} of backend {self.bename} into LDIF file {self.ldif}")
++            else:
++                log.info(f"Performing offline {self.get_name()} of suffix {self.suffix} into LDIF file {self.ldif}")
++            self._run_offline()
++        if self.errlog:
++            expected_counts = ['*' for _ in range(len(self.errlog.patterns))]
++            for (idx, val) in extra_checks:
++                expected_counts[idx] = val
++            res = self.errlog.countCaptures()
++            log.info(f'Expected errorlog counts are: {expected_counts}')
++            if success is True or success is False:
++                log.info(f'Number of {self.errlog.patterns[0]} in errorlog is: {res[0]}')
++                assert res[0] >= 1
++            for (idx, val) in extra_checks:
++                self.errlog.check(idx, val)
++
++    def check_db(self):
++       assert self.inst.dbscan(bename=self.bename, index='id2entry')
++
++
++class Importer(IEHandler):
++    def get_name(self):
++        return "import"
++
++    def _set_log_pattern(self, success):
++        if success is True:
++            self.errlog.patterns[0] = 'import complete'
++        elif success is False:
++            self.errlog.patterns[0] = 'import failed'
++
++    def _run_task_b(self):
++        bes = Backends(self.inst)
++        r = bes.import_ldif(self.bename, [self.ldif,], include_suffixes=self.suffix)
++        return r
++
++    def _run_task_s(self):
++        r = ImportTask(self.inst)
++        r.import_suffix_from_ldif(self.ldif, self.suffix)
++        return r
++
++    def _run_offline(self):
++        log.info(f'self.inst.ldif2db({self.bename}, {self.suffix}, ...)')
++        if self.suffix is None:
++            self.inst.ldif2db(self.bename, self.suffix, None, False, self.ldif)
++        else:
++            self.inst.ldif2db(self.bename, [self.suffix, ], None, False, self.ldif)
++
++
++class Exporter(IEHandler):
++    def get_name(self):
++        return "export"
++
++    def _set_log_pattern(self, success):
++        if success is True:
++            self.errlog.patterns[0] = 'export finished'
++        elif success is False:
++            self.errlog.patterns[0] = 'export failed'
++
++    def _run_task_b(self):
++        bes = Backends(self.inst)
++        r = bes.export_ldif(self.bename, self.ldif, include_suffixes=self.suffix)
++        return r
++
++    def _run_task_s(self):
++        r = ExportTask(self.inst)
++        r.export_suffix_to_ldif(self.ldif, self.suffix)
++        return r
++
++    def _run_offline(self):
++        self.inst.db2ldif(self.bename, self.suffix, None, False, False, self.ldif)
++
++
++def preserve_func(topo, request, restart):
++    # Ensure that topology get preserved helper
++    inst = topo.standalone
++
++    def fin():
++        if restart:
++            inst.restart()
++        Importer(inst, None, "save").run(())
++
++    r = Exporter(inst, None, "save")
++    if not os.path.isfile(r.ldif):
++        r.run(())
++    request.addfinalizer(fin)
++
++
++@pytest.fixture(scope="function")
++def preserve(topo, request):
++    # Ensure that topology get preserved (no restart)
++    preserve_func(topo, request, False)
++
++
++@pytest.fixture(scope="function")
++def preserve_r(topo, request):
++    # Ensure that topology get preserved (with restart)
++    preserve_func(topo, request, True)
++
++
++@pytest.fixture(scope="function")
++def verify(topo):
++    # Check that backend is not broken
++    inst = topo.standalone
++    dn=f'uid=demo_user,ou=people,{DEFAULT_SUFFIX}'
++    assert UserAccount(inst,dn).exists()
++
++
++def test_replay_import_operation(topo, preserve_r, verify):
+     """ Check after certain failed import operation, is it
+      possible to replay an import operation
+ 
+@@ -487,7 +684,190 @@ def test_ldif2db_after_backend_create(topo):
+     import_time_2 = create_backend_and_import(instance, ldif_file_2, 'o=test_2', 'test_2')
+ 
+     log.info('Import times should be approximately the same')
+-    assert abs(import_time_1 - import_time_2) < 5
++    assert abs(import_time_1 - import_time_2) < 15
++
++
++def test_ldif_missing_suffix_entry(topo, request, verify):
++    """Test that ldif2db/import aborts if suffix entry is not in the ldif
++
++    :id: 731bd0d6-8cc8-11f0-8ef2-c85309d5c3e3
++    :setup: Standalone Instance
++    :steps:
++        1. Prepare final cleanup
++        2. Add a few users
++        3. Export ou=people subtree
++        4. Online import using backend name ou=people subtree
++        5. Online import using suffix name ou=people subtree
++        6. Stop the instance
++        7. Offline import using backend name ou=people subtree
++        8. Offline import using suffix name ou=people subtree
++        9. Generate ldif with a far away suffix
++        10. Offline import using backend name  and "far" ldif
++        11. Offline import using suffix name and "far" ldif
++        12. Start the instance
++        13. Online import using backend name  and "far" ldif
++        14. Online import using suffix name and "far" ldif
++    :expectedresults:
++        1. Operation successful
++        2. Operation successful
++        3. Operation successful
++        4. Import should success, skip all entries, db should exists
++        5. Import should success, skip all entries, db should exists
++        6. Operation successful
++        7. Import should success, skip all entries, db should exists
++        8. Import should success, skip all entries, db should exists
++        9. Operation successful
++        10. Import should success, skip all entries, db should exists
++        11. Import should success, 10 entries skipped, db should exists
++        12. Operation successful
++        13. Import should success, skip all entries, db should exists
++        14. Import should success, 10 entries skipped, db should exists
++    """
++
++    inst = topo.standalone
++    inst.config.set('nsslapd-errorlog-level', '266354688')
++    no_suffix_on = (
++        (1, 0), # no errors are expected.
++        (2, 1), # 1 warning is expected.
++        (3, 0), # no 'no parent' warning is expected.
++        (4, 1), # 1 'all entries were skipped' warning
++        (5, 0), # no 'returning task warning' info message
++    )
++    no_suffix_off = (
++        (1, 0), # no errors are expected.
++        (2, 1), # 1 warning is expected.
++        (3, 0), # no 'no parent' warning is expected.
++        (4, 1), # 1 'all entries were skipped' warning
++        (5, 1), # 1 'returning task warning' info message
++    )
++
++    far_suffix_on = (
++        (1, 0),  # no errors are expected.
++        (2, 1),  # 1 warning (consolidated, pre-check aborts after 4 entries)
++        (3, 0),  # 0 'no parent' warnings (pre-check aborts before processing)
++        (4, 1),  # 1 'all entries were skipped' warning (from pre-check)
++        (5, 0),  # 0 'returning task warning' info message (online import)
++    )
++    # Backend-specific behavior for orphan detection when suffix parameter is provided
++    nbw = 0 if get_default_db_lib() == "bdb" else 10
++    far_suffix_with_suffix_on = (
++        (1, 0),  # no errors are expected.
++        (2, nbw),  # 0 (BDB early filtering) or 10 (LMDB orphan detection) warnings
++        (3, nbw),  # 0 (BDB early filtering) or 10 (LMDB orphan detection) 'no parent' warnings
++        (4, 0),  # 0 'all entries were skipped' warning (no pre-check abort)
++        (5, 0),  # 0 'returning task warning' info message (online import)
++    )
++    far_suffix_off = (
++        (1, 0),  # no errors are expected.
++        (2, 1),  # 1 warning (consolidated, pre-check detects missing suffix)
++        (3, 0),  # 0 'no parent' warnings (pre-check aborts before processing)
++        (4, 1),  # 1 'all entries were skipped' warning (from pre-check)
++        (5, 1),  # 1 'returning task warning' info message (offline import)
++    )
++    far_suffix_with_suffix_off = (
++        (1, 0),  # no errors are expected.
++        (2, nbw),  # 0 (BDB early filtering) or 10 (LMDB orphan detection) warnings
++        (3, nbw),  # 0 (BDB early filtering) or 10 (LMDB orphan detection) 'no parent' warnings
++        (4, 0),  # 0 'all entries were skipped' warning (no pre-check abort)
++        (5, 0),  # 0 'returning task warning' (rc=0, successful import of suffix)
++    )
++
++    with open(inst.ds_paths.error_log, 'at+') as fd:
++        patterns = (
++            "Reserved for IEHandler",
++            " ERR ",
++            " WARN ",
++            "has no parent",
++            "all entries were skipped",
++            "returning task warning",
++        )
++        errlog = LogHandler(fd, patterns)
++        no_errors = ((1, 0), (2, 0)) # no errors nor warnings are expected.
++
++
++        # 1. Prepare final cleanup
++        Exporter(inst, errlog, "full").run(no_errors)
++
++        def fin():
++            inst.start()
++            with open(inst.ds_paths.error_log, 'at+') as cleanup_fd:
++                cleanup_errlog = LogHandler(cleanup_fd, patterns)
++                Importer(inst, cleanup_errlog, "full").run(no_errors)
++
++        if not DEBUGGING:
++            request.addfinalizer(fin)
++
++        # 2. Add a few users
++        user = UserAccounts(inst, DEFAULT_SUFFIX)
++        users = [ user.create_test_user(uid=i) for i in range(10) ]
++
++        # 3. Export ou=people subtree
++        e = Exporter(inst, errlog, "people", suffix=f'ou=people,{DEFAULT_SUFFIX}')
++        e.run(no_errors) # no errors nor warnings are expected.
++
++        # 4. Online import using backend name ou=people subtree
++        e = Importer(inst, errlog, "people")
++        e.run(no_suffix_on)
++        e.check_db()
++
++        # 5. Online import using suffix name ou=people subtree
++        e = Importer(inst, errlog, "people", suffix=DEFAULT_SUFFIX)
++        e.run(no_suffix_on)
++        e.check_db()
++
++        # 6. Stop the instance
++        inst.stop()
++
++        # 7. Offline import using backend name ou=people subtree
++        e = Importer(inst, errlog, "people")
++        e.run(no_suffix_off)
++        e.check_db()
++
++        # 8. Offline import using suffix name ou=people subtree
++        e = Importer(inst, errlog, "people", suffix=DEFAULT_SUFFIX)
++        e.run(no_suffix_off)
++        e.check_db()
++
++        # 9. Generate ldif with a far away suffix
++        e = Importer(inst, errlog, "full")
++        people_ldif = e.ldif
++        e = Importer(inst, errlog, "far")
++        with open(e.ldif, "wt") as fout:
++            with open(people_ldif, "rt") as fin:
++                # Copy version
++                line = fin.readline()
++                fout.write(line)
++                line = fin.readline()
++                fout.write(line)
++                # Generate fake entries
++                for idx in range(10):
++                    fout.write(f"dn: uid=id{idx},dc=foo\nobjectclasses: extensibleObject\n\n")
++                for line in iter(fin.readline, ''):
++                    fout.write(line)
++
++        os.chmod(e.ldif, 0o644)
++
++        # 10. Offline import using backend name ou=people subtree
++        e.run(far_suffix_off)
++        e.check_db()
++
++        # 11. Offline import using suffix name ou=people subtree
++        e = Importer(inst, errlog, "far", suffix=DEFAULT_SUFFIX)
++        e.run(far_suffix_with_suffix_off)
++        e.check_db()
++
++        # 12. Start the instance
++        inst.start()
++
++        # 13. Online import using backend name ou=people subtree
++        e = Importer(inst, errlog, "far")
++        e.run(far_suffix_on)
++        e.check_db()
++
++        # 14. Online import using suffix name ou=people subtree
++        e = Importer(inst, errlog, "far", suffix=DEFAULT_SUFFIX)
++        e.run(far_suffix_with_suffix_on)
++        e.check_db()
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/dirsrvtests/tests/suites/memberof_plugin/fixup_test.py b/dirsrvtests/tests/suites/memberof_plugin/fixup_test.py
+index 5aac40d2b..44804bd1c 100644
+--- a/dirsrvtests/tests/suites/memberof_plugin/fixup_test.py
++++ b/dirsrvtests/tests/suites/memberof_plugin/fixup_test.py
+@@ -44,7 +44,10 @@ def test_fixup_task_limit(topo):
+     group = groups.create(properties={'cn': 'test'})
+ 
+     users = UserAccounts(topo.standalone, DEFAULT_SUFFIX)
+-    for idx in range(400):
++    # Turn on access log buffering to speed up user creation
++    buffering = topo.standalone.config.get_attr_val_utf8('nsslapd-accesslog-logbuffering')
++    topo.standalone.config.set('nsslapd-accesslog-logbuffering', 'on')
++    for idx in range(6000):
+         user = users.create(properties={
+             'uid': 'testuser%s' % idx,
+             'cn' : 'testuser%s' % idx,
+@@ -55,6 +58,9 @@ def test_fixup_task_limit(topo):
+         })
+         group.add('member', user.dn)
+ 
++    # Restore access log buffering
++    topo.standalone.config.set('nsslapd-accesslog-logbuffering', buffering)
++
+     # Configure memberOf plugin
+     memberof = MemberOfPlugin(topo.standalone)
+     memberof.enable()
+diff --git a/dirsrvtests/tests/suites/plugins/attruniq_test.py b/dirsrvtests/tests/suites/plugins/attruniq_test.py
+index 6eaee08a4..a2be413c8 100644
+--- a/dirsrvtests/tests/suites/plugins/attruniq_test.py
++++ b/dirsrvtests/tests/suites/plugins/attruniq_test.py
+@@ -84,14 +84,23 @@ def containers(topology_st, request):
+ def attruniq(topology_st, request):
+     log.info('Setup attribute uniqueness plugin')
+     attruniq = AttributeUniquenessPlugin(topology_st.standalone, dn="cn=attruniq,cn=plugins,cn=config")
+-    attruniq.create(properties={'cn': 'attruniq'})
+-    attruniq.add_unique_attribute('cn')
++
++    if attruniq.exists():
++        attruniq.delete()
++        topology_st.standalone.restart()
++
++    attruniq.create(properties={
++        'cn': 'attruniq',
++        'uniqueness-attribute-name': 'cn',
++        'uniqueness-subtrees': 'cn=config',
++        'nsslapd-pluginEnabled': 'on'
++    })
+     topology_st.standalone.restart()
+ 
+     def fin():
+         if attruniq.exists():
+-            attruniq.disable()
+             attruniq.delete()
++            topology_st.standalone.restart()
+ 
+     request.addfinalizer(fin)
+ 
+@@ -250,8 +259,8 @@ def test_modrdn_attr_uniqueness(topology_st, attruniq):
+     group1 = groups.create(properties={'cn': 'group1'})
+     group2 = groups.create(properties={'cn': 'group2'})
+ 
+-    attruniq.add_unique_attribute('mail')
+-    attruniq.add_unique_subtree(group2.dn)
++    attruniq.replace('uniqueness-attribute-name', 'mail')
++    attruniq.replace('uniqueness-subtrees', group2.dn)
+     attruniq.enable_all_subtrees()
+     log.debug(f'Enable PLUGIN_ATTR_UNIQUENESS plugin as "ON"')
+     attruniq.enable()
+@@ -274,9 +283,6 @@ def test_modrdn_attr_uniqueness(topology_st, attruniq):
+     assert 'attribute value already exist' in str(excinfo.value)
+     log.debug(excinfo.value)
+ 
+-    log.debug('Move user2 to group1')
+-    user2.rename(f'uid={user2.rdn}', group1.dn)
+-
+     user1.delete()
+     user2.delete()
+ 
+@@ -302,17 +308,11 @@ def test_multiple_attr_uniqueness(topology_st, attruniq):
+         6. Should raise CONSTRAINT_VIOLATION
+     """
+ 
+-    try:
+-        attruniq.add_unique_attribute('mail')
+-        attruniq.add_unique_attribute('mailAlternateAddress')
+-        attruniq.add_unique_subtree(DEFAULT_SUFFIX)
+-        attruniq.enable_all_subtrees()
+-        log.debug(f'Enable PLUGIN_ATTR_UNIQUENESS plugin as "ON"')
+-        attruniq.enable()
+-    except ldap.LDAPError as e:
+-        log.fatal('test_multiple_attribute_uniqueness: Failed to configure plugin for "mail": error {}'.format(e.args[0]['desc']))
+-        assert False
+-
++    attruniq.replace('uniqueness-attribute-name', ['mail', 'mailAlternateAddress'])
++    attruniq.replace('uniqueness-subtrees', DEFAULT_SUFFIX)
++    attruniq.enable_all_subtrees()
++    log.debug(f'Enable PLUGIN_ATTR_UNIQUENESS plugin as "ON"')
++    attruniq.enable()
+     topology_st.standalone.restart()
+ 
+     users = UserAccounts(topology_st.standalone, DEFAULT_SUFFIX)
+@@ -383,8 +383,9 @@ def test_exclude_subtrees(topology_st, attruniq):
+         16. Success
+         17. Success
+     """
+-    attruniq.add_unique_attribute('telephonenumber')
+-    attruniq.add_unique_subtree(DEFAULT_SUFFIX)
++    # Replace dummy config with actual test config
++    attruniq.replace('uniqueness-attribute-name', 'telephonenumber')
++    attruniq.replace('uniqueness-subtrees', DEFAULT_SUFFIX)
+     attruniq.enable_all_subtrees()
+     attruniq.enable()
+     topology_st.standalone.restart()
+@@ -517,10 +518,18 @@ def test_matchingrule_attr(topology_st):
+     """
+ 
+     inst = topology_st.standalone
+-
+     attruniq = AttributeUniquenessPlugin(inst,
+                                          dn="cn=attribute uniqueness,cn=plugins,cn=config")
+-    attruniq.add_unique_attribute('cn:CaseExactMatch:')
++
++    if attruniq.exists():
++        attruniq.delete()
++        inst.restart()
++
++    attruniq.create(properties={
++        'cn': 'attribute uniqueness',
++        'uniqueness-attribute-name': 'cn:CaseExactMatch:',
++        'uniqueness-subtrees': DEFAULT_SUFFIX
++    })
+     attruniq.enable_all_subtrees()
+     attruniq.enable()
+     inst.restart()
+@@ -595,7 +604,7 @@ def test_one_container_add(topology_st, attruniq, containers, active_user_1):
+     active_2.delete()
+ 
+     log.info('Setup attribute uniqueness plugin for "cn" attribute')
+-    attruniq.add_unique_subtree(ACTIVE_DN)
++    attruniq.replace('uniqueness-subtrees', ACTIVE_DN)
+     attruniq.enable()
+     topology_st.standalone.restart()
+ 
+@@ -628,7 +637,7 @@ def test_one_container_mod(topology_st, attruniq, containers,
+     """
+ 
+     log.info('Setup attribute uniqueness plugin for "cn" attribute')
+-    attruniq.add_unique_subtree(ACTIVE_DN)
++    attruniq.replace('uniqueness-subtrees', ACTIVE_DN)
+     attruniq.enable()
+     topology_st.standalone.restart()
+ 
+@@ -656,7 +665,7 @@ def test_one_container_modrdn(topology_st, attruniq, containers,
+     """
+ 
+     log.info('Setup attribute uniqueness plugin for "cn" attribute')
+-    attruniq.add_unique_subtree(ACTIVE_DN)
++    attruniq.replace('uniqueness-subtrees', ACTIVE_DN)
+     attruniq.enable()
+     topology_st.standalone.restart()
+ 
+@@ -690,8 +699,7 @@ def test_multiple_containers_add(topology_st, attruniq, containers,
+     """
+ 
+     log.info('Setup attribute uniqueness plugin for "cn" attribute')
+-    attruniq.add_unique_subtree(ACTIVE_DN)
+-    attruniq.add_unique_subtree(STAGE_DN)
++    attruniq.replace('uniqueness-subtrees', [ACTIVE_DN, STAGE_DN])
+     attruniq.enable()
+     topology_st.standalone.restart()
+ 
+@@ -789,8 +797,7 @@ def test_multiple_containers_mod(topology_st, attruniq, containers,
+     """
+ 
+     log.info('Setup attribute uniqueness plugin for "cn" attribute')
+-    attruniq.add_unique_subtree(ACTIVE_DN)
+-    attruniq.add_unique_subtree(STAGE_DN)
++    attruniq.replace('uniqueness-subtrees', [ACTIVE_DN, STAGE_DN])
+     attruniq.enable()
+     topology_st.standalone.restart()
+ 
+@@ -874,8 +881,8 @@ def test_multiple_containers_modrdn(topology_st, attruniq, containers,
+     """
+ 
+     log.info('Setup attribute uniqueness plugin for "cn" attribute')
+-    attruniq.add_unique_subtree(ACTIVE_DN)
+-    attruniq.add_unique_subtree(STAGE_DN)
++    # Replace dummy subtree with actual test subtrees
++    attruniq.replace('uniqueness-subtrees', [ACTIVE_DN, STAGE_DN])
+     attruniq.enable()
+     topology_st.standalone.restart()
+ 
+@@ -993,7 +1000,10 @@ def test_invalid_config_missing_attr_name(topology_st):
+     _config_file(topology_st, action='save')
+ 
+     attruniq = AttributeUniquenessPlugin(topology_st.standalone, dn="cn=attruniq,cn=plugins,cn=config")
+-    attruniq.create(properties={'cn': 'attruniq'})
++    attruniq.create(properties={
++        'cn': 'attruniq',
++        'uniqueness-subtrees': DEFAULT_SUFFIX
++    })
+     attruniq.enable()
+ 
+     topology_st.standalone.errorlog_file = open(topology_st.standalone.errlog, "r")
+@@ -1040,9 +1050,11 @@ def test_invalid_config_invalid_subtree(topology_st):
+     _config_file(topology_st, action='save')
+ 
+     attruniq = AttributeUniquenessPlugin(topology_st.standalone, dn="cn=attruniq,cn=plugins,cn=config")
+-    attruniq.create(properties={'cn': 'attruniq'})
+-    attruniq.add_unique_attribute('cn')
+-    attruniq.add_unique_subtree('invalid_subtree')
++    attruniq.create(properties={
++        'cn': 'attruniq',
++        'uniqueness-attribute-name': 'cn',
++        'uniqueness-subtrees': 'invalid_subtree'
++    })
+     attruniq.enable()
+ 
+     topology_st.standalone.errorlog_file = open(topology_st.standalone.errlog, "r")
+diff --git a/dirsrvtests/tests/suites/replication/regression_m2_test.py b/dirsrvtests/tests/suites/replication/regression_m2_test.py
+index ba1ffcc9c..db5140b0b 100644
+--- a/dirsrvtests/tests/suites/replication/regression_m2_test.py
++++ b/dirsrvtests/tests/suites/replication/regression_m2_test.py
+@@ -1221,6 +1221,10 @@ def test_rid_starting_with_0(topo_m2, request):
+     for replica,rid in zip(replicas, ['010', '020']):
+         replica.replace('nsDS5ReplicaId', rid)
+ 
++    # Restart required - replica IDs are loaded at startup and cached in memory
++    S1.restart()
++    S2.restart()
++
+     # Restore replica id in finalizer
+     def fin():
+         for replica,rid in zip(replicas, ['1', '2']):
+diff --git a/dirsrvtests/tests/suites/replication/repl_log_monitoring_test.py b/dirsrvtests/tests/suites/replication/repl_log_monitoring_test.py
+index 665fcb96f..b2b2d25a2 100644
+--- a/dirsrvtests/tests/suites/replication/repl_log_monitoring_test.py
++++ b/dirsrvtests/tests/suites/replication/repl_log_monitoring_test.py
+@@ -369,11 +369,13 @@ def test_replication_log_monitoring_multi_suffix(topo_m4):
+                     repl.ensure_agreement(s1, s2)
+                     repl.ensure_agreement(s2, s1)
+ 
+-        # Allow initial topology to settle before capturing metrics
++        # Wait for all the setup replication to settle, then clear the logs
+         for suffix in all_suffixes:
+             repl = ReplicationManager(suffix)
+-            repl.test_replication_topology(topo_m4)
+-
++            for s1 in suppliers:
++                for s2 in suppliers:
++                    if s1 != s2:
++                        repl.wait_for_replication(s1, s2)
+         for supplier in suppliers:
+             supplier.deleteAccessLogs(restart=True)
+ 
+diff --git a/dirsrvtests/tests/suites/webui/database/database_test.py b/dirsrvtests/tests/suites/webui/database/database_test.py
+index ef105d262..05ddb6b00 100644
+--- a/dirsrvtests/tests/suites/webui/database/database_test.py
++++ b/dirsrvtests/tests/suites/webui/database/database_test.py
+@@ -138,6 +138,7 @@ def test_chaining_configuration_availability(topology_st, page, browser_name):
+     log.info('Click on Chaining Configuration and check if element is loaded.')
+     frame.get_by_role('tab', name='Database', exact=True).click()
+     frame.locator('#chaining-config').click()
++    frame.locator('#chaining-page').wait_for()
+     frame.locator('#defSizeLimit').wait_for()
+     assert frame.locator('#defSizeLimit').is_visible()
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+index e3b7e5783..b1a29ff7f 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+@@ -1080,7 +1080,9 @@ ldbm_back_modrdn(Slapi_PBlock *pb)
+                 }
+             }
+         }
+-        if (slapi_sdn_get_dn(dn_newsuperiordn) != NULL) {
++        /* Only update parent if we're actually moving to a NEW parent (not the same parent) */
++        if (slapi_sdn_get_dn(dn_newsuperiordn) != NULL &&
++            slapi_sdn_compare(dn_newsuperiordn, &dn_parentdn) != 0) {
+             /* Push out the db modifications from the parent entry */
+             retval = modify_update_all(be, pb, &parent_modify_context, &txn);
+             if (DBI_RC_RETRY == retval) {
+@@ -1335,11 +1337,6 @@ ldbm_back_modrdn(Slapi_PBlock *pb)
+     goto common_return;
+ 
+ error_return:
+-    /* Revert the caches if this is the parent operation */
+-    if (parent_op && betxn_callback_fails) {
+-        revert_cache(inst, &parent_time);
+-    }
+-
+     /* result already sent above - just free stuff */
+     if (postentry) {
+         slapi_entry_free(postentry);
+@@ -1417,13 +1414,6 @@ error_return:
+                     slapi_pblock_set(pb, SLAPI_PLUGIN_OPRETURN, ldap_result_code ? &ldap_result_code : &retval);
+                 }
+                 slapi_pblock_get(pb, SLAPI_PB_RESULT_TEXT, &ldap_result_message);
+-
+-                /* As it is a BETXN plugin failure then
+-                 * revert the caches if this is the parent operation
+-                 */
+-                if (parent_op) {
+-                    revert_cache(inst, &parent_time);
+-                }
+             }
+             retval = plugin_call_mmr_plugin_postop(pb, NULL,SLAPI_PLUGIN_BE_TXN_POST_MODRDN_FN);
+ 
+@@ -1437,6 +1427,15 @@ error_return:
+         }
+     }
+ 
++    /* Revert the caches if this is the parent operation and cache modifications were made.
++     * Cache modifications (via modify_switch_entries) only happen after BETXN PRE plugins succeed,
++     * so we should only revert if we got past that point (i.e., BETXN POST plugin failures).
++     * For BETXN PRE failures, no cache modifications were made to parent/newparent entries.
++     */
++    if (parent_op && betxn_callback_fails && postentry) {
++        revert_cache(inst, &parent_time);
++    }
++
+ common_return:
+ 
+     /* result code could be used in the bepost plugin functions. */
+@@ -1482,12 +1481,22 @@ common_return:
+                                       "operation failed, the target entry is cleared from dncache (%s)\n", slapi_entry_get_dn(ec->ep_entry));
+             CACHE_REMOVE(&inst->inst_dncache, bdn);
+             CACHE_RETURN(&inst->inst_dncache, &bdn);
++
++            /* Also remove ec from entry cache and free it since the operation failed */
++            if (inst && cache_is_in_cache(&inst->inst_cache, ec)) {
++                CACHE_REMOVE(&inst->inst_cache, ec);
++                CACHE_RETURN(&inst->inst_cache, &ec);
++            } else {
++                /* ec was not in cache, just free it */
++                backentry_free(&ec);
++            }
++            ec = NULL;
+         }
+ 
+         if (ec && inst) {
+             CACHE_RETURN(&inst->inst_cache, &ec);
++            ec = NULL;
+         }
+-        ec = NULL;
+     }
+ 
+     if (inst) {
+@@ -1817,6 +1826,8 @@ moddn_get_newdn(Slapi_PBlock *pb, Slapi_DN *dn_olddn, Slapi_DN *dn_newrdn, Slapi
+ 
+ /*
+  * Return the entries to the cache.
++ * For the original entry 'e', we should NOT remove it from cache on failure,
++ * as it's still a valid entry in the directory.
+  */
+ static void
+ moddn_unlock_and_return_entry(
+@@ -1825,12 +1836,9 @@ moddn_unlock_and_return_entry(
+ {
+     ldbm_instance *inst = (ldbm_instance *)be->be_instance_info;
+ 
+-    /* Something bad happened so we should give back all the entries */
++    /* Unlock and return the entry to the cache */
+     if (*targetentry != NULL) {
+         cache_unlock_entry(&inst->inst_cache, *targetentry);
+-        if (cache_is_in_cache(&inst->inst_cache, *targetentry)) {
+-            CACHE_REMOVE(&inst->inst_cache, *targetentry);
+-        }
+         CACHE_RETURN(&inst->inst_cache, targetentry);
+         *targetentry = NULL;
+     }
+-- 
+2.52.0
+
