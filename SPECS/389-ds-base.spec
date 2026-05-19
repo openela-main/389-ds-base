@@ -1,8 +1,8 @@
 ## START: Set by rpmautospec
-## (rpmautospec version 0.6.5)
+## (rpmautospec version 0.8.3)
 ## RPMAUTOSPEC: autorelease, autochangelog
 %define autorelease(e:s:pb:n) %{?-p:0.}%{lua:
-    release_number = 7;
+    release_number = 6;
     base_release_number = tonumber(rpm.expand("%{?-b*}%{!?-b:1}"));
     print(release_number + base_release_number - 1);
 }%{?-e:.%{-e*}}%{?-s:.%{-s*}}%{!?-n:%{?dist}}
@@ -70,9 +70,9 @@ ExcludeArch: i686
 
 Summary:          389 Directory Server (%{variant})
 Name:             389-ds-base
-Version:          3.1.3
+Version:          3.2.0
 Release:          %{autorelease -n %{?with_asan:-e asan}}%{?dist}
-License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
+License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 Conflicts:        selinux-policy-base < 3.9.8
 Conflicts:        freeipa-server < 4.0.3
 Obsoletes:        %{name} <= 1.4.4
@@ -82,103 +82,87 @@ Obsoletes:        %{name}-legacy-tools-debuginfo < 1.4.4.6
 Provides:         ldif2ldbm >= 0
 
 ##### Bundled cargo crates list - START #####
-Provides:  bundled(crate(addr2line)) = 0.24.2
-Provides:  bundled(crate(adler2)) = 2.0.1
 Provides:  bundled(crate(allocator-api2)) = 0.2.21
 Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.5.0
-Provides:  bundled(crate(backtrace)) = 0.3.75
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 2.9.1
+Provides:  bundled(crate(bitflags)) = 2.10.0
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.26.0
-Provides:  bundled(crate(cc)) = 1.2.31
-Provides:  bundled(crate(cfg-if)) = 1.0.1
+Provides:  bundled(crate(cc)) = 1.2.51
+Provides:  bundled(crate(cfg-if)) = 1.0.4
 Provides:  bundled(crate(clap)) = 3.2.25
 Provides:  bundled(crate(clap_lex)) = 0.2.4
-Provides:  bundled(crate(concread)) = 0.5.7
+Provides:  bundled(crate(concread)) = 0.5.10
 Provides:  bundled(crate(crossbeam-epoch)) = 0.9.18
 Provides:  bundled(crate(crossbeam-queue)) = 0.3.12
 Provides:  bundled(crate(crossbeam-utils)) = 0.8.21
 Provides:  bundled(crate(equivalent)) = 1.0.2
-Provides:  bundled(crate(errno)) = 0.3.13
+Provides:  bundled(crate(errno)) = 0.3.14
 Provides:  bundled(crate(fastrand)) = 2.3.0
 Provides:  bundled(crate(fernet)) = 0.1.4
-Provides:  bundled(crate(foldhash)) = 0.1.5
+Provides:  bundled(crate(find-msvc-tools)) = 0.1.6
+Provides:  bundled(crate(foldhash)) = 0.2.0
 Provides:  bundled(crate(foreign-types)) = 0.3.2
 Provides:  bundled(crate(foreign-types-shared)) = 0.1.1
-Provides:  bundled(crate(getrandom)) = 0.3.3
-Provides:  bundled(crate(gimli)) = 0.31.1
-Provides:  bundled(crate(hashbrown)) = 0.15.4
+Provides:  bundled(crate(getrandom)) = 0.3.4
+Provides:  bundled(crate(hashbrown)) = 0.16.1
 Provides:  bundled(crate(heck)) = 0.4.1
 Provides:  bundled(crate(hermit-abi)) = 0.1.19
 Provides:  bundled(crate(indexmap)) = 1.9.3
-Provides:  bundled(crate(io-uring)) = 0.7.9
-Provides:  bundled(crate(itoa)) = 1.0.15
-Provides:  bundled(crate(jobserver)) = 0.1.33
-Provides:  bundled(crate(libc)) = 0.2.174
-Provides:  bundled(crate(linux-raw-sys)) = 0.9.4
-Provides:  bundled(crate(log)) = 0.4.27
-Provides:  bundled(crate(lru)) = 0.13.0
-Provides:  bundled(crate(memchr)) = 2.7.5
-Provides:  bundled(crate(miniz_oxide)) = 0.8.9
-Provides:  bundled(crate(mio)) = 1.0.4
-Provides:  bundled(crate(object)) = 0.36.7
+Provides:  bundled(crate(itoa)) = 1.0.17
+Provides:  bundled(crate(jobserver)) = 0.1.34
+Provides:  bundled(crate(libc)) = 0.2.179
+Provides:  bundled(crate(linux-raw-sys)) = 0.11.0
+Provides:  bundled(crate(log)) = 0.4.29
+Provides:  bundled(crate(lru)) = 0.16.3
+Provides:  bundled(crate(memchr)) = 2.7.6
 Provides:  bundled(crate(once_cell)) = 1.21.3
-Provides:  bundled(crate(openssl)) = 0.10.73
+Provides:  bundled(crate(openssl)) = 0.10.75
 Provides:  bundled(crate(openssl-macros)) = 0.1.1
-Provides:  bundled(crate(openssl-sys)) = 0.9.109
+Provides:  bundled(crate(openssl-sys)) = 0.9.111
 Provides:  bundled(crate(os_str_bytes)) = 6.6.1
 Provides:  bundled(crate(paste)) = 0.1.18
 Provides:  bundled(crate(paste-impl)) = 0.1.18
 Provides:  bundled(crate(pin-project-lite)) = 0.2.16
 Provides:  bundled(crate(pkg-config)) = 0.3.32
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
-Provides:  bundled(crate(proc-macro2)) = 1.0.95
-Provides:  bundled(crate(quote)) = 1.0.40
+Provides:  bundled(crate(proc-macro2)) = 1.0.105
+Provides:  bundled(crate(quote)) = 1.0.43
 Provides:  bundled(crate(r-efi)) = 5.3.0
-Provides:  bundled(crate(rustc-demangle)) = 0.1.26
-Provides:  bundled(crate(rustix)) = 1.0.8
-Provides:  bundled(crate(ryu)) = 1.0.20
-Provides:  bundled(crate(serde)) = 1.0.219
-Provides:  bundled(crate(serde_derive)) = 1.0.219
-Provides:  bundled(crate(serde_json)) = 1.0.142
+Provides:  bundled(crate(rustix)) = 1.1.3
+Provides:  bundled(crate(serde)) = 1.0.228
+Provides:  bundled(crate(serde_core)) = 1.0.228
+Provides:  bundled(crate(serde_derive)) = 1.0.228
+Provides:  bundled(crate(serde_json)) = 1.0.149
 Provides:  bundled(crate(shlex)) = 1.3.0
-Provides:  bundled(crate(slab)) = 0.4.10
 Provides:  bundled(crate(smallvec)) = 1.15.1
 Provides:  bundled(crate(sptr)) = 0.3.2
 Provides:  bundled(crate(strsim)) = 0.10.0
-Provides:  bundled(crate(syn)) = 2.0.104
-Provides:  bundled(crate(tempfile)) = 3.20.0
+Provides:  bundled(crate(syn)) = 2.0.114
+Provides:  bundled(crate(tempfile)) = 3.24.0
 Provides:  bundled(crate(termcolor)) = 1.4.1
 Provides:  bundled(crate(textwrap)) = 0.16.2
-Provides:  bundled(crate(tokio)) = 1.47.1
+Provides:  bundled(crate(tokio)) = 1.49.0
 Provides:  bundled(crate(toml)) = 0.5.11
-Provides:  bundled(crate(tracing)) = 0.1.41
-Provides:  bundled(crate(tracing-attributes)) = 0.1.30
-Provides:  bundled(crate(tracing-core)) = 0.1.34
-Provides:  bundled(crate(unicode-ident)) = 1.0.18
+Provides:  bundled(crate(tracing)) = 0.1.44
+Provides:  bundled(crate(tracing-attributes)) = 0.1.31
+Provides:  bundled(crate(tracing-core)) = 0.1.36
+Provides:  bundled(crate(unicode-ident)) = 1.0.22
 Provides:  bundled(crate(uuid)) = 0.8.2
 Provides:  bundled(crate(vcpkg)) = 0.2.15
-Provides:  bundled(crate(wasi)) = 0.14.2+wasi_0.2.4
+Provides:  bundled(crate(wasi)) = 0.11.1+wasi_snapshot_preview1
+Provides:  bundled(crate(wasip2)) = 1.0.1+wasi_0.2.4
 Provides:  bundled(crate(winapi)) = 0.3.9
 Provides:  bundled(crate(winapi-i686-pc-windows-gnu)) = 0.4.0
-Provides:  bundled(crate(winapi-util)) = 0.1.9
+Provides:  bundled(crate(winapi-util)) = 0.1.11
 Provides:  bundled(crate(winapi-x86_64-pc-windows-gnu)) = 0.4.0
-Provides:  bundled(crate(windows-link)) = 0.1.3
-Provides:  bundled(crate(windows-sys)) = 0.60.2
-Provides:  bundled(crate(windows-targets)) = 0.53.3
-Provides:  bundled(crate(windows_aarch64_gnullvm)) = 0.53.0
-Provides:  bundled(crate(windows_aarch64_msvc)) = 0.53.0
-Provides:  bundled(crate(windows_i686_gnu)) = 0.53.0
-Provides:  bundled(crate(windows_i686_gnullvm)) = 0.53.0
-Provides:  bundled(crate(windows_i686_msvc)) = 0.53.0
-Provides:  bundled(crate(windows_x86_64_gnu)) = 0.53.0
-Provides:  bundled(crate(windows_x86_64_gnullvm)) = 0.53.0
-Provides:  bundled(crate(windows_x86_64_msvc)) = 0.53.0
-Provides:  bundled(crate(wit-bindgen-rt)) = 0.39.0
-Provides:  bundled(crate(zeroize)) = 1.8.1
-Provides:  bundled(crate(zeroize_derive)) = 1.4.2
+Provides:  bundled(crate(windows-link)) = 0.2.1
+Provides:  bundled(crate(windows-sys)) = 0.61.2
+Provides:  bundled(crate(wit-bindgen)) = 0.46.0
+Provides:  bundled(crate(zeroize)) = 1.8.2
+Provides:  bundled(crate(zeroize_derive)) = 1.4.3
+Provides:  bundled(crate(zmij)) = 1.0.12
 ##### Bundled cargo crates list - END #####
 
 # Attach the buildrequires to the top level package:
@@ -294,7 +278,7 @@ Requires:         python3-file-magic
 
 Obsoletes:        %{name} <= 1.4.4
 
-Source0:          %{name}-%{version}.tar.bz2
+Source0:          https://github.com/389ds/%{name}/releases/download/%{name}-%{version}/%{name}-%{version}.tar.bz2
 Source2:          %{name}-devel.README
 %if %{with bundle_jemalloc}
 Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download/%{jemalloc_ver}/%{jemalloc_name}-%{jemalloc_ver}.tar.bz2
@@ -304,93 +288,75 @@ Source4:          389-ds-base.sysusers
 Source5:          https://fedorapeople.org/groups/389ds/libdb-5.3.28-59.tar.bz2
 %endif
 
-Source6:          vendor-%{version}-1.tar.gz
-Source7:          Cargo-%{version}-1.lock
+Source6:          vendor-%{version}-4.tar.gz
+Source7:          Cargo-%{version}-4.lock
 
-Patch:            0001-Issue-6822-Backend-creation-cleanup-and-Database-UI-.patch
-Patch:            0002-Issue-6852-Move-ds-CLI-tools-back-to-sbin.patch
-Patch:            0003-Issue-6663-Fix-NULL-subsystem-crash-in-JSON-error-lo.patch
-Patch:            0004-Issue-6829-Update-parametrized-docstring-for-tests.patch
-Patch:            0005-Issue-6782-Improve-paged-result-locking.patch
-Patch:            0006-Issue-6838-lib389-replica.py-is-using-nonexistent-da.patch
-Patch:            0007-Issue-6753-Add-add_exclude_subtree-and-remove_exclud.patch
-Patch:            0008-Issue-6857-uiduniq-allow-specifying-match-rules-in-t.patch
-Patch:            0009-Issue-6756-CLI-UI-Properly-handle-disabled-NDN-cache.patch
-Patch:            0010-Issue-6854-Refactor-for-improved-data-management-685.patch
-Patch:            0011-Issue-6850-AddressSanitizer-memory-leak-in-mdb_init.patch
-Patch:            0012-Issue-6848-AddressSanitizer-leak-in-do_search.patch
-Patch:            0013-Issue-6865-AddressSanitizer-leak-in-agmt_update_init.patch
-Patch:            0014-Issue-6859-str2filter-is-not-fully-applying-matching.patch
-Patch:            0015-Issue-6872-compressed-log-rotation-creates-files-wit.patch
-Patch:            0016-Issue-6878-Prevent-repeated-disconnect-logs-during-s.patch
-Patch:            0017-Issue-6888-Missing-access-JSON-logging-for-TLS-Clien.patch
-Patch:            0018-Issue-6829-Update-parametrized-docstring-for-tests.patch
-Patch:            0019-Issue-6772-dsconf-Replicas-with-the-consumer-role-al.patch
-Patch:            0020-Issue-6893-Log-user-that-is-updated-during-password-.patch
-Patch:            0021-Issue-6352-Fix-DeprecationWarning.patch
-Patch:            0022-Issue-6880-Fix-ds_logs-test-suite-failure.patch
-Patch:            0023-Issue-6901-Update-changelog-trimming-logging.patch
-Patch:            0024-Issue-6895-Crash-if-repl-keep-alive-entry-can-not-be.patch
-Patch:            0025-Issue-6250-Add-test-for-entryUSN-overflow-on-failed-.patch
-Patch:            0026-Issue-6594-Add-test-for-numSubordinates-replication-.patch
-Patch:            0027-Issue-6884-Mask-password-hashes-in-audit-logs-6885.patch
-Patch:            0028-Issue-6897-Fix-disk-monitoring-test-failures-and-imp.patch
-Patch:            0029-Issue-6778-Memory-leak-in-roles_cache_create_object_.patch
-Patch:            0030-Issue-6901-Update-changelog-trimming-logging-fix-tes.patch
-Patch:            0031-Issue-6181-RFE-Allow-system-to-manage-uid-gid-at-sta.patch
-Patch:            0032-Issue-6468-CLI-Fix-default-error-log-level.patch
-Patch:            0033-Issue-6768-ns-slapd-crashes-when-a-referral-is-added.patch
-Patch:            0034-Issues-6913-6886-6250-Adjust-xfail-marks-6914.patch
-Patch:            0035-Issue-6875-Fix-dsidm-tests.patch
-Patch:            0036-Issue-6519-Add-basic-dsidm-account-tests.patch
-Patch:            0037-Issue-6940-dsconf-monitor-server-fails-with-ldapi-du.patch
-Patch:            0038-Issue-6936-Make-user-subtree-policy-creation-idempot.patch
-Patch:            0039-Issue-6919-numSubordinates-tombstoneNumSubordinates-.patch
-Patch:            0040-Issue-6910-Fix-latest-coverity-issues.patch
-Patch:            0041-Issue-6929-Compilation-failure-with-rust-1.89-on-Fed.patch
-Patch:            0042-Issue-6928-The-parentId-attribute-is-indexed-with-im.patch
-Patch:            0043-Issue-6933-When-deferred-memberof-update-is-enabled-.patch
-Patch:            0044-Issue-6753-Port-and-fix-ticket-47823-tests.patch
-Patch:            0045-Issue-6947-Revise-time-skew-check-in-healthcheck-too.patch
-Patch:            0046-Issue-6753-Port-ticket-49386-test-6987.patch
-Patch:            0047-Issue-7012-improve-dscrl-dbverify-result-when-backen.patch
-Patch:            0048-Issue-6753-Port-ticket-49073-test-7005.patch
-Patch:            0049-Issue-7014-memberOf-ignored-deferred-updates-with-LM.patch
-Patch:            0050-Issue-6954-do-not-delete-referrals-on-chain_on_updat.patch
-Patch:            0051-Issue-7021-Units-for-changing-MDB-max-size-are-not-c.patch
-Patch:            0052-Issue-6966-On-large-DB-unlimited-IDL-scan-limit-redu.patch
-Patch:            0053-Issue-7027-389-ds-base-OpenScanHub-Leaks-Detected-70.patch
-Patch:            0054-Issue-6753-Port-ticket-47931-test-7038.patch
-Patch:            0055-Issue-6979-Improve-the-way-to-detect-asynchronous-op.patch
-Patch:            0056-Issue-6846-Attribute-uniqueness-is-not-enforced-with.patch
-Patch:            0057-Issue-7047-MemberOf-plugin-logs-null-attribute-name-.patch
-Patch:            0058-Issue-7032-The-new-ipahealthcheck-test-ipahealthchec.patch
-Patch:            0059-Issue-7065-A-search-filter-containing-a-non-normaliz.patch
-Patch:            0060-Issue-7056-DSBLE0007-doesn-t-generate-remediation-st.patch
-Patch:            0061-Issue-7055-Online-initialization-of-consumers-fails-.patch
-Patch:            0062-Issue-7049-RetroCL-plugin-generates-invalid-LDIF.patch
-Patch:            0063-Issue-7007-Improve-paged-result-search-locking.patch
-Patch:            0064-Issue-7115-LeakSanitizer-leak-in-slapd_bind_local_us.patch
-Patch:            0065-Issue-7121-LeakSanitizer-various-leaks-during-replic.patch
-Patch:            0066-Issue-7172-Index-ordering-mismatch-after-upgrade-717.patch
-Patch:            0067-Issue-7172-2nd-Index-ordering-mismatch-after-upgrade.patch
-Patch:            0068-Issue-7128-memory-corruption-in-alias-entry-plugin-7.patch
-Patch:            0069-Issue-7150-Compressed-access-log-rotations-skipped-a.patch
-Patch:            0070-Issue-7096-During-replication-online-total-init-the-.patch
-Patch:            0071-Issue-7096-2nd-During-replication-online-total-init-.patch
-Patch:            0072-Issue-7189-DSBLE0007-generates-incorrect-remediation.patch
-Patch:            0073-Issue-7076-6992-6784-6214-Fix-CI-test-failures-7077.patch
-Patch:            0074-Issue-7076-Fix-revert_cache-never-called-in-modrdn-7.patch
-Patch:            0075-Issue-7223-Revert-index-scan-limits-for-system-index.patch
-Patch:            0076-Issue-7223-Add-upgrade-function-to-remove-nsIndexIDL.patch
-Patch:            0077-Issue-7223-Add-upgrade-function-to-remove-ancestorid.patch
-Patch:            0078-Issue-7223-Detect-and-log-index-ordering-mismatch-du.patch
-Patch:            0079-Issue-7223-Add-dsctl-index-check-command-for-offline.patch
-Patch:            0080-Issue-7223-Use-lexicographical-order-for-ancestorid-.patch
-Patch:            0081-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
-Patch:            0082-Issue-7121-2nd-LeakSanitizer-various-leaks-during-re.patch
-Patch:            0083-Issue-7053-Remove-memberof_del_dn_from_groups-from-M.patch
-Patch:            0084-Security-fix-for-CVE-2025-14905.patch
+Patch:            0001-Issue-7096-During-replication-online-total-init-the-.patch
+Patch:            0002-Issue-Revise-paged-result-search-locking.patch
+Patch:            0003-Issue-7108-Fix-shutdown-crash-in-entry-cache-destruc.patch
+Patch:            0004-Issue-7172-Index-ordering-mismatch-after-upgrade-717.patch
+Patch:            0005-Issue-7172-2nd-Index-ordering-mismatch-after-upgrade.patch
+Patch:            0006-Issue-6753-Port-ticket-548-test-7101.patch
+Patch:            0007-Issue-7152-ns-slapd-fails-to-shutdown-when-deferred-.patch
+Patch:            0008-Issue-7169-Fix-automember_plugin-CI-test-failures-71.patch
+Patch:            0009-Issue-6758-Use-OUIA-selectors-for-WebUI-plugin-tests.patch
+Patch:            0010-Issue-7196-DynamicCertificates-returns-empty-DER-719.patch
+Patch:            0011-Issue-7189-DSBLE0007-generates-incorrect-remediation.patch
+Patch:            0012-Issue-7170-Support-of-PQC-keys-7188.patch
+Patch:            0013-Bump-lodash-from-4.17.21-to-4.17.23-in-src-cockpit-3.patch
+Patch:            0014-Issue-7198-Web-console-doesn-t-show-sub-suffix-when-.patch
+Patch:            0015-Issue-7014-memberOf-ignored-deferred-updates-with-LM.patch
+Patch:            0016-Issue-7184-argparse.HelpFormatter-_format_actions_us.patch
+Patch:            0017-Issue-6947-Revise-time-skew-check-in-healthcheck-too.patch
+Patch:            0018-Issue-7201-Syscall-overhead-in-LMDB-import-writer-th.patch
+Patch:            0019-Issue-7096-2nd-During-replication-online-total-init-.patch
+Patch:            0020-Issue-7206-Should-log-whether-TLS-key-is-PQC-or-not-.patch
+Patch:            0021-Issue-7027-2nd-389-ds-base-OpenScanHub-Leaks-Detecte.patch
+Patch:            0022-Issue-7213-MDB_BAD_VALSIZE-error-while-handling-VLV-.patch
+Patch:            0023-Issue-6753-Port-ticket-47781-test-7210.patch
+Patch:            0024-Issue-7194-Repl-Log-Analysis-Add-CSN-propagation-det.patch
+Patch:            0025-Issue-6753-Port-ticket-48896-test.patch
+Patch:            0026-Issue-6810-Fix-PAM-PTA-test-7219.patch
+Patch:            0027-Issue-7076-Fix-revert_cache-never-called-in-modrdn-7.patch
+Patch:            0028-Issue-6951-Dynamic-Certificate-refresh-phase-4-Updat.patch
+Patch:            0029-Issue-7224-CI-Test-Simplify-test_reserve_descriptor_.patch
+Patch:            0030-Issue-7178-Bundled-jemalloc-fails-to-build-with-GCC-.patch
+Patch:            0031-Issue-7121-2nd-LeakSanitizer-various-leaks-during-re.patch
+Patch:            0032-Issue-7223-Revert-index-scan-limits-for-system-index.patch
+Patch:            0033-Issue-7223-Add-upgrade-function-to-remove-nsIndexIDL.patch
+Patch:            0034-Issue-7223-Add-upgrade-function-to-remove-ancestorid.patch
+Patch:            0035-Issue-7223-Detect-and-log-index-ordering-mismatch-du.patch
+Patch:            0036-Issue-7223-Add-dsctl-index-check-command-for-offline.patch
+Patch:            0037-Issue-7230-Regression-in-healtcheck-NssCheck-7235.patch
+Patch:            0038-Issue-3555-UI-Fix-audit-issue-with-npm-isaacs-brace-.patch
+Patch:            0039-Issue-7221-CI-tests-fix-some-flaky-tests.patch
+Patch:            0040-Issue-7233-test_produce_division_by_zero-fails-with-.patch
+Patch:            0041-Issue-7241-Drop-dateutil-7242.patch
+Patch:            0042-Issue-7231-Sync-repl-tests-fail-in-FIPS-mode-due-to-.patch
+Patch:            0043-Issue-7248-CLI-attribute-uniqueness-fix-usage-for-ex.patch
+Patch:            0044-Issue-CLI-dsctl-db2index-needs-some-hardening-with-M.patch
+Patch:            0045-Issue-7252-PQC-Need-to-iterate-on-SECOidTag-instead-.patch
+Patch:            0046-Issue-6951-Dynamic-Certificas-Refresh-CI-tests-7238.patch
+Patch:            0047-Issue-7184-2nd-argparse.HelpFormatter-_format_action.patch
+Patch:            0048-Issue-7213-2nd-MDB_BAD_VALSIZE-error-while-handling-.patch
+Patch:            0049-Issue-7223-Use-lexicographical-order-for-ancestorid-.patch
+Patch:            0050-Issue-3134-Fix-build-break-7260.patch
+Patch:            0051-Issue-7066-7052-allow-password-history-to-be-set-to-.patch
+Patch:            0052-Issue-7243-UI-add-support-for-hot-certificates.patch
+Patch:            0053-Issue-6758-Fix-Enable-Replication-dropdown-not-openi.patch
+Patch:            0054-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
+Patch:            0055-Issue-7236-Fix-GSSAPI-tests-7237.patch
+Patch:            0056-Issue-6753-Port-ticket-49039-test.patch
+Patch:            0057-Issue-5853-Update-concread-to-0.5.10.patch
+Patch:            0058-Issue-7271-plugins-that-create-threads-need-to-updat.patch
+Patch:            0059-Issue-7273-In-a-chaining-environment-binding-as-remo.patch
+Patch:            0060-Issue-7279-UI-Fix-typo-in-export-certificate-dialog-.patch
+Patch:            0061-Issue-7275-UI-Improve-password-policy-field-validati.patch
+Patch:            0062-Issue-7246-correct-formatting-of-Gen-as-CSN-in-dsctl.patch
+Patch:            0063-Security-fix-for-CVE-2025-14905.patch
+Patch:            0064-Issue-7267-MDB_BAD_VALSIZE-error-when-updating-index.patch
+Patch:            0065-Issue-7271-implement-a-pre-close-plugin-function.patch
+Patch:            0066-Issue-7271-Add-new-plugin-pre-close-function-check-t.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -522,9 +488,13 @@ cd src/lib389
 
 %prep
 %autosetup -p1 -n %{name}-%{version}
+%if %{defined SOURCE6}
 rm -rf vendor
 tar xzf %{SOURCE6}
+%endif
+%if %{defined SOURCE7}
 cp %{SOURCE7} src/Cargo.lock
+%endif
 
 %if %{with bundle_jemalloc}
 %setup -q -n %{name}-%{version} -T -D -b 3
@@ -939,74 +909,125 @@ exit 0
 
 %changelog
 ## START: Generated by rpmautospec
-* Fri Feb 20 2026 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-7
-- Bump version to 3.1.3-7
-- Resolves: RHEL-117764 - Replication online reinitialization of a large
-  database gets stalled. [rhel-10.1.z]
-- Resolves: RHEL-123274 - LDAP high CPU usage while handling indexes with
-  IDL scan limit at INT_MAX [rhel-10.1.z]
-- Resolves: RHEL-123281 - The new ipahealthcheck test
-  ipahealthcheck.ds.backends.BackendsCheck raises CRITICAL issue
-  [rhel-10.1.z]
-- Resolves: RHEL-123370 - IPA health check up script shows time skew is
-  over 24 hours [rhel-10.1.z]
-- Resolves: RHEL-129560 - Online initialization of consumers fails with
-  error -23 [rhel-10.1.z]
-- Resolves: RHEL-137071 - CVE-2025-14905 389-ds-base: Remote Code Execution
-  and Denial of Service via heap buffer overflow [rhel-10.1.z]
-- Resolves: RHEL-138484 - Memory leak observed in ns-slapd with 389-ds-
-  base-2.6.1-12 [rhel-10.1.z]
-- Resolves: RHEL-140091 - Upgrading IDM to latest version: 389-ds-base and
-  ipa-server breaks replication  [rhel-10.1.z]
-- Resolves: RHEL-142981 - Scalability issue of replication online
-  initialization with large database [rhel-10.1.z]
-- Resolves: RHEL-146896 - memory corruption in alias entry plugin
-  [rhel-10.1.z]
-- Resolves: RHEL-147213 - Access logs are not getting deleted as
-  configured. [rhel-10.1.z]
-- Resolves: RHEL-150908 - Remove memberof_del_dn_from_groups from MemberOf
-  plugin [rhel-10.1.z]
+* Thu Mar 05 2026 Viktor Ashirov <vashirov@redhat.com> - 3.2.0-6
+- Bump version to 3.2.0-6
+- Resolves: RHEL-86312 - Crash in trim_changelog() during the Retro
+  Changelog trimming.
 
-* Fri Jan 16 2026 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-6
-- Resolves: RHEL-117764 - Replication online reinitialization of a large
-  database gets stalled. [rhel-10.1.z]
-- Resolves: RHEL-117773 - When the server restarts after a crash, the RFE
-  assumes memberof should be recomputed. It triggers a memberof fixup task,
-  dirsrv became unresponsive. [rhel-10.1.z]
-- Resolves: RHEL-123233 - Improve the way to detect asynchronous operations
-  in the access logs [rhel-10.1.z]
-- Resolves: RHEL-123246 - Attribute uniqueness is not enforced upon modrdn
-  operation [rhel-10.1.z]
-- Resolves: RHEL-123260 - Typo in errors log after a Memberof fixup task.
-  [rhel-10.1.z]
-- Resolves: RHEL-123274 - LDAP high CPU usage while handling indexes with
-  IDL scan limit at INT_MAX [rhel-10.1.z]
-- Resolves: RHEL-123281 - The new ipahealthcheck test
+* Sat Feb 28 2026 Viktor Ashirov <vashirov@redhat.com> - 3.2.0-5
+- Bump version to 3.2.0-5
+
+* Fri Feb 27 2026 Viktor Ashirov <vashirov@redhat.com> - 3.2.0-4
+- Bump version to 3.2.0-4
+- Resolves: RHEL-86312 - Crash in trim_changelog() during the Retro
+  Changelog trimming.
+- Resolves: RHEL-133085 - Replica installation is failing with message
+  MDB_BAD_VALSIZE: Unsupported size of key/DB name/data, or wrong DUPFIXED
+- Resolves: RHEL-137072 - CVE-2025-14905 389-ds-base: 389-ds-base: Remote
+  Code Execution and Denial of Service via heap buffer overflow [rhel-10.2]
+- Resolves: RHEL-138729 - Crash ( Segmentation fault ) in
+  atomic_compare_exchange()
+
+* Fri Feb 20 2026 Viktor Ashirov <vashirov@redhat.com> - 3.2.0-3
+- Bump version to 3.2.0-3
+- Resolves: RHEL-76835 - Web console doesn't show the sub suffix of
+  ou=foo,ou=people,dc=example,dc=com.
+- Resolves: RHEL-86320 - [RFE] Support updating/renewing TLS certificate
+  without restarting slapd
+- Resolves: RHEL-110192 - ns-slapd doesn't support PQC keys
+- Resolves: RHEL-111220 - RHDS-11.9 dsctl db2index --attr recreates all
+  indexes instead of selected ones
+- Resolves: RHEL-111931 - Improve error messages for dsconf localpwp list
+- Resolves: RHEL-121981 - Setting password history count to 0 does not
+  flush history
+- Resolves: RHEL-122625 - ipa-healthcheck is complaining about missing or
+  incorrectly configured system indexes.
+- Resolves: RHEL-128906 - Scalability issue of replication online
+  initialization with large database
+- Resolves: RHEL-137786 - Upgrading IDM to latest version: 389-ds-base and
+  ipa-server breaks replication
+- Resolves: RHEL-146769 - Remove memberof_del_dn_from_groups from MemberOf
+  plugin
+
+* Mon Jan 12 2026 Viktor Ashirov <vashirov@redhat.com> - 3.2.0-2
+- Resolves: RHEL-137786 - Upgrading IDM to latest version: 389-ds-base and
+  ipa-server breaks replication
+
+* Thu Jan 08 2026 Viktor Ashirov <vashirov@redhat.com> - 3.2.0-1
+- Update to 3.2.0
+- Resolves: RHEL-18041 - [RFE] When there are multiple backends cache auto-
+  tune should adapt its tuning
+- Resolves: RHEL-58682 - [RFE]  modify entry cache eviction strategy to
+  allow large groups to stay in the cache
+- Resolves: RHEL-64019 - Units for changing MDB max size are not consistent
+  across different tools
+- Resolves: RHEL-83274 - Replication online reinitialization of a large
+  database gets stalled.
+- Resolves: RHEL-83852 - LDAP high CPU usage while handling indexes with
+  IDL scan limit at INT_MAX
+- Resolves: RHEL-86534 - [RFE] Support Dynamic Groups similar to OpenLDAP
+- Resolves: RHEL-89601 - (&(cn:dn:=groups)) no longer returns results
+- Resolves: RHEL-94025 - PAM Pass Through Authentication Plugin processes
+  requests for accounts that do not meet the criteria specified in the
+  `pamFilter` option.
+- Resolves: RHEL-95395 - Getting "build_candidate_list - Database error 11"
+  messages after migrating to LMDB.
+- Resolves: RHEL-96196 - Duplicate/double local password policy entry
+  display from redhat directory server webconsole
+- Resolves: RHEL-99331 - [RFE] Need an option with dsconf to delete all the
+  conflicts at once instead of deleting each conflict one after the other
+- Resolves: RHEL-105578 - IPA health check up script shows time skew is
+  over 24 hours
+- Resolves: RHEL-106502 - Ignore the memberOfDeferredUpdate setting when
+  LMDB is used.
+- Resolves: RHEL-106559 - When deferred memberof update is enabled after
+  the server crashed it should not launch memberof fixup task by default
+- Resolves: RHEL-106849 - Abort the offline import if the root entry cannot
+  be added.
+- Resolves: RHEL-107003 - Improve output dsctl dbverify when backend does
+  not exist
+- Resolves: RHEL-109113 - [RFE] memberOf plugin - Add scope for specific
+  groups
+- Resolves: RHEL-111219 - Attribute uniqueness is not enforced upon modrdn
+  operation
+- Resolves: RHEL-113965 - RetroCL plugin generates invalid LDIF
+- Resolves: RHEL-115179 - Several password related attributes are not
+  replicating from the Replicas to the Masters
+- Resolves: RHEL-115484 - ns-slapd crash in libdb, possible memory
+  corruption
+- Resolves: RHEL-116060 - Fix paged result search locking
+- Resolves: RHEL-117124 - Missing access JSON logging for TLS/CLient auth
+- Resolves: RHEL-117140 - Changelog trimming - add number of scanned
+  entries to the log
+- Resolves: RHEL-117520 - Typo in errors log after a Memberof fixup task.
+- Resolves: RHEL-121208 - [RFE] Make nsslapd-haproxy-trusted-ip accept
+  whole subnets
+- Resolves: RHEL-122625 - ipa-healthcheck is complaining about missing or
+  incorrectly configured system indexes.
+- Resolves: RHEL-122674 - [WebUI] Replication tab crashes after enabling
+  replication as a consumer
+- Resolves: RHEL-123220 - Improve the way to detect asynchronous operations
+  in the access logs
+- Resolves: RHEL-123275 - The new ipahealthcheck test
   ipahealthcheck.ds.backends.BackendsCheck raises CRITICAL issue
-  [rhel-10.1.z]
-- Resolves: RHEL-123370 - IPA health check up script shows time skew is
-  over 24 hours [rhel-10.1.z]
-- Resolves: RHEL-123768 - 389-ds-base OpenScanHub Leaks Detected
-  [rhel-10.1.z]
-- Resolves: RHEL-123854 - Units for changing MDB max size are not
-  consistent across different tools [rhel-10.1.z]
-- Resolves: RHEL-123895 - Improve output dsctl dbverify when backend does
-  not exist [rhel-10.1.z]
-- Resolves: RHEL-123898 - [WebUI] Replication tab crashes after enabling
-  replication as a consumer [rhel-10.1.z]
-- Resolves: RHEL-126554 - RHDS 12.6 doesn't handle 'ldapsearch' filter with
-  space char in DN name correctly [rhel-10.1.z]
-- Resolves: RHEL-129560 - Online initialization of consumers fails with
-  error -23 [rhel-10.1.z]
-- Resolves: RHEL-129581 - Fix paged result search locking [rhel-10.1.z]
-- Resolves: RHEL-138484 - Memory leak observed in ns-slapd with 389-ds-
-  base-2.6.1-12 [rhel-10.1.z]
-- Resolves: RHEL-138487 - RetroCL plugin generates invalid LDIF
-  [rhel-10.1.z]
-- Resolves: RHEL-140091 - Upgrading IDM  to latest version: 389-ds-base and
-  ipa-server breaks replication  [rhel-10.1.z]
-- Resolves: RHEL-140277 - ipa-healthcheck is complaining about missing or
-  incorrectly configured system indexes. [rhel-10.1.z]
+- Resolves: RHEL-123663 - Online initialization of consumers fails with
+  error -23
+- Resolves: RHEL-123664 - RHDS 12.6 doesn't handle 'ldapsearch' filter with
+  space char in DN name correctly
+- Resolves: RHEL-123762 - 389-ds-base OpenScanHub Leaks Detected
+- Resolves: RHEL-124694 - Access logs are not getting deleted as
+  configured.
+- Resolves: RHEL-126535 - memory corruption in alias entry plugin
+- Resolves: RHEL-128906 - Scalability issue of replication online
+  initialization with large database
+- Resolves: RHEL-129675 - Can't locate CSN error seen in errors log when
+  replicating after importing data from ldif files
+- Resolves: RHEL-131129 - ns-slapd[2233]: segfault at 0 ip 00007f1f1d7cd7fc
+  sp 00007f1e775fc070 error 4 in libjemalloc.so.2[7f1f1d738000+ac000] on
+  389-ds-base-2.6.1-11
+- Resolves: RHEL-133795 - Memory leak observed in ns-slapd with 389-ds-
+  base-2.6.1-12
+- Resolves: RHEL-139826 - Rebase 389-ds-base to 3.2.x
 
 * Thu Sep 18 2025 Viktor Ashirov <vashirov@redhat.com> - 3.1.3-5
 - Resolves: RHEL-101727 - The numSubordinates value is not matching the
