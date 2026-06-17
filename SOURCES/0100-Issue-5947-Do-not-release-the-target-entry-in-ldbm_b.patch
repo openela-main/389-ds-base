@@ -1,0 +1,43 @@
+From dfb686b4d3542c931dcfd4b8ad641a319566d7dc Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Fri, 17 Nov 2023 12:33:38 +0100
+Subject: [PATCH 13/13] Issue 5947 - Do not release the target entry in
+ ldbm_back_search_cleanup
+
+Partial backport from f5bd03748 for 1.4.3.
+---
+ ldap/servers/slapd/back-ldbm/ldbm_search.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_search.c b/ldap/servers/slapd/back-ldbm/ldbm_search.c
+index 27301f453..768151985 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_search.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_search.c
+@@ -157,7 +157,9 @@ ldbm_back_search_cleanup(Slapi_PBlock *pb,
+     ldbm_instance *inst;
+     back_search_result_set *sr = NULL;
+     int free_candidates = 1;
++    Slapi_Operation *op = NULL;
+ 
++    slapi_pblock_get(pb, SLAPI_OPERATION, &op);
+     slapi_pblock_get(pb, SLAPI_BACKEND, &be);
+     inst = (ldbm_instance *)be->be_instance_info;
+     /*
+@@ -165,7 +167,13 @@ ldbm_back_search_cleanup(Slapi_PBlock *pb,
+      * clean it up for the following sessions.
+      */
+     slapi_be_unset_flag(be, SLAPI_BE_FLAG_DONT_BYPASS_FILTERTEST);
+-    CACHE_RETURN(&inst->inst_cache, &e); /* NULL e is handled correctly */
++    if (e != operation_get_target_entry(op)) {
++        /*
++         * Target entry is released later on
++         * (in cache_return_target_entry called by op_shared_search).
++         */
++        CACHE_RETURN(&inst->inst_cache, &e); /* NULL e is handled correctly */
++    }
+     if (inst->inst_ref_count) {
+         slapi_counter_decrement(inst->inst_ref_count);
+     }
+-- 
+2.52.0
+

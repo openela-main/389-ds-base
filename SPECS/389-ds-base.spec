@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}23%{?prerel}%{?dist}
+Release:          %{?relprefix}24%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -385,7 +385,22 @@ Patch84:          0084-Issue-7223-Use-lexicographical-order-for-ancestorid.patch
 Patch85:          0085-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
 Patch86:          0086-Security-fix-for-CVE-2025-14905.patch
 Patch87:          0087-Issue-7096-During-replication-online-total-init-the-.patch
-
+Patch88:          0088-Issue-7366-Memory-leaks-in-syncrepl-plugin-during-pe.patch
+Patch89:          0089-Issue-7126-WARN-keys2idl-received-NULL-idl-from-inde.patch
+Patch90:          0090-Issue-7124-2nd-BDB-cursor-race-condition-with-transa.patch
+Patch91:          0091-Issue-7124-BDB-cursor-race-condition-with-transactio.patch
+Patch92:          0092-Issue-7380-Internal-op-with-negative-wtime-and-large.patch
+Patch93:          0093-Issue-7152-ns-slapd-fails-to-shutdown-when-deferred-.patch
+Patch94:          0094-Issue-7271-plugins-that-create-threads-need-to-updat.patch
+Patch95:          0095-Issue-7271-implement-a-pre-close-plugin-function.patch
+Patch96:          0096-Issue-7271-Add-new-plugin-pre-close-function-check-t.patch
+Patch97:          0097-Issue-7304-retrocl-should-not-cache-DN.patch
+Patch98:          0098-Issue-7291-Crash-when-configuring-a-replica-with-an-.patch
+Patch99:          0099-Issue-7300-RFE-Add-OS-level-thread-names-to-all-serv.patch
+Patch100:         0100-Issue-5947-Do-not-release-the-target-entry-in-ldbm_b.patch
+Patch101:         0101-Issue-7271-fixed-build-error-in-repl5_init.patch
+Patch102:         0102-Issue-6929-Compilation-failure-with-rust-1.89.patch
+Patch103:         0103-Issue-7503-CVE-2026-9064-Add-a-limit-to-the-number-c.patch
 
 #Patch100:         cargo.patch
 
@@ -1045,6 +1060,20 @@ exit 0
 %doc README.md
 
 %changelog
+* Wed May 13 2026 Arun Bansal <arbansal@redhat.com> - 1.4.3.39-24
+- Bump version to 1.4.3.39-24
+- Resolves: RHEL-170278 - Memory leaks in syncrepl plugin during persistent search operations [rhel-8.10.z]
+- Resolves: RHEL-163375 - WARN - keys2idl - received NULL idl from index_read_ext_allids
+- Resolves: RHEL-159306 - ns-slapd crash in libdb possible memory corruption [rhel-8.10.z]
+- Resolves: RHEL-170284 - access log - suspicious wtime optime negative and large values in internal op [rhel-8.10.z]
+- Resolves: RHEL-170507 - ns-slapd fails to shutdown when deferred memberof update is in progress [rhel-8.10.z]
+- Resolves: RHEL-170509 - Crash in trim_changelog() during the Retro Changelog trimming [rhel-8.10.z]
+- Resolves: RHEL-170514 - Possible memory leak when using the Retro Changelog plugin [rhel-8.10.z]
+- Resolves: RHEL-170512 - Crash in replica_config_add when manually configuring a replica with an incorrect nsds5ReplicaRoot [rhel-8.10.z]
+- Resolves: RHEL-174523 - [RFE] Add OS-level thread names to all server threads [rhel-8.10.z]
+- Resolves: RHEL-170483 - test_vlv_recreation_reindex fails on LMDB [rhel-8.10.z]
+- Resolves: RHEL-178076 - CVE-2026-9064 389-ds:1.4/389-ds-base: unbounded LDAP controls count in get_ldapmessage_controls_ext() causes CPU and heap amplification (remote DoS) [rhel-8.10.z]
+
 * Wed Mar 04 2026 Arun Bansal <arbansal@redhat.com> - 1.4.3.39-23
 - Resolves: RHEL-137074 - CVE-2025-14905 389-ds:1.4/389-ds-base: 389-ds-base: Remote Code Execution and Denial of Service via heap buffer overflow [rhel-8.10.z]
 - Resolves: RHEL-152098 - Scalability issue of replication online initialization with large database [rhel-8.10.z]

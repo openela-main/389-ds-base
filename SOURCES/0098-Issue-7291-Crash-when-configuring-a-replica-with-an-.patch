@@ -1,0 +1,136 @@
+From 317360e7704aacfba1b05d3f68ab99be0fa427b4 Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Tue, 3 Mar 2026 16:04:16 +0000
+Subject: [PATCH 11/13] Issue 7291 - Crash when configuring a replica with an
+ incorrect nsds5ReplicaRoot (#7292)
+
+Description:
+Configuring a replica when the replica_root does not exist, results in
+a NULL mapping tree node extension, which is deferenced without checking
+for NULL.
+
+Fix:
+Add a  NULL check, log an error message, return LDAP_UNWILLING_TO_PERFORM. Added a CI test.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7291
+
+Reviewed by: @progier389, @mreynolds389, @droideck  (Thank you)
+---
+ .../suites/replication/replica_config_test.py | 41 +++++++++++++++++++
+ .../replication/repl5_replica_config.c        | 20 ++++++---
+ 2 files changed, 55 insertions(+), 6 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/replication/replica_config_test.py b/dirsrvtests/tests/suites/replication/replica_config_test.py
+index 570c3877b..1f1cde565 100644
+--- a/dirsrvtests/tests/suites/replication/replica_config_test.py
++++ b/dirsrvtests/tests/suites/replication/replica_config_test.py
+@@ -17,6 +17,7 @@ from lib389.topologies import topology_st as topo
+ from lib389.replica import Replicas
+ from lib389.agreement import Agreements
+ from lib389.utils import ds_is_older
++from lib389 import Entry
+ 
+ pytestmark = pytest.mark.tier1
+ 
+@@ -39,6 +40,7 @@ replica_dict = {'nsDS5ReplicaRoot': 'dc=example,dc=com',
+                 'nsDS5ReplicaBindDN': 'cn=u',
+                 'cn': 'replica'}
+ 
++
+ agmt_dict = {'cn': 'test_agreement',
+              'nsDS5ReplicaRoot': 'dc=example,dc=com',
+              'nsDS5ReplicaHost': 'localhost.localdomain',
+@@ -193,6 +195,45 @@ def test_replica_num_modify(topo, attr, too_small, too_big, overflow, notnum, va
+     # Value is valid
+     replica.replace(attr, valid)
+ 
++def test_replica_config_add_nonexistent_replicaroot(topo):
++    """Test that adding a replica config entry with a non existent
++     nsds5replicaroot is correctly rejected.
++
++    :id: 8eec4244-8ebb-40e1-b6f7-364b85a1862b
++    :parametrized: no
++    :setup: standalone instance
++    :steps:
++        1. Attempt to add a replica config entry with an invalid nsds5replicaroot
++        2. Verify that no replica entry is created
++        3. Verify the server is still running
++    :expectedresults:
++        1. The operation is rejected with UNWILLING_TO_PERFORM
++        2. Success
++        3. Success
++    """
++    inst = topo.standalone
++    dn = "cn=replica,cn=dc\\3Dexample\\2Cdc\\3Dcom,cn=mapping tree,cn=config"
++
++    entry = Entry((dn, {
++        'objectclass': [
++            'top',
++            'nsds5replica',
++            'extensibleObject'
++        ],
++        'cn': 'replica',
++        'nsds5replicaroot': 'ou=idontexist',
++        'nsds5replicaid': '65535',
++        'nsds5replicatype': '2',
++        'nsds5ReplicaBindDN': 'cn=replication manager,cn=config',
++        'nsds5flags': '0',
++    }))
++    with pytest.raises(ldap.UNWILLING_TO_PERFORM ):
++        inst.add_s(entry)
++
++    with pytest.raises(ldap.NO_SUCH_OBJECT):
++        inst.getEntry(dn, ldap.SCOPE_BASE, '(objectClass=*)')
++
++    assert inst.status()
+ 
+ @pytest.mark.xfail(reason="Agreement validation current does not work.")
+ @pytest.mark.parametrize("attr, too_small, too_big, overflow, notnum, valid", agmt_attrs)
+diff --git a/ldap/servers/plugins/replication/repl5_replica_config.c b/ldap/servers/plugins/replication/repl5_replica_config.c
+index 8cc7423bf..c6d730892 100644
+--- a/ldap/servers/plugins/replication/repl5_replica_config.c
++++ b/ldap/servers/plugins/replication/repl5_replica_config.c
+@@ -279,10 +279,17 @@ replica_config_add(Slapi_PBlock *pb __attribute__((unused)),
+     replica_add_by_dn(replica_root);
+ 
+     mtnode_ext = _replica_config_get_mtnode_ext(e);
+-    PR_ASSERT(mtnode_ext);
+-
++    if (mtnode_ext == NULL) {
++        if (errortext != NULL) {
++            PR_snprintf(errortext, SLAPI_DSE_RETURNTEXT_SIZE, "replica root '%s' does not exist", replica_root);
++        }
++        slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name, "replica_config_add - replica root '%s' does not exist",
++            replica_root);
++        *returncode = LDAP_UNWILLING_TO_PERFORM;
++        goto done;
++    }
+     if (mtnode_ext->replica) {
+-        if ( errortext != NULL ) {
++        if (errortext != NULL) {
+             PR_snprintf(errortext, SLAPI_DSE_RETURNTEXT_SIZE, MSG_ALREADYCONFIGURED, replica_root);
+         }
+         slapi_log_err(SLAPI_LOG_ERR, repl_plugin_name, "replica_config_add - "MSG_ALREADYCONFIGURED, replica_root);
+@@ -306,15 +313,16 @@ replica_config_add(Slapi_PBlock *pb __attribute__((unused)),
+ 
+     /* add replica object to the hash */
+     *returncode = replica_add_by_name(replica_get_name(r), r); /* Increments object refcnt */
+-    /* delete the dn from the dn hash - done with configuration */
+-    replica_delete_by_dn(replica_root);
+ 
+ done:
+ 
++    /* delete the dn from the dn hash - done with configuration */
++    replica_delete_by_dn(replica_root);
++
+     PR_Unlock(s_configLock);
+ 
+     if (*returncode != LDAP_SUCCESS) {
+-        if (mtnode_ext->replica)
++        if (mtnode_ext && mtnode_ext->replica)
+             object_release(mtnode_ext->replica);
+         return SLAPI_DSE_CALLBACK_ERROR;
+     } else
+-- 
+2.52.0
+

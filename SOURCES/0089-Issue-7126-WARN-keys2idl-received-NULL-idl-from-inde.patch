@@ -1,0 +1,197 @@
+From f02302eb0967647fc0bb08b9de9900f6c9b47396 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Thu, 2 Apr 2026 11:44:19 +0200
+Subject: [PATCH 02/13] Issue 7126 - WARN - keys2idl - received NULL idl from
+ index_read_ext_allids (#7127)
+
+Bug Description:
+Under high concurrency, occasional NULL IDL warnings were logged:
+
+[29/Nov/2025:22:59:13.930441639 +0000] - WARN - keys2idl - received NULL idl from index_read_ext_allids, treating as empty set
+[29/Nov/2025:22:59:13.936543122 +0000] - WARN - keys2idl - this is probably a bug that should be reported
+[29/Nov/2025:22:59:13.947131944 +0000] - ERR - build_candidate_list - Database error -12795
+
+Since #7124 all cursor operations use transaction isolation, which
+increases read-write lock contention under high concurrency. Deadlocked
+read transactions returned DBI_RC_RETRY, and after retry exhaustion
+`index_read_ext_allids()` returned NULL to callers that did not expect it.
+
+Fix Description:
+* Ensure `index_read_ext_allids()` never returns NULL. All early exits
+  and the retry-exhaustion path now return `idl_alloc(0)` (empty IDL).
+* Increase IDL_FETCH_RETRY_COUNT from 5 to 10 and replace the uniform
+  random sleep with exponential backoff.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7126
+
+Reviewed by: @tbordaz, @droideck, @progier389 (Thanks!)
+---
+ ldap/servers/slapd/back-ldbm/back-ldbm.h      |  2 +-
+ .../slapd/back-ldbm/db-bdb/bdb_ldif2db.c      |  5 +-
+ ldap/servers/slapd/back-ldbm/index.c          | 51 +++++++++++++++----
+ 3 files changed, 46 insertions(+), 12 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/back-ldbm.h b/ldap/servers/slapd/back-ldbm/back-ldbm.h
+index 462d1763c..25cbfb59b 100644
+--- a/ldap/servers/slapd/back-ldbm/back-ldbm.h
++++ b/ldap/servers/slapd/back-ldbm/back-ldbm.h
+@@ -165,7 +165,7 @@ typedef unsigned short u_int16_t;
+ #define SUBLEN 3
+ #define LDBM_CACHE_RETRY_COUNT 1000        /* Number of times we re-try a cache operation */
+ #define RETRY_CACHE_LOCK       2           /* error code to signal a retry of the cache lock */
+-#define IDL_FETCH_RETRY_COUNT  5           /* Number of times we re-try idl_fetch if it returns deadlock */
++#define IDL_FETCH_RETRY_COUNT  10          /* Number of times we re-try idl_fetch if it returns deadlock */
+ #define IMPORT_SUBCOUNT_HASHTABLE_SIZE 500 /* Number of buckets in hash used to accumulate subcount for broody parents */
+ 
+ /* minimum max ids that a single index entry can map to in ldbm */
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_ldif2db.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_ldif2db.c
+index 7972850e9..7d904df91 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_ldif2db.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_ldif2db.c
+@@ -531,8 +531,8 @@ bdb_fetch_subtrees(backend *be, char **include, int *err)
+             *err = ldbm_ancestorid_read(be, txn, id, &idl);
+         }
+         slapi_sdn_done(&sdn);
+-        if (idl == NULL) {
+-            if (DB_NOTFOUND == *err) {
++        if (idl == NULL || IDL_NIDS(idl) == 0) {
++            if (*err == 0 || DB_NOTFOUND == *err) {
+                 slapi_log_err(SLAPI_LOG_BACKLDBM,
+                               "bdb_fetch_subtrees", "Entry id %u has no descendants according to %s. "
+                                                      "Index file created by this reindex will be empty.\n",
+@@ -543,6 +543,7 @@ bdb_fetch_subtrees(backend *be, char **include, int *err)
+                               "bdb_fetch_subtrees", "%s not indexed on %u\n",
+                               entryrdn_get_noancestorid() ? "entryrdn" : "ancestorid", id);
+             }
++            idl_free(&idl);
+             continue;
+         }
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/index.c b/ldap/servers/slapd/back-ldbm/index.c
+index 30fa09ebb..b22dda3c3 100644
+--- a/ldap/servers/slapd/back-ldbm/index.c
++++ b/ldap/servers/slapd/back-ldbm/index.c
+@@ -932,7 +932,7 @@ index_read_ext_allids(
+     prefix = index_index2prefix(indextype);
+     if (prefix == NULL) {
+         slapi_log_err(SLAPI_LOG_ERR, "index_read_ext_allids", "NULL prefix\n");
+-        return NULL;
++        return idl_alloc(0);
+     }
+     if (slapi_is_loglevel_set(LDAP_DEBUG_TRACE)) {
+         slapi_log_err(SLAPI_LOG_TRACE, "index_read_ext_allids", "=> ( \"%s\" %s \"%s\" )\n",
+@@ -948,7 +948,7 @@ index_read_ext_allids(
+     if (ai == NULL) {
+         index_free_prefix(prefix);
+         slapi_ch_free_string(&basetmp);
+-        return NULL;
++        return idl_alloc(0);
+     }
+ 
+     slapi_log_err(SLAPI_LOG_ARGS, "index_read_ext_allids", "indextype: \"%s\" indexmask: 0x%x\n",
+@@ -967,7 +967,7 @@ index_read_ext_allids(
+         slapi_ch_free_string(&basetmp);
+         if (NULL == val || NULL == val->bv_val) {
+             /* entrydn value was not given */
+-            return NULL;
++            return idl_alloc(0);
+         }
+         slapi_sdn_init_dn_byval(&sdn, val->bv_val);
+         rc = entryrdn_index_read(be, &sdn, &id, txn);
+@@ -976,11 +976,11 @@ index_read_ext_allids(
+             /* return an empty list */
+             return idl_alloc(0);
+         } else if (rc) { /* failure */
+-            return NULL;
++            return idl_alloc(0);
+         } else { /* success */
+             rc = idl_append_extend(&idl, id);
+             if (rc) { /* failure */
+-                return NULL;
++                return idl_alloc(0);
+             }
+             return idl;
+         }
+@@ -1022,11 +1022,11 @@ index_read_ext_allids(
+     }
+     if ((*err = dblayer_get_index_file(be, ai, &db, DBOPEN_CREATE)) != 0) {
+         slapi_log_err(SLAPI_LOG_TRACE, "index_read_ext_allids",
+-                      "<=  NULL (index file open for attr %s)\n",
++                      "<=  empty IDL (index file open for attr %s)\n",
+                       basetype);
+         index_free_prefix(prefix);
+         slapi_ch_free_string(&basetmp);
+-        return (NULL);
++        return idl_alloc(0);
+     }
+ 
+     if (val != NULL) {
+@@ -1067,12 +1067,32 @@ index_read_ext_allids(
+         idl = idl_fetch_ext(be, db, &key, db_txn, ai, err, allidslimit);
+         if (*err == DB_LOCK_DEADLOCK) {
+             ldbm_nasty("index_read_ext_allids", "index read retrying transaction", 1045, *err);
++            slapi_log_err(SLAPI_LOG_BACKLDBM, "index_read_ext_allids",
++                          "DBI_RC_RETRY on retry %d/%d for %s\n",
++                          retry_count + 1, IDL_FETCH_RETRY_COUNT, basetype);
+ #ifdef FIX_TXN_DEADLOCKS
+ #error can only retry here if txn == NULL - otherwise, have to abort and retry txn
+ #endif
+-            interval = PR_MillisecondsToInterval(slapi_rand() % 100);
++            /* Exponential backoff with jitter, capped at 200ms */
++            {
++                PRUint32 backoff_ms = 10;
++                int i;
++                for (i = 0; i < retry_count && backoff_ms < 200; i++) {
++                    backoff_ms *= 2;
++                }
++                if (backoff_ms > 200) {
++                    backoff_ms = 200;
++                }
++                backoff_ms += slapi_rand() % (backoff_ms + 1);
++                interval = PR_MillisecondsToInterval(backoff_ms);
++            }
+             DS_Sleep(interval);
+             continue;
++        } else if (*err == DB_NOTFOUND) {
++            /* Key not found in index - this is normal, not an error */
++            idl_free(&idl);
++            idl = idl_alloc(0);
++            break;
+         } else if (*err != 0 || idl == NULL) {
+             /* The database might not exist. We have to assume it means empty set */
+             slapi_log_err(SLAPI_LOG_TRACE, "index_read_ext_allids", "Failed to access idl index for %s\n", basetype);
+@@ -1086,10 +1106,13 @@ index_read_ext_allids(
+     }
+     if (retry_count == IDL_FETCH_RETRY_COUNT) {
+         ldbm_nasty("index_read_ext_allids", "index_read retry count exceeded", 1046, *err);
++        /* Ensure we don't return NULL after exhausting retries */
++        if (idl == NULL) {
++            idl = idl_alloc(0);
++        }
+     } else if (*err != 0 && *err != DB_NOTFOUND) {
+         ldbm_nasty("index_read_ext_allids", errmsg, 1050, *err);
+     }
+-    slapi_ch_free_string(&basetmp);
+     slapi_ch_free_string(&tmpbuf);
+ 
+     dblayer_release_index_file(be, ai, db);
+@@ -1100,6 +1123,16 @@ index_read_ext_allids(
+         ber_bvfree(encrypted_val);
+     }
+ 
++    /* Ensure we never return NULL - always return valid IDL */
++    if (idl == NULL) {
++        slapi_log_err(SLAPI_LOG_WARNING, "index_read_ext_allids",
++                      "Returning empty IDL for %s after error %d\n",
++                      basetype, *err);
++        idl = idl_alloc(0);
++    }
++
++    slapi_ch_free_string(&basetmp);
++
+     slapi_log_err(SLAPI_LOG_TRACE, "index_read_ext_allids", "<=  %lu candidates\n",
+                   (u_long)IDL_NIDS(idl));
+     return (idl);
+-- 
+2.52.0
+

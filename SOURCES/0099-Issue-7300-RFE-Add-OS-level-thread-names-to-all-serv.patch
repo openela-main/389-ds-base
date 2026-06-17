@@ -1,0 +1,822 @@
+From 6ea0a4542e09191fbce053b9aca9dc0db31a744c Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Thu, 5 Mar 2026 17:09:13 -0800
+Subject: [PATCH 12/13] Issue 7300 - RFE - Add OS-level thread names to all
+ server threads (#7301)
+
+Description: Add slapi_set_thread_name() API wrapping pthread_setname_np
+and apply it to all server threads.
+Workers appear as worker-0..N, the listener as "listener",
+replication threads as "repl-prot", "repl-inc-res", etc.
+
+For functions that serve as both thread entry points and direct calls
+(db2ldif_skip_all, dbmdb_recno_cache_build), thin wrapper functions
+are used to keep thread naming separate from the core logic.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7300
+
+Reviewed by: @vashirov, @jchapma, @mreynolds389 (Thanks!!!)
+---
+ dirsrvtests/tests/suites/threads/__init__.py  |  0
+ .../suites/threads/thread_naming_test.py      | 76 +++++++++++++++++++
+ ldap/servers/plugins/automember/automember.c  |  4 +
+ ldap/servers/plugins/cos/cos_cache.c          |  1 +
+ ldap/servers/plugins/linkedattrs/fixup_task.c |  1 +
+ ldap/servers/plugins/memberof/memberof.c      |  2 +
+ .../plugins/posix-winsync/posix-group-task.c  |  5 ++
+ ldap/servers/plugins/referint/referint.c      |  1 +
+ ldap/servers/plugins/replication/cl5_api.c    |  1 +
+ ldap/servers/plugins/replication/cl5_test.c   |  1 +
+ .../plugins/replication/repl5_inc_protocol.c  |  1 +
+ .../plugins/replication/repl5_protocol.c      |  1 +
+ .../plugins/replication/repl5_replica.c       |  1 +
+ .../plugins/replication/repl5_tot_protocol.c  |  1 +
+ ldap/servers/plugins/retrocl/retrocl_trim.c   |  1 +
+ ldap/servers/plugins/roles/roles_cache.c      |  1 +
+ .../plugins/schema_reload/schema_reload.c     |  1 +
+ ldap/servers/plugins/sync/sync_persist.c      | 11 +--
+ ldap/servers/plugins/syntaxes/validate_task.c |  1 +
+ ldap/servers/plugins/usn/usn_cleanup.c        |  1 +
+ ldap/servers/plugins/views/views.c            |  1 +
+ .../slapd/back-ldbm/db-bdb/bdb_import.c       |  1 +
+ .../back-ldbm/db-bdb/bdb_import_threads.c     |  3 +
+ .../slapd/back-ldbm/db-bdb/bdb_layer.c        |  7 ++
+ ldap/servers/slapd/connection.c               |  3 +
+ ldap/servers/slapd/csngen.c                   | 13 ++--
+ ldap/servers/slapd/daemon.c                   |  2 +
+ ldap/servers/slapd/eventq-deprecated.c        |  1 +
+ ldap/servers/slapd/eventq.c                   |  1 +
+ ldap/servers/slapd/house.c                    |  1 +
+ ldap/servers/slapd/psearch.c                  |  1 +
+ ldap/servers/slapd/slapi-plugin.h             |  3 +
+ ldap/servers/slapd/task.c                     |  6 ++
+ ldap/servers/slapd/test-plugins/sampletask.c  |  5 ++
+ ldap/servers/slapd/thread_data.c              |  8 ++
+ ldap/servers/slapd/vattr.c                    |  1 +
+ 36 files changed, 159 insertions(+), 10 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/threads/__init__.py
+ create mode 100644 dirsrvtests/tests/suites/threads/thread_naming_test.py
+
+diff --git a/dirsrvtests/tests/suites/threads/__init__.py b/dirsrvtests/tests/suites/threads/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/dirsrvtests/tests/suites/threads/thread_naming_test.py b/dirsrvtests/tests/suites/threads/thread_naming_test.py
+new file mode 100644
+index 000000000..0f2380ac4
+--- /dev/null
++++ b/dirsrvtests/tests/suites/threads/thread_naming_test.py
+@@ -0,0 +1,76 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++import platform
++import pytest
++
++from lib389 import pid_from_file
++from lib389.topologies import topology_st
++
++pytestmark = pytest.mark.tier1
++
++logging.getLogger(__name__).setLevel(logging.INFO)
++log = logging.getLogger(__name__)
++
++
++def _get_thread_names(pid):
++    """Read thread names from /proc/<pid>/task/*/comm"""
++    names = []
++    task_dir = f"/proc/{pid}/task"
++    if not os.path.isdir(task_dir):
++        pytest.skip(f"{task_dir} not available")
++    for tid in os.listdir(task_dir):
++        comm_path = os.path.join(task_dir, tid, "comm")
++        try:
++            with open(comm_path, "r") as f:
++                names.append(f.read().strip())
++        except (FileNotFoundError, PermissionError):
++            pass
++    return names
++
++
++def test_thread_names_present(topology_st):
++    """Test that key threads have been named via pthread_setname_np
++
++    :id: a95b4eca-e806-48dc-8c91-debbc3ef4053
++    :setup: Standalone instance
++    :steps:
++        1. Get the server PID
++        2. Read thread names from /proc/{pid}/task/{tid}/comm
++        3. Verify expected thread names are present
++    :expectedresults:
++        1. PID is obtained
++        2. Thread names are readable
++        3. Core thread names (listener, worker, event-q,
++           housekeep) are found
++    """
++    inst = topology_st.standalone
++    pid = str(pid_from_file(inst.ds_paths.pid_file))
++    log.info(f"Server PID: {pid}")
++
++    thread_names = _get_thread_names(pid)
++    log.info(f"Found {len(thread_names)} threads: {sorted(set(thread_names))}")
++
++    # Verify the listener thread
++    assert "listener" in thread_names, \
++        f"'listener' thread not found in {thread_names}"
++
++    # Verify at least one worker thread
++    worker_threads = [n for n in thread_names if n.startswith("worker-")]
++    assert len(worker_threads) > 0, \
++        f"No 'worker-*' threads found in {thread_names}"
++
++    # Verify event queue thread
++    assert "event-q" in thread_names, \
++        f"'event-q' thread not found in {thread_names}"
++
++    # Verify housekeeping thread
++    assert "housekeep" in thread_names, \
++        f"'housekeep' thread not found in {thread_names}"
+diff --git a/ldap/servers/plugins/automember/automember.c b/ldap/servers/plugins/automember/automember.c
+index 1b1da39b3..65404a574 100644
+--- a/ldap/servers/plugins/automember/automember.c
++++ b/ldap/servers/plugins/automember/automember.c
+@@ -2300,6 +2300,7 @@ automember_task_abort(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter __at
+ void
+ automember_task_abort_thread(void *arg)
+ {
++    slapi_set_thread_name("automem-abort");
+     Slapi_Task *task = (Slapi_Task *)arg;
+ 
+     slapi_task_inc_refcount(task);
+@@ -2456,6 +2457,7 @@ out:
+ void
+ automember_rebuild_task_thread(void *arg)
+ {
++    slapi_set_thread_name("automem-rebld");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     struct configEntry *config = NULL;
+     Slapi_PBlock *search_pb = NULL;
+@@ -2759,6 +2761,7 @@ out:
+ void
+ automember_export_task_thread(void *arg)
+ {
++    slapi_set_thread_name("automem-exprt");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     Slapi_PBlock *search_pb = NULL;
+     Slapi_Entry **entries = NULL;
+@@ -2949,6 +2952,7 @@ out:
+ void
+ automember_map_task_thread(void *arg)
+ {
++    slapi_set_thread_name("automem-map");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     Slapi_Entry *e = NULL;
+     int result = SLAPI_DSE_CALLBACK_OK;
+diff --git a/ldap/servers/plugins/cos/cos_cache.c b/ldap/servers/plugins/cos/cos_cache.c
+index d404ff901..d8ebbbe3d 100644
+--- a/ldap/servers/plugins/cos/cos_cache.c
++++ b/ldap/servers/plugins/cos/cos_cache.c
+@@ -373,6 +373,7 @@ out:
+ static void
+ cos_cache_wait_on_change(void *arg __attribute__((unused)))
+ {
++    slapi_set_thread_name("cos-cache");
+     slapi_log_err(SLAPI_LOG_TRACE, COS_PLUGIN_SUBSYSTEM, "--> cos_cache_wait_on_change thread\n");
+ 
+     slapi_lock_mutex(stop_lock);
+diff --git a/ldap/servers/plugins/linkedattrs/fixup_task.c b/ldap/servers/plugins/linkedattrs/fixup_task.c
+index f47ccf6d1..e69c62d86 100644
+--- a/ldap/servers/plugins/linkedattrs/fixup_task.c
++++ b/ldap/servers/plugins/linkedattrs/fixup_task.c
+@@ -107,6 +107,7 @@ linked_attrs_fixup_task_destructor(Slapi_Task *task)
+ static void
+ linked_attrs_fixup_task_thread(void *arg)
+ {
++    slapi_set_thread_name("linked-fix");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     task_data *td = NULL;
+     PRCList *main_config = NULL;
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index b52bc0331..153b08ca0 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -994,6 +994,7 @@ is_memberof_plugin_started(struct slapdplugin **plg_addr)
+ void
+ deferred_thread_func(void *arg)
+ {
++    slapi_set_thread_name("memberof-def");
+     MemberofDeferredList *deferred_list = (MemberofDeferredList *) arg;
+     MemberofDeferredTask *task;
+     struct slapdplugin *plg = NULL;
+@@ -3862,6 +3863,7 @@ memberof_qsort_compare(const void *a, const void *b)
+ void
+ memberof_fixup_task_thread(void *arg)
+ {
++    slapi_set_thread_name("memberof-fix");
+     MemberOfConfig configCopy = {0};
+     Slapi_Task *task = (Slapi_Task *)arg;
+     task_data *td = NULL;
+diff --git a/ldap/servers/plugins/posix-winsync/posix-group-task.c b/ldap/servers/plugins/posix-winsync/posix-group-task.c
+index 922c4f743..96f205822 100644
+--- a/ldap/servers/plugins/posix-winsync/posix-group-task.c
++++ b/ldap/servers/plugins/posix-winsync/posix-group-task.c
+@@ -1,3 +1,7 @@
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
+ #include <string.h>
+ #include "posix-wsp-ident.h"
+ #include "posix-group-func.h"
+@@ -463,6 +467,7 @@ bail:
+ static void
+ posix_group_fixup_task_thread(void *arg)
+ {
++    slapi_set_thread_name("posix-grp-fix");
+     slapi_log_err(SLAPI_LOG_PLUGIN, POSIX_WINSYNC_PLUGIN_NAME,
+                   "_task_thread ==>\n");
+ 
+diff --git a/ldap/servers/plugins/referint/referint.c b/ldap/servers/plugins/referint/referint.c
+index c5e259d8d..2dd3f1ed5 100644
+--- a/ldap/servers/plugins/referint/referint.c
++++ b/ldap/servers/plugins/referint/referint.c
+@@ -1393,6 +1393,7 @@ referint_postop_close(Slapi_PBlock *pb __attribute__((unused)))
+ void
+ referint_thread_func(void *arg __attribute__((unused)))
+ {
++    slapi_set_thread_name("referint");
+     PRFileDesc *prfd = NULL;
+     char *logfilename = NULL;
+     char thisline[MAX_LINE];
+diff --git a/ldap/servers/plugins/replication/cl5_api.c b/ldap/servers/plugins/replication/cl5_api.c
+index 21d2f5b8b..87d517dcf 100644
+--- a/ldap/servers/plugins/replication/cl5_api.c
++++ b/ldap/servers/plugins/replication/cl5_api.c
+@@ -3156,6 +3156,7 @@ do_cl_compact(time_t when, void *arg)
+ static int
+ _cl5TrimMain(void *param __attribute__((unused)))
+ {
++    slapi_set_thread_name("cl-trim");
+     time_t timePrev = slapi_current_utc_time();
+     time_t timeCompactPrev = slapi_current_utc_time();
+     time_t timeNow;
+diff --git a/ldap/servers/plugins/replication/cl5_test.c b/ldap/servers/plugins/replication/cl5_test.c
+index efb8c543a..c9078eb2e 100644
+--- a/ldap/servers/plugins/replication/cl5_test.c
++++ b/ldap/servers/plugins/replication/cl5_test.c
+@@ -551,6 +551,7 @@ clearCSNList(CSN ***csnList, int count)
+ static void
+ threadMain(void *data)
+ {
++    slapi_set_thread_name("cl5-test");
+     int entryCount = *(int *)data;
+     CSN **csnList;
+ 
+diff --git a/ldap/servers/plugins/replication/repl5_inc_protocol.c b/ldap/servers/plugins/replication/repl5_inc_protocol.c
+index 846951b9e..23e5b474c 100644
+--- a/ldap/servers/plugins/replication/repl5_inc_protocol.c
++++ b/ldap/servers/plugins/replication/repl5_inc_protocol.c
+@@ -237,6 +237,7 @@ repl5_inc_log_operation_failure(int operation_code, int ldap_error, char *ldap_e
+ static void
+ repl5_inc_result_threadmain(void *param)
+ {
++    slapi_set_thread_name("repl-inc-res");
+     result_data *rd = (result_data *)param;
+     ConnResult conres = 0;
+     Repl_Connection *conn = rd->prp->conn;
+diff --git a/ldap/servers/plugins/replication/repl5_protocol.c b/ldap/servers/plugins/replication/repl5_protocol.c
+index 6cdbcc4f1..f230fb702 100644
+--- a/ldap/servers/plugins/replication/repl5_protocol.c
++++ b/ldap/servers/plugins/replication/repl5_protocol.c
+@@ -226,6 +226,7 @@ finished                (any)                   finished
+ static void
+ prot_thread_main(void *arg)
+ {
++    slapi_set_thread_name("repl-prot");
+     Repl_Protocol *rp = (Repl_Protocol *)arg;
+     int done;
+     Repl_Agmt *agmt = NULL;
+diff --git a/ldap/servers/plugins/replication/repl5_replica.c b/ldap/servers/plugins/replication/repl5_replica.c
+index cec140140..edfbfce3a 100644
+--- a/ldap/servers/plugins/replication/repl5_replica.c
++++ b/ldap/servers/plugins/replication/repl5_replica.c
+@@ -3158,6 +3158,7 @@ process_reap_entry(Slapi_Entry *entry, void *cb_data)
+ static void
+ _replica_reap_tombstones(void *arg)
+ {
++    slapi_set_thread_name("tomb-reap");
+     const char *replica_name = (const char *)arg;
+     Slapi_PBlock *pb = NULL;
+     Replica *replica = NULL;
+diff --git a/ldap/servers/plugins/replication/repl5_tot_protocol.c b/ldap/servers/plugins/replication/repl5_tot_protocol.c
+index 4b2064912..1ec930116 100644
+--- a/ldap/servers/plugins/replication/repl5_tot_protocol.c
++++ b/ldap/servers/plugins/replication/repl5_tot_protocol.c
+@@ -102,6 +102,7 @@ repl5_tot_log_operation_failure(int ldap_error, char *ldap_error_string, const c
+ static void
+ repl5_tot_result_threadmain(void *param)
+ {
++    slapi_set_thread_name("repl-tot-res");
+     callback_data *cb = (callback_data *)param;
+     ConnResult conres = 0;
+     Repl_Connection *conn = cb->prp->conn;
+diff --git a/ldap/servers/plugins/retrocl/retrocl_trim.c b/ldap/servers/plugins/retrocl/retrocl_trim.c
+index 6514fc790..a363c8a30 100644
+--- a/ldap/servers/plugins/retrocl/retrocl_trim.c
++++ b/ldap/servers/plugins/retrocl/retrocl_trim.c
+@@ -334,6 +334,7 @@ static int retrocl_active_threads;
+ static void
+ changelog_trim_thread_fn(void *arg __attribute__((unused)))
+ {
++    slapi_set_thread_name("retrocl-trim");
+     PR_AtomicIncrement(&retrocl_active_threads);
+     trim_changelog();
+     PR_AtomicDecrement(&retrocl_active_threads);
+diff --git a/ldap/servers/plugins/roles/roles_cache.c b/ldap/servers/plugins/roles/roles_cache.c
+index 329b8c888..5030a2d1b 100644
+--- a/ldap/servers/plugins/roles/roles_cache.c
++++ b/ldap/servers/plugins/roles/roles_cache.c
+@@ -359,6 +359,7 @@ roles_cache_create_suffix(Slapi_DN *sdn)
+ static void
+ roles_cache_wait_on_change(void *arg)
+ {
++    slapi_set_thread_name("roles-cache");
+     roles_cache_def *roles_def = (roles_cache_def *)arg;
+ 
+     slapi_log_err(SLAPI_LOG_PLUGIN, ROLES_PLUGIN_SUBSYSTEM, "--> roles_cache_wait_on_change\n");
+diff --git a/ldap/servers/plugins/schema_reload/schema_reload.c b/ldap/servers/plugins/schema_reload/schema_reload.c
+index 847323af4..8b0b64bca 100644
+--- a/ldap/servers/plugins/schema_reload/schema_reload.c
++++ b/ldap/servers/plugins/schema_reload/schema_reload.c
+@@ -125,6 +125,7 @@ typedef struct _task_data
+ static void
+ schemareload_thread(void *arg)
+ {
++    slapi_set_thread_name("schema-reload");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     int rv = 0;
+     int total_work = 2;
+diff --git a/ldap/servers/plugins/sync/sync_persist.c b/ldap/servers/plugins/sync/sync_persist.c
+index a78c273cd..fdb41fd23 100644
+--- a/ldap/servers/plugins/sync/sync_persist.c
++++ b/ldap/servers/plugins/sync/sync_persist.c
+@@ -260,7 +260,7 @@ ignore_op_pl(Slapi_PBlock *pb)
+  * of the completed operation.
+  * When all operations are completed, if the primary operation is successful it
+  * flushes (enqueue) the operations to the sync repl queue(s), else it just free
+- * the pending list (skipping enqueue). 
++ * the pending list (skipping enqueue).
+  */
+ static void
+ sync_update_persist_op(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eprev, ber_int_t op_tag, char *label)
+@@ -286,7 +286,7 @@ sync_update_persist_op(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eprev, ber
+         ignore_op_pl(pb);
+         return;
+     }
+-    
++
+     /* Retrieve the result of the operation */
+     if (slapi_op_internal(pb)) {
+         slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &rc);
+@@ -351,11 +351,11 @@ sync_update_persist_op(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eprev, ber
+         }
+     }
+     if (!curr_op) {
+-        slapi_log_err(SLAPI_LOG_ERR, SYNC_PLUGIN_SUBSYSTEM, "%s - operation (op=0x%lx, idx_pl=%d) not found on the pendling list\n", 
++        slapi_log_err(SLAPI_LOG_ERR, SYNC_PLUGIN_SUBSYSTEM, "%s - operation (op=0x%lx, idx_pl=%d) not found on the pendling list\n",
+                       label, (ulong) pb_op, ident->idx_pl);
+         PR_ASSERT(curr_op);
+     }
+-    
++
+     /* for diagnostic of the pending list, dump its content if it is too long */
+     for (count = 0, curr_op = prim_op; curr_op; count++, curr_op = curr_op->next);
+     if (loglevel_is_set(SLAPI_LOG_PLUGIN) && (count > 10)) {
+@@ -432,7 +432,7 @@ sync_update_persist_op(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eprev, ber
+             if (enqueue_it) {
+                 sync_queue_change(curr_op);
+             }
+-            
++
+             /* now free this pending operation */
+             next = curr_op->next;
+             slapi_entry_free(curr_op->entry);
+@@ -975,6 +975,7 @@ sync_release_connection(Slapi_PBlock *pb, Slapi_Connection *conn, Slapi_Operatio
+ static void
+ sync_send_results(void *arg)
+ {
++    slapi_set_thread_name("sync-send");
+     SyncRequest *req = (SyncRequest *)arg;
+     SyncQueueNode *qnode, *qnodenext;
+     int conn_acq_flag = 0;
+diff --git a/ldap/servers/plugins/syntaxes/validate_task.c b/ldap/servers/plugins/syntaxes/validate_task.c
+index a634fd762..49829ab08 100644
+--- a/ldap/servers/plugins/syntaxes/validate_task.c
++++ b/ldap/servers/plugins/syntaxes/validate_task.c
+@@ -166,6 +166,7 @@ syntax_validate_task_destructor(Slapi_Task *task)
+ static void
+ syntax_validate_task_thread(void *arg)
+ {
++    slapi_set_thread_name("syntax-valid");
+     int rc = 0;
+     Slapi_Task *task = (Slapi_Task *)arg;
+     task_data *td = NULL;
+diff --git a/ldap/servers/plugins/usn/usn_cleanup.c b/ldap/servers/plugins/usn/usn_cleanup.c
+index 7eaf0f88f..47940eabe 100644
+--- a/ldap/servers/plugins/usn/usn_cleanup.c
++++ b/ldap/servers/plugins/usn/usn_cleanup.c
+@@ -45,6 +45,7 @@ usn_cleanup_close(void)
+ static void
+ usn_cleanup_thread(void *arg)
+ {
++    slapi_set_thread_name("usn-cleanup");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     int rv = 0;
+     int total_work = 2;
+diff --git a/ldap/servers/plugins/views/views.c b/ldap/servers/plugins/views/views.c
+index 64e305a3f..ed2ba73e4 100644
+--- a/ldap/servers/plugins/views/views.c
++++ b/ldap/servers/plugins/views/views.c
+@@ -1797,5 +1797,6 @@ views_cache_backend_state_change(void *handle __attribute__((unused)), char *be_
+ static void
+ views_cache_act_on_change_thread(void *arg __attribute__((unused)))
+ {
++    slapi_set_thread_name("views-cache");
+     views_cache_create();
+ }
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+index 7f484934f..2eede5931 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+@@ -2663,6 +2663,7 @@ error:
+ void
+ import_main(void *arg)
+ {
++    slapi_set_thread_name("bdb-import");
+     /* For online import tasks increment/decrement the global thread count */
+     g_incr_active_threadcnt();
+     import_main_offline(arg);
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+index e433f3db2..350266a02 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import_threads.c
+@@ -340,6 +340,7 @@ import_add_created_attrs(Slapi_Entry *e)
+ void
+ import_producer(void *param)
+ {
++    slapi_set_thread_name("bdb-imp-prod");
+     ImportWorkerInfo *info = (ImportWorkerInfo *)param;
+     ImportJob *job = info->job;
+     ID id = job->first_ID, id_filestart = id;
+@@ -2469,6 +2470,7 @@ foreman_do_entryrdn(ImportJob *job, FifoItem *fi)
+ void
+ import_foreman(void *param)
+ {
++    slapi_set_thread_name("bdb-imp-frmn");
+     ImportWorkerInfo *info = (ImportWorkerInfo *)param;
+     ImportJob *job = info->job;
+     ldbm_instance *inst = job->inst;
+@@ -2812,6 +2814,7 @@ error:
+ void
+ import_worker(void *param)
+ {
++    slapi_set_thread_name("bdb-imp-work");
+     ImportWorkerInfo *info = (ImportWorkerInfo *)param;
+     ImportJob *job = info->job;
+     ldbm_instance *inst = job->inst;
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+index a2dcc61e1..ec7524d02 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_layer.c
+@@ -2909,6 +2909,7 @@ bdb_start_perf_thread(struct ldbminfo *li)
+ static int
+ perf_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-perf");
+     struct ldbminfo *li = NULL;
+ 
+     PR_ASSERT(NULL != param);
+@@ -2959,6 +2960,7 @@ bdb_start_locks_monitoring_thread(struct ldbminfo *li)
+ static int
+ locks_monitoring_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-lock-mon");
+     int ret = 0;
+     uint64_t current_locks = 0;
+     uint64_t max_locks = 0;
+@@ -3169,6 +3171,7 @@ txn_test_init_cfg(txn_test_cfg *cfg)
+ static int
+ txn_test_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-txn-test");
+     struct ldbminfo *li = NULL;
+     Object *inst_obj;
+     int rc = 0;
+@@ -3467,6 +3470,7 @@ bdb_start_txn_test_thread(struct ldbminfo *li)
+ static int
+ deadlock_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-deadlock");
+     int rval = -1;
+     struct ldbminfo *li = NULL;
+     PRIntervalTime interval; /*NSPR timeout stuffy*/
+@@ -3564,6 +3568,7 @@ bdb_start_log_flush_thread(struct ldbminfo *li)
+ static int
+ log_flush_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-logflush");
+     PRIntervalTime interval_flush, interval_def;
+     PRIntervalTime last_flush = 0;
+     int i;
+@@ -3761,6 +3766,7 @@ bdb_start_checkpoint_thread(struct ldbminfo *li)
+ static int
+ checkpoint_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-chkpoint");
+     PRIntervalTime interval;
+     int rval = -1;
+     struct ldbminfo *li = NULL;
+@@ -3964,6 +3970,7 @@ bdb_start_trickle_thread(struct ldbminfo *li)
+ static int
+ trickle_threadmain(void *param)
+ {
++    slapi_set_thread_name("bdb-trickle");
+     PRIntervalTime interval; /*NSPR timeout stuffy*/
+     int rval = -1;
+     dblayer_private *priv = NULL;
+diff --git a/ldap/servers/slapd/connection.c b/ldap/servers/slapd/connection.c
+index 6c5ef5291..e757c838a 100644
+--- a/ldap/servers/slapd/connection.c
++++ b/ldap/servers/slapd/connection.c
+@@ -1634,6 +1634,9 @@ connection_threadmain(void *arg)
+ {
+     Slapi_PBlock *pb = slapi_pblock_new();
+     int32_t *snmp_vars_idx = (int32_t *) arg;
++    char tname[16];
++    snprintf(tname, sizeof(tname), "worker-%d", *snmp_vars_idx);
++    slapi_set_thread_name(tname);
+     /* wait forever for new pb until one is available or shutdown */
+     int32_t interval = 0; /* used be  10 seconds */
+     Connection *conn = NULL;
+diff --git a/ldap/servers/slapd/csngen.c b/ldap/servers/slapd/csngen.c
+index c7c5c2ba8..8fff8e87e 100644
+--- a/ldap/servers/slapd/csngen.c
++++ b/ldap/servers/slapd/csngen.c
+@@ -315,15 +315,15 @@ csngen_adjust_time(CSNGen *gen, const CSN *csn)
+         /* To avoid beat phenomena between suppliers let put 1 second in local_offset
+          * it will be eaten at next clock tick rather than increasing remote offset
+          * If we do not do that we will have a time skew drift of 1 second per 2 seconds
+-         * if suppliers are desynchronized by 0.5 second 
++         * if suppliers are desynchronized by 0.5 second
+          */
+         if (gen->state.local_offset == 0) {
+             gen->state.local_offset++;
+             gen->state.remote_offset--;
+         }
+     }
+-    /* Time to compute seqnum so that 
+-     *   new csn >= remote csn and new csn >= old local csn 
++    /* Time to compute seqnum so that
++     *   new csn >= remote csn and new csn >= old local csn
+      */
+     new_time = CSN_CALC_TSTAMP(gen);
+     PR_ASSERT(new_time >= old_time);
+@@ -570,7 +570,7 @@ _csngen_adjust_local_time(CSNGen *gen)
+     time_t cur_time;
+     int rc;
+ 
+-    
++
+     if ((rc = gen->gettime(&now)) != 0) {
+         /* Failed to get system time, we must abort */
+         slapi_log_err(SLAPI_LOG_ERR, "csngen_new_csn",
+@@ -617,7 +617,7 @@ _csngen_adjust_local_time(CSNGen *gen)
+     gen->state.sampled_time = cur_time;
+     gen->state.local_offset = MAX_VAL(0, gen->state.local_offset - time_diff);
+     /* new local_offset = MAX_VAL(0, old sample_time + old local_offset - cur_time)
+-     * ==> new local_offset >= 0 and 
++     * ==> new local_offset >= 0 and
+      *     new local_offset + cur_time >= old sample_time + old local_offset
+      * ==> new local_offset + cur_time + remote_offset >=
+      *            sample_time + old local_offset + remote_offset
+@@ -731,6 +731,7 @@ _csngen_stop_test_threads(void)
+ static void
+ _csngen_gen_tester_main(void *data)
+ {
++    slapi_set_thread_name("csn-gen-test");
+     CSNGen *gen = (CSNGen *)data;
+     CSN *csn = NULL;
+     char buff[CSN_STRSIZE];
+@@ -761,6 +762,7 @@ _csngen_gen_tester_main(void *data)
+ static void
+ _csngen_remote_tester_main(void *data)
+ {
++    slapi_set_thread_name("csn-rmt-test");
+     CSNGen *gen = (CSNGen *)data;
+     CSN *csn;
+     time_t csn_time;
+@@ -798,6 +800,7 @@ _csngen_remote_tester_main(void *data)
+ static void
+ _csngen_local_tester_main(void *data)
+ {
++    slapi_set_thread_name("csn-lcl-test");
+     CSNGen *gen = (CSNGen *)data;
+ 
+     PR_ASSERT(gen);
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index c2977aa6f..36e52cace 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -426,6 +426,7 @@ disk_mon_check_diskspace(char **dirs, uint64_t threshold, uint64_t *disk_space)
+ void
+ disk_monitoring_thread(void *nothing __attribute__((unused)))
+ {
++    slapi_set_thread_name("disk-mon");
+     char **dirs = NULL;
+     char *dirstr = NULL;
+     uint64_t previous_mark = 0;
+@@ -946,6 +947,7 @@ convert_pbe_des_to_aes(void)
+ void
+ accept_thread(void *vports)
+ {
++    slapi_set_thread_name("listener");
+     daemon_ports_t *ports = (daemon_ports_t *)vports;
+     Connection_Table *ct = the_connection_table;
+     PRIntn num_poll = 0;
+diff --git a/ldap/servers/slapd/eventq-deprecated.c b/ldap/servers/slapd/eventq-deprecated.c
+index 71a7bf8f5..b9811c905 100644
+--- a/ldap/servers/slapd/eventq-deprecated.c
++++ b/ldap/servers/slapd/eventq-deprecated.c
+@@ -302,6 +302,7 @@ eq_call_all(void)
+ static void
+ eq_loop(void *arg __attribute__((unused)))
+ {
++    slapi_set_thread_name("event-q-old");
+     while (eq_running) {
+         time_t curtime = slapi_current_utc_time();
+         PRIntervalTime timeout;
+diff --git a/ldap/servers/slapd/eventq.c b/ldap/servers/slapd/eventq.c
+index 4c39e08cf..d3a849f66 100644
+--- a/ldap/servers/slapd/eventq.c
++++ b/ldap/servers/slapd/eventq.c
+@@ -298,6 +298,7 @@ eq_call_all_rel(void)
+ static void
+ eq_loop_rel(void *arg __attribute__((unused)))
+ {
++    slapi_set_thread_name("event-q");
+     while (eq_rel_running) {
+         time_t curtime = slapi_current_rel_time_t();
+         int until;
+diff --git a/ldap/servers/slapd/house.c b/ldap/servers/slapd/house.c
+index ac1d94f26..78164d5ab 100644
+--- a/ldap/servers/slapd/house.c
++++ b/ldap/servers/slapd/house.c
+@@ -30,6 +30,7 @@ static pthread_cond_t housekeeping_cvar;
+ static void
+ housecleaning(void *cur_time __attribute__((unused)))
+ {
++    slapi_set_thread_name("housekeep");
+     while (!g_get_shutdown()) {
+         struct timespec current_time = {0};
+         /*
+diff --git a/ldap/servers/slapd/psearch.c b/ldap/servers/slapd/psearch.c
+index c60e6a8ed..df1dc0162 100644
+--- a/ldap/servers/slapd/psearch.c
++++ b/ldap/servers/slapd/psearch.c
+@@ -259,6 +259,7 @@ pe_ch_free(PSEQNode **pe)
+ static void
+ ps_send_results(void *arg)
+ {
++    slapi_set_thread_name("ps-send");
+     PSearch *ps = (PSearch *)arg;
+     PSEQNode *peq, *peqnext;
+     struct slapi_filter *filter = 0;
+diff --git a/ldap/servers/slapd/slapi-plugin.h b/ldap/servers/slapd/slapi-plugin.h
+index 5dd78004c..e1cbe5db7 100644
+--- a/ldap/servers/slapd/slapi-plugin.h
++++ b/ldap/servers/slapd/slapi-plugin.h
+@@ -6109,6 +6109,9 @@ int slapi_wait_condvar(Slapi_CondVar *cvar, struct timeval *timeout) __attribute
+ int slapi_notify_condvar(Slapi_CondVar *cvar, int notify_all);
+ int slapi_wait_condvar_pt(Slapi_CondVar *cvar, Slapi_Mutex *mutex, struct timeval *timeout);
+ 
++/* Set OS-level thread name for visibility in ps, top, perf, etc. (max 15 chars) */
++void slapi_set_thread_name(const char *name);
++
+ /**
+  * Creates a new read/write lock
+  * If prio_writer the rwlock gives priority on writers
+diff --git a/ldap/servers/slapd/task.c b/ldap/servers/slapd/task.c
+index 1a8be6c85..350a62814 100644
+--- a/ldap/servers/slapd/task.c
++++ b/ldap/servers/slapd/task.c
+@@ -1113,6 +1113,7 @@ out:
+ static void
+ task_export_thread(void *arg)
+ {
++    slapi_set_thread_name("export");
+     Slapi_PBlock *pb = (Slapi_PBlock *)arg;
+     // I think someone is mis-using this point to store multiple names ...
+     char **instance_names = NULL;
+@@ -1484,6 +1485,7 @@ out:
+ static void
+ task_backup_thread(void *arg)
+ {
++    slapi_set_thread_name("backup");
+     Slapi_PBlock *pb = (Slapi_PBlock *)arg;
+     Slapi_Task *task = NULL;
+     struct slapdplugin *pb_plugin;
+@@ -1635,6 +1637,7 @@ out:
+ static void
+ task_restore_thread(void *arg)
+ {
++    slapi_set_thread_name("restore");
+     Slapi_PBlock *pb = (Slapi_PBlock *)arg;
+     Slapi_Task *task = NULL;
+     struct slapdplugin *pb_plugin;
+@@ -1789,6 +1792,7 @@ out:
+ static void
+ task_index_thread(void *arg)
+ {
++    slapi_set_thread_name("index");
+     Slapi_PBlock *pb = (Slapi_PBlock *)arg;
+     char *instance_name = NULL;
+     char **db2index_attrs = NULL;
+@@ -2346,6 +2350,7 @@ struct task_tombstone_data
+ static void
+ task_fixup_tombstone_thread(void *arg)
+ {
++    slapi_set_thread_name("tombfix");
+     struct task_tombstone_data *task_data = arg;
+     Slapi_Entry **entries = NULL;
+     Slapi_Task *task = task_data->task;
+@@ -2956,6 +2961,7 @@ compact_db_task_destructor(Slapi_Task *task)
+ static void
+ task_compact_thread(void *arg)
+ {
++    slapi_set_thread_name("compact");
+     struct task_compact_data *task_data = arg;
+     Slapi_Task *task = task_data->task;
+     Slapi_Backend *be = NULL;
+diff --git a/ldap/servers/slapd/test-plugins/sampletask.c b/ldap/servers/slapd/test-plugins/sampletask.c
+index 1734e2904..08c8315a4 100644
+--- a/ldap/servers/slapd/test-plugins/sampletask.c
++++ b/ldap/servers/slapd/test-plugins/sampletask.c
+@@ -48,6 +48,10 @@
+  * [...] - Sample task finished.
+  */
+ 
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
+ #include "slapi-plugin.h"
+ #include "nspr.h"
+ 
+@@ -88,6 +92,7 @@ task_sampletask_start(Slapi_PBlock *pb)
+ static void
+ task_sampletask_thread(void *arg)
+ {
++    slapi_set_thread_name("sample-task");
+     Slapi_Task *task = (Slapi_Task *)arg;
+     char *myarg = NULL;
+     int i, rv = 0;
+diff --git a/ldap/servers/slapd/thread_data.c b/ldap/servers/slapd/thread_data.c
+index fb9951d13..1e64a0d77 100644
+--- a/ldap/servers/slapd/thread_data.c
++++ b/ldap/servers/slapd/thread_data.c
+@@ -60,6 +60,14 @@ slapi_td_init(void)
+  *  Wrapper Functions
+  */
+ 
++/* Set OS-level thread name (visible in ps, top, perf, pstack, etc.)
++ * The name is silently truncated to 15 characters by the kernel. */
++void
++slapi_set_thread_name(const char *name)
++{
++    pthread_setname_np(pthread_self(), name);
++}
++
+ /* plugin list locking */
+ int32_t
+ slapi_td_set_plugin_locked()
+diff --git a/ldap/servers/slapd/vattr.c b/ldap/servers/slapd/vattr.c
+index 6fad473c4..b722185c2 100644
+--- a/ldap/servers/slapd/vattr.c
++++ b/ldap/servers/slapd/vattr.c
+@@ -140,6 +140,7 @@ vattr_cleanup()
+ static void
+ vattr_check_thread(void *arg)
+ {
++    slapi_set_thread_name("vattr-chk");
+     Slapi_Backend *be = NULL;
+     char *cookie = NULL;
+     Slapi_DN *base_sdn = NULL;
+-- 
+2.52.0
+

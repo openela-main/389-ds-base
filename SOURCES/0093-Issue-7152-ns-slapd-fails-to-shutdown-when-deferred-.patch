@@ -1,0 +1,82 @@
+From 159eb43433002378ded06af6c30ea7aed8c220ad Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Wed, 14 Jan 2026 17:55:29 +0100
+Subject: [PATCH 06/13] Issue 7152 - ns-slapd fails to shutdown when deferred
+ memberof update is in progress (#7187)
+
+Bug Description:
+When a deferred memberof update is in progress during shutdown, the
+backend operations (add, modify, delete, modrdn) wait in a polling loop
+for the deferred task to complete. However, if the deferred thread exits
+before clearing the SLAPI_DEFERRED_MEMBEROF flag, the loop becomes
+infinite, causing the server to hang during shutdown.
+
+Fix Description:
+Add additional check to the polling loops so they exit immediately when
+the server is shutting down.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7152
+
+Reviewed by: @tbordaz (Thanks!)
+---
+ ldap/servers/slapd/back-ldbm/ldbm_add.c    | 2 +-
+ ldap/servers/slapd/back-ldbm/ldbm_delete.c | 2 +-
+ ldap/servers/slapd/back-ldbm/ldbm_modify.c | 2 +-
+ ldap/servers/slapd/back-ldbm/ldbm_modrdn.c | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_add.c b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+index bca660f22..226b846cb 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_add.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+@@ -1451,7 +1451,7 @@ common_return:
+                 if (deferred) {
+                     delay = PR_MillisecondsToInterval(100);
+                 }
+-                while (deferred) {
++                while (deferred && !g_get_shutdown()) {
+                     DS_Sleep(delay);
+                     slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
+                 }
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_delete.c b/ldap/servers/slapd/back-ldbm/ldbm_delete.c
+index c0f2516de..cf79daa77 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_delete.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_delete.c
+@@ -1577,7 +1577,7 @@ diskfull_return:
+                 if (deferred) {
+                     delay = PR_MillisecondsToInterval(100);
+                 }
+-                while (deferred) {
++                while (deferred && !g_get_shutdown()) {
+                     DS_Sleep(delay);
+                     slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
+                 }
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modify.c b/ldap/servers/slapd/back-ldbm/ldbm_modify.c
+index 0c62c87f0..ccecce571 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modify.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modify.c
+@@ -1168,7 +1168,7 @@ common_return:
+                 if (deferred) {
+                     delay = PR_MillisecondsToInterval(100);
+                 }
+-                while (deferred) {
++                while (deferred && !g_get_shutdown()) {
+                     DS_Sleep(delay);
+                     slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
+                 }
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+index fe35991b5..31e2caa46 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+@@ -1519,7 +1519,7 @@ common_return:
+                 if (deferred) {
+                     delay = PR_MillisecondsToInterval(100);
+                 }
+-                while (deferred) {
++                while (deferred && !g_get_shutdown()) {
+                     DS_Sleep(delay);
+                     slapi_pblock_get(pb, SLAPI_DEFERRED_MEMBEROF, &deferred);
+                 }
+-- 
+2.52.0
+

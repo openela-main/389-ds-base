@@ -1,0 +1,39 @@
+From b0b0bb3bc096cca0715fa46a7548c4f5a8bf2717 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Mon, 18 May 2026 14:16:06 +0200
+Subject: [PATCH] Issue 7271 - Fix build failure on 1.4.3
+
+Co-authored-by: James Chapman <jachapma@redhat.com>
+---
+ ldap/servers/plugins/dna/dna.c                | 1 +
+ ldap/servers/plugins/replication/repl5_init.c | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/plugins/dna/dna.c b/ldap/servers/plugins/dna/dna.c
+index ee4132646..e23bfbbae 100644
+--- a/ldap/servers/plugins/dna/dna.c
++++ b/ldap/servers/plugins/dna/dna.c
+@@ -9,6 +9,7 @@
+ #ifdef HAVE_CONFIG_H
+ #include <config.h>
+ #endif
++#include <stdbool.h>
+ 
+ 
+ /**
+diff --git a/ldap/servers/plugins/replication/repl5_init.c b/ldap/servers/plugins/replication/repl5_init.c
+index dd4870746..526c759a5 100644
+--- a/ldap/servers/plugins/replication/repl5_init.c
++++ b/ldap/servers/plugins/replication/repl5_init.c
+@@ -850,7 +850,7 @@ multimaster_stop(Slapi_PBlock *pb __attribute__((unused)))
+ static int
+ multisupplier_pre_stop(Slapi_PBlock *pb __attribute__((unused)))
+ {
+-    if (!multisupplier_stopped_flag) {
++    if (!multimaster_stopped_flag) {
+         /* Shut down replication agreements which will stop all the
+          * replication protocol threads */
+         agmtlist_shutdown();
+-- 
+2.52.0
+

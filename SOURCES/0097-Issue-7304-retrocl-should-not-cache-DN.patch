@@ -1,0 +1,38 @@
+From b18b6ced81be921ba9901e96566d412aa8f2cec6 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Wed, 4 Mar 2026 14:28:59 -0500
+Subject: [PATCH 10/13] Issue 7304 - retrocl should not cache DN
+
+Description:
+
+When adding a record to the retro changelog we pass in the flag
+SLAPI_OP_FLAG_NEVER_CACHE to prevent the entry from being cached,
+but we still update the DN cache leading to unexpected memory growth.
+
+relates: https://github.com/389ds/389-ds-base/issues/7304
+
+Reviewed by: tbordaz(Thanks!)
+---
+ ldap/servers/slapd/back-ldbm/ldbm_add.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_add.c b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+index 226b846cb..89a3f18f6 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_add.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_add.c
+@@ -1394,8 +1394,11 @@ common_return:
+                 struct backdn *bdn = dncache_find_id(&inst->inst_dncache,
+                                                      addingentry->ep_id);
+                 if (bdn) { /* already in the dncache */
++                    if (is_remove_from_cache) {
++                        CACHE_REMOVE(&inst->inst_dncache, bdn);
++                    }
+                     CACHE_RETURN(&inst->inst_dncache, &bdn);
+-                } else { /* not in the dncache yet */
++                } else if (!is_remove_from_cache) { /* not in the dncache yet */
+                     Slapi_DN *addingsdn =
+                         slapi_sdn_dup(slapi_entry_get_sdn(addingentry->ep_entry));
+                     if (addingsdn) {
+-- 
+2.52.0
+

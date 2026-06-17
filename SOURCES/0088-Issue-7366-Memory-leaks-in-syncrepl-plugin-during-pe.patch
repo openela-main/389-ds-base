@@ -1,0 +1,399 @@
+From 71583a67249df813098f0cca39b04198b76e6349 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Mon, 30 Mar 2026 22:18:49 -0700
+Subject: [PATCH 01/13] Issue 7366 - Memory leaks in syncrepl plugin during
+ persistent search operations (#7367)
+
+Description: When running a syncrepl persistent search as a non-root user,
+LeakSanitizer detects memory leaks in the sync repl plugin.
+Multiple cleanup paths for SyncRequest had inconsistent
+and incomplete resource freeing, leaking pblock contents, filters,
+queue nodes, and base DNs. Per-thread operation lists were also leaked
+on thread exit due to a missing NSPR thread-private destructor.
+
+Consolidate all SyncRequest cleanup into sync_request_free() and
+register a destructor for per-thread OPERATION_PL_CTX_T lists.
+
+Add a test for non-root persistent syncrepl search verifying no
+OPERATIONS_ERROR or 'Missing aclpb' errors.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7366
+
+Reviewed by:  @progier389 (Thanks!)
+---
+ .../suites/syncrepl_plugin/basic_test.py      | 176 +++++++++++++++++-
+ ldap/servers/plugins/sync/sync_init.c         |  24 ++-
+ ldap/servers/plugins/sync/sync_persist.c      | 103 ++++++----
+ 3 files changed, 264 insertions(+), 39 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py b/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
+index cdf35eeaa..ff9be816f 100644
+--- a/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
++++ b/dirsrvtests/tests/suites/syncrepl_plugin/basic_test.py
+@@ -20,7 +20,7 @@ from lib389.idm.group import Groups
+ from lib389.topologies import topology_st as topology
+ from lib389.topologies import topology_m2 as topo_m2
+ from lib389.paths import Paths
+-from lib389.utils import ds_is_older
++from lib389.utils import ds_is_older, is_fips, ensure_bytes
+ from lib389.plugins import RetroChangelogPlugin, ContentSyncPlugin, ContentSynchronizationPlugin, AutoMembershipPlugin, MemberOfPlugin, MemberOfSharedConfig, AutoMembershipDefinitions, MEPTemplates, MEPConfigs, ManagedEntriesPlugin, MEPTemplate
+ from lib389._constants import *
+ 
+@@ -735,3 +735,177 @@ def test_sync_repl_invalid_cookie(topology, request):
+             pass
+ 
+     request.addfinalizer(fin)
++
++
++def test_sync_repl_non_root_persist(topology, request):
++    """Test sync_repl persistent search as a non-root user triggers
++    proper ACL evaluation without causing OPERATIONS_ERROR.
++
++    :id: 97f4be3d-f8c3-45cf-8295-ed58ee7bd371
++    :setup: Standalone Instance
++    :steps:
++        1. Enable RetroChangelog and ContentSync plugins
++        2. Create a test user and set its password
++        3. Add an ACI granting the test user read access
++        4. Run a syncrepl persistent search bound as the test user
++        5. Add entries while the persistent search is active
++        6. Stop the server to end the sync thread
++        7. Check that the sync client received results without error
++        8. Check the error log for 'Missing aclpb' messages
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Success - no OPERATIONS_ERROR
++        5. Success
++        6. Success
++        7. The sync client should have received cookies
++        8. No 'Missing aclpb' errors in the log
++    """
++    inst = topology.standalone
++    inst.restart()
++    inst.enable_tls()
++
++    # Enable RetroChangelog
++    rcl = RetroChangelogPlugin(inst)
++    rcl.disable()
++    rcl.enable()
++    rcl.set('nsslapd-attribute', 'nsuniqueid:targetUniqueId')
++
++    # Enable Content Sync plugin
++    csp = ContentSyncPlugin(inst)
++    csp.enable()
++
++    inst.restart()
++
++    # Create the syncrepl user
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    sync_user = users.create_test_user(uid=29999)
++    sync_user.set('userPassword', 'sync_password')
++    SYNC_USER_DN = sync_user.dn
++
++    # Add ACI granting the sync user read access to the suffix
++    ACI = (
++        '(targetattr="*")(version 3.0; acl "Sync user read access";'
++        ' allow (read, search, compare)'
++        ' userdn = "ldap:///%s";)' % SYNC_USER_DN
++    )
++    inst.modify_s(DEFAULT_SUFFIX,
++                  [(ldap.MOD_ADD, 'aci', ensure_bytes(ACI))])
++
++    # Start a syncrepl persistent search as the non-root user
++    # Using the Sync_persist-like pattern but with non-root bind
++    sync_error = [None]  # mutable container to capture errors from thread
++    sync_cookies = []
++
++    class NonRootSyncer(ReconnectLDAPObject, SyncreplConsumer):
++        def __init__(self, *args, **kwargs):
++            self.cookie = None
++            self.cookies = []
++            ldap.ldapobject.ReconnectLDAPObject.__init__(self, *args, **kwargs)
++
++        def syncrepl_set_cookie(self, cookie):
++            self.cookie = cookie
++            self.cookies.append(cookie.split('#')[2])
++
++        def syncrepl_get_cookie(self):
++            return self.cookie
++
++        def syncrepl_present(self, uuids, refreshDeletes=False):
++            pass
++
++        def syncrepl_delete(self, uuids):
++            pass
++
++        def syncrepl_entry(self, dn, attrs, uuid):
++            log.info("NonRootSyncer received entry: %s" % dn)
++
++        def syncrepl_refreshdone(self):
++            log.info("NonRootSyncer refresh done")
++
++        def get_cookies(self):
++            return self.cookies
++
++    def sync_thread_func():
++        ldap_conn = None
++        try:
++            ldap_conn = NonRootSyncer(inst.toLDAPURL())
++            ldap_conn.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, ldap.OPT_X_TLS_DEMAND)
++            ldap_conn.set_option(ldap.OPT_X_TLS_CACERTFILE,
++                                 os.path.join(inst.get_config_dir(), "ca.crt"))
++            if is_fips():
++                ldap_conn.set_option(ldap.OPT_X_TLS_PROTOCOL_MIN,
++                                     ldap.OPT_X_TLS_PROTOCOL_TLS1_2)
++            ldap_conn.set_option(ldap.OPT_X_TLS_NEWCTX, 0)
++
++            # Bind as the non-root user
++            ldap_conn.simple_bind_s(SYNC_USER_DN, 'sync_password')
++
++            ldap_search = ldap_conn.syncrepl_search(
++                DEFAULT_SUFFIX,
++                ldap.SCOPE_SUBTREE,
++                mode='refreshAndPersist',
++                attrlist=['objectclass', 'cn', 'uid', 'sn'],
++                filterstr='(objectClass=person)',
++                cookie=None
++            )
++
++            while ldap_conn.syncrepl_poll(all=1, msgid=ldap_search):
++                pass
++        except ldap.OPERATIONS_ERROR as e:
++            log.error("SyncRepl got OPERATIONS_ERROR: %s" % e)
++            sync_error[0] = e
++        except (ldap.SERVER_DOWN, ldap.CONNECT_ERROR):
++            pass
++        finally:
++            if ldap_conn:
++                sync_cookies.extend(ldap_conn.get_cookies())
++
++    t = threading.Thread(target=sync_thread_func)
++    t.daemon = True
++    t.start()
++    time.sleep(5)
++
++    # Add entries while persistent search is active (as directory manager)
++    test_users = []
++    for i in range(20001, 20004):
++        test_users.append(users.create_test_user(uid=i))
++    time.sleep(5)
++
++    # Stop the server to end the sync thread cleanly
++    inst.stop()
++    t.join(timeout=30)
++
++    # Verify no OPERATIONS_ERROR was raised
++    assert sync_error[0] is None, \
++        "SyncRepl persistent search as non-root user got OPERATIONS_ERROR: %s" % sync_error[0]
++
++    # Verify the sync client received some cookies (entries were synced)
++    assert len(sync_cookies) > 0, \
++        "SyncRepl persistent search as non-root user received no cookies"
++
++    # Restart and check error log for the specific aclpb error
++    inst.start()
++    assert not inst.searchErrorsLog('Missing aclpb'), \
++        "Found 'Missing aclpb' errors in the error log"
++
++    log.info('test_sync_repl_non_root_persist: PASS')
++
++    def fin():
++        inst.restart()
++        try:
++            inst.modify_s(DEFAULT_SUFFIX,
++                          [(ldap.MOD_DELETE, 'aci', ensure_bytes(ACI))])
++        except:
++            pass
++        for user in test_users:
++            try:
++                user.delete()
++            except:
++                pass
++        try:
++            sync_user.delete()
++        except:
++            pass
++
++    request.addfinalizer(fin)
+diff --git a/ldap/servers/plugins/sync/sync_init.c b/ldap/servers/plugins/sync/sync_init.c
+index 49c7387bf..28c0edf06 100644
+--- a/ldap/servers/plugins/sync/sync_init.c
++++ b/ldap/servers/plugins/sync/sync_init.c
+@@ -20,6 +20,28 @@ static int sync_persist_register_operation_extension(void);
+ 
+ static PRUintn thread_primary_op;
+ 
++/*
++ * Destructor for the per-thread primary operation list HEAD node.
++ * Called by NSPR when a thread exits, to free the HEAD node
++ * and any remaining linked list entries.
++ */
++static void
++sync_thread_primary_op_destructor(void *priv)
++{
++    OPERATION_PL_CTX_T *head = (OPERATION_PL_CTX_T *)priv;
++    if (head) {
++        OPERATION_PL_CTX_T *curr_op = head->next;
++        while (curr_op) {
++            OPERATION_PL_CTX_T *next = curr_op->next;
++            slapi_entry_free(curr_op->entry);
++            slapi_entry_free(curr_op->eprev);
++            slapi_ch_free((void **)&curr_op);
++            curr_op = next;
++        }
++        slapi_ch_free((void **)&head);
++    }
++}
++
+ int
+ sync_init(Slapi_PBlock *pb)
+ {
+@@ -187,7 +209,7 @@ sync_start(Slapi_PBlock *pb)
+      * only contains one operation. For nested, the list contains the operations
+      * in the order that they were applied
+      */
+-    PR_NewThreadPrivateIndex(&thread_primary_op, NULL);
++    PR_NewThreadPrivateIndex(&thread_primary_op, sync_thread_primary_op_destructor);
+     sync_persist_initialize(argc, argv);
+ 
+     return (0);
+diff --git a/ldap/servers/plugins/sync/sync_persist.c b/ldap/servers/plugins/sync/sync_persist.c
+index 283607361..a78c273cd 100644
+--- a/ldap/servers/plugins/sync/sync_persist.c
++++ b/ldap/servers/plugins/sync/sync_persist.c
+@@ -43,6 +43,69 @@ static void sync_node_free(SyncQueueNode **node);
+ static int sync_acquire_connection(Slapi_Connection *conn);
+ static int sync_release_connection(Slapi_PBlock *pb, Slapi_Connection *conn, Slapi_Operation *op, int release);
+ 
++/*
++ * Free all resources owned by a SyncRequest and the request itself.
++ * Caller must remove the request from the list (sync_remove_request)
++ * before calling this, if it was added.
++ */
++static void
++sync_request_free(SyncRequest **reqp)
++{
++    SyncRequest *req;
++    SyncQueueNode *qnode, *qnodenext;
++
++    if (reqp == NULL || *reqp == NULL) {
++        return;
++    }
++    req = *reqp;
++
++    if (req->req_pblock) {
++        char **attrs_dup = NULL;
++        char *strFilter = NULL;
++        LDAPControl **ctrls = NULL;
++        Slapi_DN *sdn = NULL;
++
++        slapi_pblock_get(req->req_pblock, SLAPI_SEARCH_TARGET_SDN, &sdn);
++        slapi_sdn_free(&sdn);
++        slapi_pblock_set(req->req_pblock, SLAPI_SEARCH_TARGET_SDN, NULL);
++
++        slapi_pblock_get(req->req_pblock, SLAPI_SEARCH_ATTRS, &attrs_dup);
++        slapi_ch_array_free(attrs_dup);
++        slapi_pblock_set(req->req_pblock, SLAPI_SEARCH_ATTRS, NULL);
++
++        slapi_pblock_get(req->req_pblock, SLAPI_SEARCH_STRFILTER, &strFilter);
++        slapi_ch_free((void **)&strFilter);
++        slapi_pblock_set(req->req_pblock, SLAPI_SEARCH_STRFILTER, NULL);
++
++        slapi_pblock_get(req->req_pblock, SLAPI_REQCONTROLS, &ctrls);
++        if (ctrls) {
++            ldap_controls_free(ctrls);
++            slapi_pblock_set(req->req_pblock, SLAPI_REQCONTROLS, NULL);
++        }
++
++        slapi_pblock_destroy(req->req_pblock);
++        req->req_pblock = NULL;
++    }
++
++    slapi_ch_free((void **)&req->req_orig_base);
++    slapi_filter_free(req->req_filter, 1);
++    req->req_filter = NULL;
++
++    for (qnode = req->ps_eq_head; qnode; qnode = qnodenext) {
++        qnodenext = qnode->sync_next;
++        sync_node_free(&qnode);
++    }
++    req->ps_eq_head = NULL;
++    req->ps_eq_tail = NULL;
++
++    if (req->req_lock) {
++        PR_DestroyLock(req->req_lock);
++        req->req_lock = NULL;
++    }
++
++    slapi_ch_free((void **)reqp);
++}
++
+ /* This routine appends the operation at the end of the
+  * per thread pending list of nested operation..
+  * being a betxn_preop the pending list has the same order
+@@ -664,10 +727,7 @@ sync_persist_add(Slapi_PBlock *pb)
+                               prerr, slapi_pr_strerror(prerr));
+                 /* Now remove the ps from the list so call the function ps_remove */
+                 sync_remove_request(req);
+-                PR_DestroyLock(req->req_lock);
+-                req->req_lock = NULL;
+-                slapi_ch_free((void **)&req->req_pblock);
+-                slapi_ch_free((void **)&req);
++                sync_request_free(&req);
+             } else {
+                 thread_count++;
+                 return (req->req_tid);
+@@ -753,11 +813,7 @@ sync_persist_terminate_all()
+         /* it frees the structures, just in case it remained connected sync_repl client */
+         for (req = sync_request_list->sync_req_head; NULL != req; req = next) {
+             next = req->req_next;
+-            slapi_pblock_destroy(req->req_pblock);
+-            req->req_pblock = NULL;
+-            PR_DestroyLock(req->req_lock);
+-            req->req_lock = NULL;
+-            slapi_ch_free((void **)&req);
++            sync_request_free(&req);
+         }
+         slapi_ch_free((void **)&sync_request_list);
+     }
+@@ -1060,34 +1116,7 @@ sync_send_results(void *arg)
+ done:
+     /* This client closed the connection or shutdown, free the req */
+     sync_remove_request(req);
+-    PR_DestroyLock(req->req_lock);
+-    req->req_lock = NULL;
+-
+-    slapi_pblock_get(req->req_pblock, SLAPI_SEARCH_ATTRS, &attrs_dup);
+-    slapi_ch_array_free(attrs_dup);
+-    slapi_pblock_set(req->req_pblock, SLAPI_SEARCH_ATTRS, NULL);
+-
+-    slapi_pblock_get(req->req_pblock, SLAPI_SEARCH_STRFILTER, &strFilter);
+-    slapi_ch_free((void **)&strFilter);
+-    slapi_pblock_set(req->req_pblock, SLAPI_SEARCH_STRFILTER, NULL);
+-
+-    slapi_pblock_get(req->req_pblock, SLAPI_REQCONTROLS, &ctrls);
+-    if (ctrls) {
+-        ldap_controls_free(ctrls);
+-        slapi_pblock_set(req->req_pblock, SLAPI_REQCONTROLS, NULL);
+-    }
+-
+-    slapi_pblock_destroy(req->req_pblock);
+-    req->req_pblock = NULL;
+-
+-    slapi_ch_free((void **)&req->req_orig_base);
+-    slapi_filter_free(req->req_filter, 1);
+-    sync_cookie_free(&req->req_cookie);
+-    for (qnode = req->ps_eq_head; qnode; qnode = qnodenext) {
+-        qnodenext = qnode->sync_next;
+-        sync_node_free(&qnode);
+-    }
+-    slapi_ch_free((void **)&req);
++    sync_request_free(&req);
+     thread_count--;
+ }
+ 
+-- 
+2.52.0
+

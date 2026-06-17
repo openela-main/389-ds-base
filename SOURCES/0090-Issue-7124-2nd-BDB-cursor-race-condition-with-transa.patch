@@ -1,0 +1,65 @@
+From 92e89927c9ed213d24c79f3cc62dc65027e09b99 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 9 Dec 2025 11:46:11 +0100
+Subject: [PATCH 03/13] Issue 7124 - (2nd) BDB cursor race condition with
+ transaction isolation
+
+Description:
+1.4.x. only.
+Add checks to idl_new_fetch() and idl_new_range_fetch() if the
+database's environment actually supports transactions.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7124
+---
+ ldap/servers/slapd/back-ldbm/idl_new.c | 28 ++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/ldap/servers/slapd/back-ldbm/idl_new.c b/ldap/servers/slapd/back-ldbm/idl_new.c
+index 212f31b7b..205d0007e 100644
+--- a/ldap/servers/slapd/back-ldbm/idl_new.c
++++ b/ldap/servers/slapd/back-ldbm/idl_new.c
+@@ -163,6 +163,20 @@ idl_new_fetch(
+         dblayer_read_txn_begin(be, txn, &s_txn);
+     }
+ 
++    /*
++     * Verify the database's environment actually supports transactions.
++     * During import, databases are opened with a private environment that
++     * lacks DB_INIT_TXN. If we try to use a transaction from the main
++     * environment with a database from the import environment, BDB will fail.
++     * Clear the txn if the database's environment is NULL or doesn't support
++     * transactions.
++     */
++    if (s_txn.back_txn_txn != NULL) {
++        if (db->dbenv == NULL || !dblayer_db_uses_transactions(db->dbenv)) {
++            s_txn.back_txn_txn = NULL;
++        }
++    }
++
+     /* Make a cursor */
+     ret = db->cursor(db, txn, &cursor, 0);
+     if (0 != ret) {
+@@ -410,6 +424,20 @@ idl_new_range_fetch(
+         dblayer_read_txn_begin(be, txn, &s_txn);
+     }
+ 
++    /*
++     * Verify the database's environment actually supports transactions.
++     * During import, databases are opened with a private environment that
++     * lacks DB_INIT_TXN. If we try to use a transaction from the main
++     * environment with a database from the import environment, BDB will fail.
++     * Clear the txn if the database's environment is NULL or doesn't support
++     * transactions.
++     */
++    if (s_txn.back_txn_txn != NULL) {
++        if (db->dbenv == NULL || !dblayer_db_uses_transactions(db->dbenv)) {
++            s_txn.back_txn_txn = NULL;
++        }
++    }
++
+     /* Make a cursor */
+     ret = db->cursor(db, txn, &cursor, 0);
+     if (0 != ret) {
+-- 
+2.52.0
+
