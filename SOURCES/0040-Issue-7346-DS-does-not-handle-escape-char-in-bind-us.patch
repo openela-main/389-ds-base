@@ -1,0 +1,120 @@
+From 0c4a223e4d09d5847b1d6e428b154d631c6519e9 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Wed, 18 Mar 2026 17:22:06 +0100
+Subject: [PATCH 40/46] Issue 7346 - DS does not handle escape char in bind
+ user (#7347)
+
+Bug description:
+	When normalization assertion value in a DN, the fix #4383
+        keeps the escaped spaces (i.e '\20') whatever their position
+	in the value.
+	The RFC requires this for heading spaces but not for the others.
+	This prevent to authenticate with a DN containing escaped spaces
+	in the middle of assertion value
+Fix description:
+	Apply the fix #4383 only for the 1rst value of the assertion
+	and extend it also to heading sharp
+
+fixes: #7346
+
+Reviewed by: Mark Reynolds (Thanks !)
+---
+ .../tests/suites/syntax/acceptance_test.py    | 52 ++++++++++++++++++-
+ ldap/servers/slapd/dn.c                       | 11 +++-
+ 2 files changed, 61 insertions(+), 2 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/syntax/acceptance_test.py b/dirsrvtests/tests/suites/syntax/acceptance_test.py
+index 807936892..916f8d7da 100644
+--- a/dirsrvtests/tests/suites/syntax/acceptance_test.py
++++ b/dirsrvtests/tests/suites/syntax/acceptance_test.py
+@@ -13,7 +13,7 @@ from lib389.schema import Schema
+ from lib389.config import Config
+ from lib389.idm.user import UserAccounts
+ from lib389.idm.group import Group, Groups
+-from lib389._constants import DEFAULT_SUFFIX
++from lib389._constants import DEFAULT_SUFFIX, PW_DM
+ from lib389.topologies import log, topology_st as topo
+ 
+ pytestmark = pytest.mark.tier0
+@@ -240,6 +240,56 @@ def test_boolean_case(topo):
+     with pytest.raises(ldap.INVALID_SYNTAX):
+         user.replace('pamsecure', 'blah')
+ 
++def test_escaped_space(topo, request):
++    """Test that we can bind with DN containing escaped space
++
++       :id: 480adf31-f6c0-48a1-ba5b-29e0324c5702
++       :customerscenario: True
++       :setup: Standalone Instance
++       :steps:
++           1. Create test user with RDN containing space
++           2. Authenticate with that user escaping the space
++           3. Do few searches
++       :expectedresults:
++           1. Success
++           2. Success
++           3. Success
++    """
++    inst = topo.standalone
++    users  = UserAccounts(inst, DEFAULT_SUFFIX)
++    user_properties = {
++        'uid': 'my uid',
++        'cn': 'my uid',
++        'sn': 'user',
++        'userpassword': PW_DM,
++        'uidNumber': '111',
++        'gidNumber': '111',
++        'homeDirectory': '/home/testuser111'
++    }
++    # Step 1 the user RDN contains space
++    user = users.create(properties=user_properties)
++
++    # Step 2 authenticate escaping the space
++    escaped_dn = 'uid=my\\20uid,%s' % ','.join(user.dn.split(',')[1:])
++    ldc = ldap.initialize(f'ldap://{inst.host}:{inst.port}')
++    ldc.bind_s(escaped_dn, PW_DM)
++
++    # Step 3 few searches
++    assert len(ldc.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "uid=my\\20uid")) == 1
++    assert len(ldc.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "uid=my uid")) == 1
++
++    def fin():
++        try:
++            user.delete()
++        except ldap.LDAPError:
++            pass
++        try:
++            ldc.unbind()
++        except:
++            pass
++
++    request.addfinalizer(fin)
++
+ 
+ if __name__ == '__main__':
+     # Run isolated
+diff --git a/ldap/servers/slapd/dn.c b/ldap/servers/slapd/dn.c
+index 5fbe67d07..1e6af3069 100644
+--- a/ldap/servers/slapd/dn.c
++++ b/ldap/servers/slapd/dn.c
+@@ -872,7 +872,16 @@ slapi_dn_normalize_ext(char *src, size_t src_len, char **dest, size_t *dest_len)
+                     if (n == 0) { /* don't change \00 */
+                         *d++ = *++s;
+                         *d++ = *++s;
+-                    } else if (n == 32) { /* leave \20 (space) intact */
++                    } else if ((state == INVALUE1ST) &&
++                               ((n == 32) || (n ==35))) {
++                        /*
++                         * RFC 4514
++                         * ; The following characters are to be escaped when they appear
++                         * ; in the value to be encoded: ESC, one of <escaped>, leading
++                         * ; SHARP or SPACE, trailing SPACE, and NULL.
++                         *
++                         * Leave intact the heading SPACE and SHARP
++                         */
+                         *d++ = *s;
+                         *d++ = *++s;
+                         *d++ = *++s;
+-- 
+2.54.0
+

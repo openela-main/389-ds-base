@@ -1,0 +1,265 @@
+From 8027e70a181fe055b7184beafb2e151b2fce6d20 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 5 Jun 2026 11:45:45 +0200
+Subject: [PATCH 45/46] Issue 7539 - Server shutdown during online reindex may
+ lead to data loss (#7540)
+
+Bug Description:
+When an online reindex task is aborted, for example by shutting down the
+server with SIGTERM while the reindex is in progress, the database data
+is lost, id2entry contains only 1 entry - RUV tombstone.
+Additionally, a SIGSEGV in `dbmdb_public_db_op` is observed when
+replication plugin tries to save the RUV state.
+
+Fix Description:
+When a reindex fails, don't close or delete the db. The backend is kept
+busy (unavailable for client operations) to prevent searches against
+incomplete indexes from returning wrong results. A CRIT message is
+logged advising the admin to perform an offline reindex to rebuild
+the indexes.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7539
+
+Reviewed by: @tbordaz, @progier389 (Thanks!)
+---
+ .../suites/indexes/reindex_abort_test.py      | 154 ++++++++++++++++++
+ .../slapd/back-ldbm/db-bdb/bdb_import.c       |  25 ++-
+ .../slapd/back-ldbm/db-mdb/mdb_import.c       |  25 ++-
+ 3 files changed, 194 insertions(+), 10 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/indexes/reindex_abort_test.py
+
+diff --git a/dirsrvtests/tests/suites/indexes/reindex_abort_test.py b/dirsrvtests/tests/suites/indexes/reindex_abort_test.py
+new file mode 100644
+index 000000000..c3631e9c6
+--- /dev/null
++++ b/dirsrvtests/tests/suites/indexes/reindex_abort_test.py
+@@ -0,0 +1,154 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++
++import pytest
++
++from lib389._constants import DEFAULT_BENAME, DEFAULT_SUFFIX
++from lib389.cli_ctl.dblib import get_mdb_dbis
++from lib389.dbgen import dbgen_users
++from lib389.dirsrv_log import DirsrvErrorLog
++from lib389.properties import TASK_WAIT
++from lib389.replica import Replicas
++from lib389.tasks import Tasks
++from lib389.utils import get_default_db_lib
++from lib389.topologies import topology_st as topo
++
++pytestmark = pytest.mark.tier2
++
++logging.getLogger(__name__).setLevel(logging.INFO)
++log = logging.getLogger(__name__)
++
++NUM_USERS = 500000
++
++REINDEX_ATTRS = [
++    'uid', 'cn', 'sn', 'givenName', 'mail',
++    'telephoneNumber', 'objectclass',
++    'entryrdn', 'parentid', 'numsubordinates',
++    'ancestorid',
++]
++
++
++def _get_mdb_entry_count(inst, bename, dbiname):
++    """Get entry count for a specific DBI via dbscan.  Instance must be stopped."""
++    dbhome = inst.ds_paths.db_dir
++    dbis = get_mdb_dbis(dbhome)
++    be = bename.lower()
++    if be in dbis and dbiname in dbis[be]:
++        return int(dbis[be][dbiname]['nbentries'])
++    return -1
++
++
++@pytest.fixture(scope="function")
++def populated_instance(topo, request):
++    """Populate the default backend with 500k users and enable replication."""
++    inst = topo.standalone
++
++    # Generate and import users
++    import_ldif = os.path.join(inst.ds_paths.ldif_dir, 'reindex_abort_test.ldif')
++    dbgen_users(inst, NUM_USERS, import_ldif, DEFAULT_SUFFIX,
++                generic=True, parent=f'ou=people,{DEFAULT_SUFFIX}')
++
++    tasks = Tasks(inst)
++    assert tasks.importLDIF(
++        suffix=DEFAULT_SUFFIX,
++        input_file=import_ldif,
++        args={TASK_WAIT: True}
++    ) == 0
++
++    # Enable replication
++    replicas = Replicas(inst)
++    replicas.create(properties={
++        'cn': 'replica',
++        'nsDS5ReplicaRoot': DEFAULT_SUFFIX,
++        'nsDS5ReplicaId': '1',
++        'nsDS5Flags': '1',
++        'nsDS5ReplicaType': '3',
++    })
++
++    # Record baseline id2entry count
++    inst.stop()
++    baseline_count = _get_mdb_entry_count(inst, DEFAULT_BENAME, 'id2entry.db')
++    log.info(f"Baseline id2entry count: {baseline_count}")
++    assert baseline_count > NUM_USERS, \
++        f"Expected at least {NUM_USERS} entries in id2entry, got {baseline_count}"
++    inst.start()
++
++    def fin():
++        if not inst.status():
++            inst.start()
++        try:
++            replicas = Replicas(inst)
++            replica = replicas.get(DEFAULT_SUFFIX)
++            replica.delete()
++        except Exception:
++            pass
++
++    request.addfinalizer(fin)
++    return inst, baseline_count
++
++
++@pytest.mark.skipif(get_default_db_lib() != "mdb",
++                    reason="LMDB-specific data loss bug")
++def test_reindex_abort_does_not_delete_db(populated_instance):
++    """Test that stopping a server during reindex does not destroy data.
++
++    :id: 5a7b3c2e-4f1d-11f0-9b8a-482ae39447e5
++    :setup: Standalone instance with 500000 users in the default backend
++            and replication enabled
++    :steps:
++        1. Submit an online reindex task for multiple attributes
++        2. Stop the server while reindex is in progress
++        3. Check id2entry count - it must match the baseline
++        4. Start the server and check that CRIT message about
++           incomplete indexes is logged
++    :expectedresults:
++        1. Success
++        2. Success
++        3. id2entry count matches the baseline (data preserved)
++        4. Server starts successfully and the CRIT message is present
++    """
++    inst, baseline_count = populated_instance
++
++    # Step 1: Submit reindex task (without TASK_WAIT - returns immediately
++    # while the server-side reindex runs in a background thread)
++    tasks = Tasks(inst)
++    tasks.reindex(suffix=DEFAULT_SUFFIX, attrname=REINDEX_ATTRS)
++    log.info("Reindex task submitted")
++
++    # Step 2: Stop the server while reindex is in progress
++    log.info("Stopping the server while reindex is in progress")
++    inst.stop()
++
++    # Step 3: Verify id2entry count matches baseline
++    post_count = _get_mdb_entry_count(inst, DEFAULT_BENAME, 'id2entry.db')
++    log.info(f"Post-abort id2entry count: {post_count} "
++             f"(baseline: {baseline_count})")
++    assert post_count == baseline_count, \
++        (f"DATA LOSS: id2entry went from {baseline_count} to "
++         f"{post_count} entries after reindex abort. "
++         f"The instance directory was incorrectly deleted "
++         f"during reindex failure.")
++
++    # Step 4: Verify server starts and CRIT message is logged
++    inst.start()
++    assert inst.status(), "Server failed to start after reindex abort"
++
++    errlog = DirsrvErrorLog(inst)
++    crit_msgs = errlog.match(".*CRIT.*Reindex failed.*backend is unavailable.*")
++    assert len(crit_msgs) > 0, \
++        "Expected CRIT log message about failed reindex"
++    log.info("CRIT message found: %s", crit_msgs[0].strip())
++    log.info("Server started successfully - data survived reindex abort")
++
++
++if __name__ == "__main__":
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main(["-s", CURRENT_FILE])
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+index 59a472f58..329a3e5ab 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+@@ -2466,11 +2466,26 @@ error:
+         }
+     }
+     if (0 != ret) {
+-        dblayer_instance_close(job->inst->inst_be);
+-        if (!(job->flags & (FLAG_DRYRUN | FLAG_UPGRADEDNFORMAT_V1))) {
+-            /* If not dryrun NOR upgradedn space */
+-            /* if running in the dry run mode, don't touch the db */
+-            bdb_delete_instance_dir(be);
++        if (job->flags & FLAG_REINDEXING) {
++            /* Reindex only rebuilds secondary indexes from id2entry
++             * which is never modified during reindex. On failure we
++             * must NOT close or delete the instance, just bring the
++             * backend back online so the server can continue operating
++             * or shut down cleanly.
++             */
++            import_log_notice(job, SLAPI_LOG_CRIT, "bdb_public_bdb_import_main",
++                              "Reindex failed. Indexes may be incomplete."
++                              " The backend is unavailable until offline"
++                              " reindex is performed:"
++                              " stop the server, run 'dsctl <instance> db2index %s',"
++                              " then start the server.",
++                              inst->inst_name);
++        } else {
++            dblayer_instance_close(job->inst->inst_be);
++            if (!(job->flags & (FLAG_DRYRUN | FLAG_UPGRADEDNFORMAT_V1))) {
++                /* Not dryrun nor upgradedn - delete the half-imported db */
++                bdb_delete_instance_dir(be);
++            }
+         }
+     } else {
+         if (0 != (ret = dblayer_instance_close(job->inst->inst_be))) {
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
+index 43351dfa0..10ba21e48 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
+@@ -1011,11 +1011,26 @@ error:
+         }
+     }
+     if (0 != ret) {
+-        dblayer_instance_close(job->inst->inst_be);
+-        if (!(job->flags & (FLAG_DRYRUN | FLAG_UPGRADEDNFORMAT_V1))) {
+-            /* If not dryrun NOR upgradedn space */
+-            /* if startcfg in the dry run mode, don't touch the db */
+-            dbmdb_delete_instance_dir(be);
++        if (job->flags & FLAG_REINDEXING) {
++            /* Reindex only rebuilds secondary indexes from id2entry
++             * which is never modified during reindex. On failure we
++             * must NOT close or delete the instance, just bring the
++             * backend back online so the server can continue operating
++             * or shut down cleanly.
++             */
++            import_log_notice(job, SLAPI_LOG_CRIT, "dbmdb_public_dbmdb_import_main",
++                              "Reindex failed. Indexes may be incomplete."
++                              " The backend is unavailable until offline"
++                              " reindex is performed:"
++                              " stop the server, run 'dsctl <instance> db2index %s',"
++                              " then start the server.",
++                              inst->inst_name);
++        } else {
++            dblayer_instance_close(job->inst->inst_be);
++            if (!(job->flags & (FLAG_DRYRUN | FLAG_UPGRADEDNFORMAT_V1))) {
++                /* Not dryrun nor upgradedn - delete the half-imported db */
++                dbmdb_delete_instance_dir(be);
++            }
+         }
+     } else {
+         if (0 != (ret = dblayer_instance_close(job->inst->inst_be))) {
+-- 
+2.54.0
+

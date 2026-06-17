@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.8.0
-Release:          6%{?dist}
+Release:          7%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -59,13 +59,14 @@ Provides:         ldif2ldbm >= 0
 
 ##### Bundled cargo crates list - START #####
 Provides:  bundled(crate(allocator-api2)) = 0.2.21
+Provides:  bundled(crate(anyhow)) = 1.0.102
 Provides:  bundled(crate(atty)) = 0.2.14
-Provides:  bundled(crate(autocfg)) = 1.5.0
+Provides:  bundled(crate(autocfg)) = 1.5.1
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 2.10.0
+Provides:  bundled(crate(bitflags)) = 2.13.0
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.26.0
-Provides:  bundled(crate(cc)) = 1.2.52
+Provides:  bundled(crate(cc)) = 1.2.63
 Provides:  bundled(crate(cfg-if)) = 1.0.4
 Provides:  bundled(crate(clap)) = 3.2.25
 Provides:  bundled(crate(clap_lex)) = 0.2.4
@@ -75,70 +76,84 @@ Provides:  bundled(crate(crossbeam-queue)) = 0.3.12
 Provides:  bundled(crate(crossbeam-utils)) = 0.8.21
 Provides:  bundled(crate(equivalent)) = 1.0.2
 Provides:  bundled(crate(errno)) = 0.3.14
-Provides:  bundled(crate(fastrand)) = 2.3.0
+Provides:  bundled(crate(fastrand)) = 2.4.1
 Provides:  bundled(crate(fernet)) = 0.1.4
-Provides:  bundled(crate(find-msvc-tools)) = 0.1.7
+Provides:  bundled(crate(find-msvc-tools)) = 0.1.9
 Provides:  bundled(crate(foldhash)) = 0.2.0
 Provides:  bundled(crate(foreign-types)) = 0.3.2
 Provides:  bundled(crate(foreign-types-shared)) = 0.1.1
-Provides:  bundled(crate(getrandom)) = 0.3.4
-Provides:  bundled(crate(hashbrown)) = 0.16.1
-Provides:  bundled(crate(heck)) = 0.4.1
+Provides:  bundled(crate(getrandom)) = 0.4.2
+Provides:  bundled(crate(hashbrown)) = 0.17.1
+Provides:  bundled(crate(heck)) = 0.5.0
 Provides:  bundled(crate(hermit-abi)) = 0.1.19
-Provides:  bundled(crate(indexmap)) = 1.9.3
-Provides:  bundled(crate(itoa)) = 1.0.17
+Provides:  bundled(crate(id-arena)) = 2.3.0
+Provides:  bundled(crate(indexmap)) = 2.14.0
+Provides:  bundled(crate(itoa)) = 1.0.18
 Provides:  bundled(crate(jobserver)) = 0.1.34
-Provides:  bundled(crate(libc)) = 0.2.180
-Provides:  bundled(crate(linux-raw-sys)) = 0.11.0
-Provides:  bundled(crate(log)) = 0.4.29
-Provides:  bundled(crate(lru)) = 0.16.3
-Provides:  bundled(crate(memchr)) = 2.7.6
-Provides:  bundled(crate(once_cell)) = 1.21.3
-Provides:  bundled(crate(openssl)) = 0.10.75
+Provides:  bundled(crate(leb128fmt)) = 0.1.0
+Provides:  bundled(crate(libc)) = 0.2.186
+Provides:  bundled(crate(linux-raw-sys)) = 0.12.1
+Provides:  bundled(crate(log)) = 0.4.32
+Provides:  bundled(crate(lru)) = 0.16.4
+Provides:  bundled(crate(memchr)) = 2.8.1
+Provides:  bundled(crate(once_cell)) = 1.21.4
+Provides:  bundled(crate(openssl)) = 0.10.80
 Provides:  bundled(crate(openssl-macros)) = 0.1.1
-Provides:  bundled(crate(openssl-sys)) = 0.9.111
+Provides:  bundled(crate(openssl-sys)) = 0.9.116
 Provides:  bundled(crate(os_str_bytes)) = 6.6.1
 Provides:  bundled(crate(paste)) = 0.1.18
 Provides:  bundled(crate(paste-impl)) = 0.1.18
-Provides:  bundled(crate(pin-project-lite)) = 0.2.16
-Provides:  bundled(crate(pkg-config)) = 0.3.32
+Provides:  bundled(crate(pin-project-lite)) = 0.2.17
+Provides:  bundled(crate(pkg-config)) = 0.3.33
+Provides:  bundled(crate(prettyplease)) = 0.2.37
 Provides:  bundled(crate(proc-macro-hack)) = 0.5.20+deprecated
-Provides:  bundled(crate(proc-macro2)) = 1.0.105
-Provides:  bundled(crate(quote)) = 1.0.43
-Provides:  bundled(crate(r-efi)) = 5.3.0
-Provides:  bundled(crate(rustix)) = 1.1.3
+Provides:  bundled(crate(proc-macro2)) = 1.0.106
+Provides:  bundled(crate(quote)) = 1.0.45
+Provides:  bundled(crate(r-efi)) = 6.0.0
+Provides:  bundled(crate(rustix)) = 1.1.4
+Provides:  bundled(crate(semver)) = 1.0.28
 Provides:  bundled(crate(serde)) = 1.0.228
 Provides:  bundled(crate(serde_core)) = 1.0.228
 Provides:  bundled(crate(serde_derive)) = 1.0.228
-Provides:  bundled(crate(serde_json)) = 1.0.149
-Provides:  bundled(crate(shlex)) = 1.3.0
+Provides:  bundled(crate(serde_json)) = 1.0.150
+Provides:  bundled(crate(shlex)) = 2.0.1
 Provides:  bundled(crate(smallvec)) = 1.15.1
 Provides:  bundled(crate(sptr)) = 0.3.2
 Provides:  bundled(crate(strsim)) = 0.10.0
-Provides:  bundled(crate(syn)) = 2.0.114
-Provides:  bundled(crate(tempfile)) = 3.24.0
+Provides:  bundled(crate(syn)) = 2.0.117
+Provides:  bundled(crate(tempfile)) = 3.27.0
 Provides:  bundled(crate(termcolor)) = 1.4.1
 Provides:  bundled(crate(textwrap)) = 0.16.2
-Provides:  bundled(crate(tokio)) = 1.49.0
+Provides:  bundled(crate(tokio)) = 1.52.3
 Provides:  bundled(crate(toml)) = 0.5.11
 Provides:  bundled(crate(tracing)) = 0.1.44
 Provides:  bundled(crate(tracing-attributes)) = 0.1.31
 Provides:  bundled(crate(tracing-core)) = 0.1.36
-Provides:  bundled(crate(unicode-ident)) = 1.0.22
+Provides:  bundled(crate(unicode-ident)) = 1.0.24
+Provides:  bundled(crate(unicode-xid)) = 0.2.6
 Provides:  bundled(crate(uuid)) = 0.8.2
 Provides:  bundled(crate(vcpkg)) = 0.2.15
 Provides:  bundled(crate(wasi)) = 0.11.1+wasi_snapshot_preview1
-Provides:  bundled(crate(wasip2)) = 1.0.1+wasi_0.2.4
+Provides:  bundled(crate(wasip2)) = 1.0.3+wasi_0.2.9
+Provides:  bundled(crate(wasip3)) = 0.4.0+wasi_0.3.0_rc_2026_01_06
+Provides:  bundled(crate(wasm-encoder)) = 0.244.0
+Provides:  bundled(crate(wasm-metadata)) = 0.244.0
+Provides:  bundled(crate(wasmparser)) = 0.244.0
 Provides:  bundled(crate(winapi)) = 0.3.9
 Provides:  bundled(crate(winapi-i686-pc-windows-gnu)) = 0.4.0
 Provides:  bundled(crate(winapi-util)) = 0.1.11
 Provides:  bundled(crate(winapi-x86_64-pc-windows-gnu)) = 0.4.0
 Provides:  bundled(crate(windows-link)) = 0.2.1
 Provides:  bundled(crate(windows-sys)) = 0.61.2
-Provides:  bundled(crate(wit-bindgen)) = 0.46.0
+Provides:  bundled(crate(wit-bindgen)) = 0.57.1
+Provides:  bundled(crate(wit-bindgen-core)) = 0.51.0
+Provides:  bundled(crate(wit-bindgen-rust)) = 0.51.0
+Provides:  bundled(crate(wit-bindgen-rust-macro)) = 0.51.0
+Provides:  bundled(crate(wit-component)) = 0.244.0
+Provides:  bundled(crate(wit-parser)) = 0.244.0
 Provides:  bundled(crate(zeroize)) = 1.8.2
 Provides:  bundled(crate(zeroize_derive)) = 1.4.3
-Provides:  bundled(crate(zmij)) = 1.0.12
+Provides:  bundled(crate(zmij)) = 1.0.21
 ##### Bundled cargo crates list - END #####
 
 BuildRequires:    nspr-devel >= 4.32
@@ -268,8 +283,8 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 %endif
 Source4:          389-ds-base.sysusers
 
-Source5:          vendor-%{version}-5.tar.gz
-Source6:          Cargo-%{version}-5.lock
+Source5:          vendor-%{version}-7.tar.gz
+Source6:          Cargo-%{version}-7.lock
 
 Patch:            0001-Issue-7049-RetroCL-plugin-generates-invalid-LDIF.patch
 Patch:            0002-Issue-7096-During-replication-online-total-init-the-.patch
@@ -309,6 +324,14 @@ Patch:            0035-Issue-7271-plugins-that-create-threads-need-to-updat.patc
 Patch:            0036-Security-fix-for-CVE-2025-14905.patch
 Patch:            0037-Issue-7271-implement-a-pre-close-plugin-function.patch
 Patch:            0038-Issue-7271-Add-new-plugin-pre-close-function-check-t.patch
+Patch:            0039-Issue-7233-test_produce_division_by_zero-fails-with-.patch
+Patch:            0040-Issue-7346-DS-does-not-handle-escape-char-in-bind-us.patch
+Patch:            0041-Issue-7155-build_candidate_list-Database-error-11-wi.patch
+Patch:            0042-Issue-7300-RFE-Add-OS-level-thread-names-to-all-serv.patch
+Patch:            0043-Issue-7503-CVE-2026-9064-Add-a-limit-to-the-number-c.patch
+Patch:            0044-Issue-7372-Reindex-adds-tombstones-to-ancestorid-cau.patch
+Patch:            0045-Issue-7539-Server-shutdown-during-online-reindex-may.patch
+Patch:            0046-Issue-7198-Web-console-doesn-t-show-sub-suffix-when-.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -758,6 +781,15 @@ exit 0
 %endif
 
 %changelog
+* Thu Jun 11 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-7
+- Resolves: RHEL-152356 - Getting "build_candidate_list - Database error 11" messages after migrating to LMDB. [rhel-9.8.z]
+- Resolves: RHEL-168967 - Web console doesn't show the sub suffix of ou=foo,ou=people,dc=example,dc=com. [rhel-9.8.z]
+- Resolves: RHEL-170269 - DS 12 does not handle escape char in bind user [rhel-9.8.z]
+- Resolves: RHEL-174524 - [RFE] Add OS-level thread names to all server threads [rhel-9.8.z]
+- Resolves: RHEL-178086 - CVE-2026-9064 389-ds-base: 389-ds-base: unbounded LDAP controls count in get_ldapmessage_controls_ext() causes CPU and heap amplification (remote DoS) [rhel-9.8]
+- Resolves: RHEL-180716 - Online export is failing when using the option "-s" [rhel-9.8.z]
+- Resolves: RHEL-183895 - Server shutdown during online reindex may lead to data loss [rhel-9.8.z]
+
 * Thu Mar 05 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-6
 - Resolves: RHEL-152335 - Crash in trim_changelog() during the Retro Changelog trimming. [rhel-9.8]
 
