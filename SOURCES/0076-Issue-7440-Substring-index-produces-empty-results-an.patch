@@ -1,0 +1,889 @@
+From c83d467b2457ab7e0a0d71863220379773060183 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 28 Apr 2026 13:08:41 +0200
+Subject: [PATCH 76/81] Issue 7440 - Substring index produces empty results and
+ can crash when non-default nsSubStrBegin/nsSubStrEnd lengths are configured
+ (#7441)
+
+Bug Description:
+1. With begin=1, middle=3, end=3, search doesn't return results for matching entries.
+2. With begin=2, middle=2, end=3, server crashes with SEGV
+
+Fix Description:
+1. Fix signed/unsigned comparision by casting `bvp->bv_len` and `slapi_value_get_length()` results to `(int)`.
+2. Avoid underallocation when (begin + end) > middle*2.
+
+Also port ticket48109_test.py to DSLdapObject.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7440
+
+Reviewed by: @progier389 (Thanks!)
+---
+ .../suites/indexes/substring_index_test.py    | 463 ++++++++++++++++++
+ dirsrvtests/tests/tickets/ticket48109_test.py | 338 -------------
+ ldap/servers/plugins/syntaxes/string.c        |  12 +-
+ 3 files changed, 470 insertions(+), 343 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/indexes/substring_index_test.py
+ delete mode 100644 dirsrvtests/tests/tickets/ticket48109_test.py
+
+diff --git a/dirsrvtests/tests/suites/indexes/substring_index_test.py b/dirsrvtests/tests/suites/indexes/substring_index_test.py
+new file mode 100644
+index 000000000..f1f264e2e
+--- /dev/null
++++ b/dirsrvtests/tests/suites/indexes/substring_index_test.py
+@@ -0,0 +1,463 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import ldap
++import logging
++import os
++import pytest
++
++from lib389._constants import DEFAULT_BENAME, DEFAULT_SUFFIX
++from lib389.idm.user import UserAccounts
++from lib389.index import Index
++from lib389.properties import TASK_WAIT
++from lib389.tasks import Tasks
++from lib389.topologies import topology_st
++
++pytestmark = pytest.mark.tier1
++
++logging.getLogger(__name__).setLevel(logging.DEBUG)
++log = logging.getLogger(__name__)
++
++UID_INDEX_DN = f'cn=uid,cn=index,cn={DEFAULT_BENAME},cn=ldbm database,cn=plugins,cn=config'
++UID_PREFIX = 'zzsubtest'
++
++
++@pytest.fixture
++def uid_index(topology_st):
++    """Get the uid index object and ensure clean state before/after each test."""
++    inst = topology_st.standalone
++    if not inst.status():
++        inst.start()
++    index = Index(inst, UID_INDEX_DN)
++
++    def _cleanup():
++        """Remove substring index config, ignore errors if attrs not present."""
++        if not inst.status():
++            inst.start()
++        for attr in ['nsSubStrBegin', 'nsSubStrMiddle', 'nsSubStrEnd']:
++            try:
++                index.remove_all(attr)
++            except (ldap.NO_SUCH_ATTRIBUTE, ldap.SERVER_DOWN):
++                pass
++
++        # Remove extensibleObject if present
++        try:
++            index.set('objectClass', 'extensibleObject', action=ldap.MOD_DELETE)
++        except (ldap.NO_SUCH_ATTRIBUTE, ldap.OBJECT_CLASS_VIOLATION,
++                ldap.SERVER_DOWN):
++            pass
++
++        # Remove nssubstr matching rules from nsMatchingRule
++        for rule in ['nssubstrbegin', 'nssubstrmiddle', 'nssubstrend']:
++            try:
++                mrs = index.get_attr_vals_utf8('nsMatchingRule')
++                for mr in mrs:
++                    if mr.lower().startswith(rule):
++                        index.set('nsMatchingRule', mr, action=ldap.MOD_DELETE)
++            except (ldap.NO_SUCH_ATTRIBUTE, ldap.OBJECT_CLASS_VIOLATION,
++                    ldap.SERVER_DOWN):
++                pass
++
++        # Remove 'sub' from nsIndexType
++        try:
++            index.set('nsIndexType', 'sub', action=ldap.MOD_DELETE)
++        except (ldap.NO_SUCH_ATTRIBUTE, ldap.SERVER_DOWN):
++            pass
++
++    yield index
++    _cleanup()
++
++
++@pytest.fixture
++def create_user(topology_st):
++    """Create test users."""
++    inst = topology_st.standalone
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    created = []
++
++    def _create_user(uid, cn, sn):
++        user = users.create(properties={
++            'uid': uid,
++            'cn': cn,
++            'sn': sn,
++            'uidNumber': str(1000 + len(created)),
++            'gidNumber': '1000',
++            'homeDirectory': f'/home/{uid}',
++        })
++        created.append(user)
++        return user
++
++    yield _create_user
++
++
++def _reindex_uid(topology_st):
++    """Reindex the uid attribute and wait for completion."""
++    tasks = Tasks(topology_st.standalone)
++    assert tasks.reindex(
++        suffix=DEFAULT_SUFFIX,
++        attrname='uid',
++        args={TASK_WAIT: True}
++    ) == 0
++
++
++def _search_and_assert(topology_st, filt, expected_count, msg=""):
++    """Search with filter and assert expected number of results."""
++    users = UserAccounts(topology_st.standalone, DEFAULT_SUFFIX)
++    entries = users.filter(filt)
++    assert len(entries) == expected_count, \
++        f'{msg}: filter "{filt}" returned {len(entries)} entries, expected {expected_count}'
++    return entries
++
++
++def test_substr_direct_attrs(topology_st, uid_index, create_user):
++    """Test substring index with nsSubStrBegin/nsSubStrEnd direct attributes.
++
++    :id: c670a123-71f6-4577-b3f0-7c938153903f
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with nsSubStrBegin=2, nsSubStrEnd=2
++           using extensibleObject direct attributes
++        2. Reindex uid attribute
++        3. Add a test user
++        4. Search with short initial substring
++        5. Search with 2-char initial
++        6. Search with 2-char final
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Returns the user
++        5. Returns the user
++        6. Returns the user
++    """
++    uid_index.add_many(
++        ('objectClass', 'extensibleObject'),
++        ('nsIndexType', 'sub'),
++        ('nsSubStrBegin', '2'),
++        ('nsSubStrEnd', '2'),
++    )
++
++    uid = f'{UID_PREFIX}a0'
++    create_user(uid, 'a user0', 'user0')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid[:len(UID_PREFIX)+1]}*)', 1,
++                       'begin=2 initial search')
++    _search_and_assert(topology_st, f'(uid={uid[:len(UID_PREFIX)+2]}*)', 1,
++                       'begin=2 two-char initial')
++    _search_and_assert(topology_st, f'(uid=*{uid[-2:]})', 1,
++                       'end=2 final search')
++
++
++def test_substr_matching_rule(topology_st, uid_index, create_user):
++    """Test substring index with nsMatchingRule format for substr lengths.
++
++    :id: 58eebbc5-2571-43ef-9b97-151b11c02eb5
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with nsMatchingRule: nssubstrbegin=2
++           and nsMatchingRule: nssubstrend=2
++        2. Reindex uid attribute
++        3. Add a test user
++        4. Search with short initial substring
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Returns the user
++    """
++    uid_index.add_many(
++        ('nsIndexType', 'sub'),
++        ('nsMatchingRule', 'nssubstrbegin=2'),
++        ('nsMatchingRule', 'nssubstrend=2'),
++    )
++
++    uid = f'{UID_PREFIX}b1'
++    create_user(uid, 'b user1', 'user1')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid[:len(UID_PREFIX)+1]}*)', 1,
++                       'nsMatchingRule begin=2')
++    _search_and_assert(topology_st, f'(uid={uid[:len(UID_PREFIX)+2]}*)', 1,
++                       'nsMatchingRule begin=2 two-char')
++
++
++def test_substr_direct_attrs_override_matching_rule(topology_st, uid_index, create_user):
++    """Test that nsSubStr direct attributes take precedence over nsMatchingRule.
++
++    :id: 649051f7-97d6-4f85-bfeb-c94e4be49ede
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with BOTH formats:
++           - nsMatchingRule: nssubstrbegin=3 (would require 3-char initial)
++           - nsMatchingRule: nssubstrend=3
++           - nsSubStrBegin: 2 (direct attr, should override to 2)
++           - nsSubStrEnd: 2
++        2. Reindex uid attribute
++        3. Add a test user
++        4. Search with 1-char initial - only works if begin=2 (direct) is used
++        5. Search with 1-char final - only works if end=2 (direct) is used
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Returns the user - proves direct attr (2) overrides matching rule (3)
++        5. Returns the user
++    """
++    uid_index.add_many(
++        ('nsIndexType', 'sub'),
++        ('nsMatchingRule', 'nssubstrbegin=3'),
++        ('nsMatchingRule', 'nssubstrend=3'),
++        ('objectClass', 'extensibleObject'),
++        ('nsSubStrBegin', '2'),
++        ('nsSubStrEnd', '2'),
++    )
++
++    uid = f'{UID_PREFIX}c2'
++    create_user(uid, 'c user2', 'user2')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid[:len(UID_PREFIX)+1]}*)', 1,
++                       'direct attr begin=2 overrides matching rule begin=3')
++    _search_and_assert(topology_st, f'(uid=*{uid[-1:]})', 1,
++                       'direct attr end=2 overrides matching rule end=3')
++
++
++def test_substr_mixed_values(topology_st, uid_index, create_user):
++    """Test substring index with different values for begin, middle and end.
++
++    :id: 6c0bb8a2-234b-4daa-bf9c-07e8d03b08b0
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with begin=2, middle=3, end=2
++        2. Reindex uid attribute
++        3. Add two test users
++        4. Search with short initial
++        5. Search with 3-char any
++        6. Search with 2-char final
++        7. Search with longer any (unique to one user)
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Returns 1 user
++        5. Returns 2 users
++        6. Returns 2 users
++        7. Returns 1 user
++    """
++    uid_index.add_many(
++        ('objectClass', 'extensibleObject'),
++        ('nsIndexType', 'sub'),
++        ('nsSubStrBegin', '2'),
++        ('nsSubStrMiddle', '3'),
++        ('nsSubStrEnd', '2'),
++    )
++
++    uid1 = f'{UID_PREFIX}d3mixed'
++    uid2 = f'{UID_PREFIX}e4mixed'
++    create_user(uid1, 'd user3mixed', 'user3')
++    create_user(uid2, 'e user4mixed', 'user4')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid1})', 1, 'exact match sanity check')
++    _search_and_assert(topology_st, f'(uid={uid1[:len(UID_PREFIX)+1]}*)', 1,
++                       'mixed: begin=2 initial search')
++    _search_and_assert(topology_st, '(uid=*mix*)', 2, 'mixed: middle=3 any search')
++    _search_and_assert(topology_st, '(uid=*ed)', 2, 'mixed: end=2 final search')
++    _search_and_assert(topology_st, f'(uid=*d3m*)', 1, 'mixed: longer any search unique')
++
++
++def test_substr_low_values(topology_st, uid_index, create_user):
++    """Test substring index with all values set to 2.
++
++    :id: db9dd1cc-f76d-4ea6-8c56-4238d3f323a7
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with all substr lengths set to 2
++        2. Reindex uid attribute
++        3. Add test users
++        4. Search with short initial
++        5. Search with 2-char any
++        6. Search with multi-char final
++        7. Search with longer any
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Returns 1 user
++        5. Returns 2 users
++        6. Returns 1 user
++        7. Returns 1 user
++    """
++    uid_index.add_many(
++        ('objectClass', 'extensibleObject'),
++        ('nsIndexType', 'sub'),
++        ('nsSubStrBegin', '2'),
++        ('nsSubStrMiddle', '2'),
++        ('nsSubStrEnd', '2'),
++    )
++
++    uid1 = f'{UID_PREFIX}f5low'
++    uid2 = f'{UID_PREFIX}g6low'
++    create_user(uid1, 'f user5low', 'user5')
++    create_user(uid2, 'g user6low', 'user6')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid1[:len(UID_PREFIX)+1]}*)', 1,
++                       'low: begin=2 single char initial')
++    _search_and_assert(topology_st, '(uid=*5lo*)', 1, 'low: middle=2 any search unique')
++    _search_and_assert(topology_st, f'(uid=*{uid1[-4:]})', 1, 'low: end=2 final search')
++    _search_and_assert(topology_st, '(uid=*low)', 2, 'low: final matching both')
++
++
++def test_substr_begin_1_middle_3_end_3(topology_st, uid_index, create_user):
++    """Test substring index with nsSubStrBegin=1, nsSubStrMiddle=3, nsSubStrEnd=3.
++
++    :id: c28166e9-41aa-44ee-ba66-3300ea3ea4d1
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with begin=1, middle=3, end=3
++        2. Reindex uid attribute
++        3. Add two test users
++        4. Search with 1-char initial
++        5. Search with 3-char initial
++        6. Search with 3-char any
++        7. Search with 3-char final
++        8. Search with 2-char any (shorter than middle=3)
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Returns 1 user
++        5. Returns 1 user
++        6. Returns 2 users
++        7. Returns 2 users
++        8. Returns 1 user
++    """
++    uid_index.add_many(
++        ('objectClass', 'extensibleObject'),
++        ('nsIndexType', 'sub'),
++        ('nsSubStrBegin', '1'),
++        ('nsSubStrMiddle', '3'),
++        ('nsSubStrEnd', '3'),
++    )
++
++    uid1 = f'{UID_PREFIX}h7degen'
++    uid2 = f'{UID_PREFIX}i8degen'
++    create_user(uid1, 'h user7', 'user7')
++    create_user(uid2, 'i user8', 'user8')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid1})', 1, 'exact match sanity check')
++    _search_and_assert(topology_st, f'(uid={uid1[:len(UID_PREFIX)+2]}*)', 1,
++                       'begin=1 two-char initial')
++    _search_and_assert(topology_st, '(uid=*deg*)', 2, 'middle=3 any search')
++    _search_and_assert(topology_st, '(uid=*gen)', 2, 'end=3 final search')
++    _search_and_assert(topology_st, '(uid=*7d*)', 1, 'short any, post-filtered')
++
++
++def test_substr_matching_rule_mixed(topology_st, uid_index, create_user):
++    """Test mixed substring lengths via nsMatchingRule format.
++
++    Uses begin=1, middle=3, end=3 via nsMatchingRule format.
++
++    :id: 0ef6d87e-5ce2-4ea7-a8b7-9cb09f0fcf53
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with nsMatchingRule format:
++           nssubstrbegin=1, nssubstrmiddle=3, nssubstrend=3
++        2. Reindex uid attribute
++        3. Add test users
++        4. Search with various filters to verify functionality
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. All searches return correct results
++    """
++    uid_index.add_many(
++        ('nsIndexType', 'sub'),
++        ('nsMatchingRule', 'nssubstrbegin=1'),
++        ('nsMatchingRule', 'nssubstrmiddle=3'),
++        ('nsMatchingRule', 'nssubstrend=3'),
++    )
++
++    uid1 = f'{UID_PREFIX}j9mrule'
++    uid2 = f'{UID_PREFIX}k10mrule'
++    create_user(uid1, 'j user9', 'user9')
++    create_user(uid2, 'k user10', 'user10')
++
++    _reindex_uid(topology_st)
++
++    _search_and_assert(topology_st, f'(uid={uid1[:len(UID_PREFIX)+2]}*)', 1,
++                       'matching rule begin=1')
++    _search_and_assert(topology_st, '(uid=*rul*)', 2, 'matching rule middle=3')
++    _search_and_assert(topology_st, f'(uid=*{uid1[-7:]})', 1, 'matching rule end=3')
++
++
++def test_substr_mixed_end_gt_middle(topology_st, uid_index, create_user):
++    """Test mixed values where begin+end > middle*2 works correctly.
++
++    :id: 33deb10a-beb1-45c3-8a4a-89ad2166a7df
++    :customerscenario: True
++    :setup: Standalone instance
++    :steps:
++        1. Configure uid index with begin=2, middle=2, end=3
++           (begin+end > middle*2)
++        2. Add test users
++        3. Reindex uid
++        4. Search with various substring filters
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success - no crash
++        4. All searches return correct results
++    """
++    inst = topology_st.standalone
++
++    uid_index.add_many(
++        ('objectClass', 'extensibleObject'),
++        ('nsIndexType', 'sub'),
++        ('nsSubStrBegin', '2'),
++        ('nsSubStrMiddle', '2'),
++        ('nsSubStrEnd', '3'),
++    )
++
++    uid1 = f'{UID_PREFIX}l11endgt'
++    uid2 = f'{UID_PREFIX}m12endgt'
++    create_user(uid1, 'l user11', 'user11')
++    create_user(uid2, 'm user12', 'user12')
++
++    _reindex_uid(topology_st)
++
++    # Server must still be alive after reindex
++    assert inst.status(), 'Server should not crash with begin+end > middle*2'
++
++    _search_and_assert(topology_st, f'(uid={uid1})', 1, 'exact match sanity')
++    _search_and_assert(topology_st, f'(uid={uid1[:len(UID_PREFIX)+1]}*)', 1,
++                       'begin=2 initial search')
++    _search_and_assert(topology_st, '(uid=*endgt)', 2, 'end=3 final search')
++    _search_and_assert(topology_st, '(uid=*nd*)', 2, 'middle=2 any search')
++
++
++if __name__ == '__main__':
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main("-s %s" % CURRENT_FILE)
+diff --git a/dirsrvtests/tests/tickets/ticket48109_test.py b/dirsrvtests/tests/tickets/ticket48109_test.py
+deleted file mode 100644
+index 5f9b6572b..000000000
+--- a/dirsrvtests/tests/tickets/ticket48109_test.py
++++ /dev/null
+@@ -1,338 +0,0 @@
+-# --- BEGIN COPYRIGHT BLOCK ---
+-# Copyright (C) 2016 Red Hat, Inc.
+-# All rights reserved.
+-#
+-# License: GPL (version 3 or any later version).
+-# See LICENSE for details.
+-# --- END COPYRIGHT BLOCK ---
+-#
+-import pytest
+-from lib389.tasks import *
+-from lib389.utils import *
+-from lib389.topologies import topology_st
+-
+-from lib389._constants import SUFFIX, DEFAULT_SUFFIX
+-
+-pytestmark = pytest.mark.tier2
+-
+-logging.getLogger(__name__).setLevel(logging.DEBUG)
+-log = logging.getLogger(__name__)
+-
+-UID_INDEX = 'cn=uid,cn=index,cn=userRoot,cn=ldbm database,cn=plugins,cn=config'
+-
+-
+-def test_ticket48109(topology_st):
+-    '''
+-    Set SubStr lengths to cn=uid,cn=index,...
+-      objectClass: extensibleObject
+-      nsIndexType: sub
+-      nsSubStrBegin: 2
+-      nsSubStrEnd: 2
+-    '''
+-    log.info('Test case 0')
+-    # add substr setting to UID_INDEX
+-    try:
+-        topology_st.standalone.modify_s(UID_INDEX,
+-                                        [(ldap.MOD_ADD, 'objectClass', b'extensibleObject'),
+-                                         (ldap.MOD_ADD, 'nsIndexType', b'sub'),
+-                                         (ldap.MOD_ADD, 'nsSubStrBegin', b'2'),
+-                                         (ldap.MOD_ADD, 'nsSubStrEnd', b'2')])
+-    except ldap.LDAPError as e:
+-        log.error('Failed to add substr lengths: error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    # restart the server to apply the indexing
+-    topology_st.standalone.restart(timeout=10)
+-
+-    # add a test user
+-    UID = 'auser0'
+-    USER_DN = 'uid=%s,%s' % (UID, SUFFIX)
+-    try:
+-        topology_st.standalone.add_s(Entry((USER_DN, {
+-            'objectclass': 'top person organizationalPerson inetOrgPerson'.split(),
+-            'cn': 'a user0',
+-            'sn': 'user0',
+-            'givenname': 'a',
+-            'mail': UID})))
+-    except ldap.LDAPError as e:
+-        log.error('Failed to add ' + USER_DN + ': error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    entries = topology_st.standalone.search_s(SUFFIX, ldap.SCOPE_SUBTREE, '(uid=a*)')
+-    assert len(entries) == 1
+-
+-    # restart the server to check the access log
+-    topology_st.standalone.restart(timeout=10)
+-
+-    cmdline = 'egrep %s %s | egrep "uid=a\*"' % (SUFFIX, topology_st.standalone.accesslog)
+-    p = os.popen(cmdline, "r")
+-    l0 = p.readline()
+-    if l0 == "":
+-        log.error('Search with "(uid=a*)" is not logged in ' + topology_st.standalone.accesslog)
+-        assert False
+-    else:
+-        # regex = re.compile('\(conn=[0-9]* op=[0-9]*\) SRCH .*')
+-        regex = re.compile(r'.*\s+(conn=\d+ op=\d+)\s+SRCH .*')
+-        match = regex.match(l0)
+-        log.info('match: %s' % match.group(1))
+-        cmdline = 'egrep "%s" %s | egrep "RESULT"' % (match.group(1), topology_st.standalone.accesslog)
+-        p = os.popen(cmdline, "r")
+-        l1 = p.readline()
+-        if l1 == "":
+-            log.error('Search result of "(uid=a*)" is not logged in ' + topology_st.standalone.accesslog)
+-            assert False
+-        else:
+-            log.info('l1: %s' % l1)
+-            regex = re.compile(r'.*nentries=(\d+)\s+.*')
+-            match = regex.match(l1)
+-            log.info('match: nentires=%s' % match.group(1))
+-            if match.group(1) == "0":
+-                log.error('Entry uid=a* not found.')
+-                assert False
+-            else:
+-                log.info('Entry uid=a* found.')
+-                regex = re.compile(r'.*(notes=[AU]).*')
+-                match = regex.match(l1)
+-                if match:
+-                    log.error('%s - substr index was not used' % match.group(1))
+-                    assert False
+-                else:
+-                    log.info('Test case 0 - OK - substr index used')
+-
+-    # clean up substr setting to UID_INDEX
+-    try:
+-        topology_st.standalone.modify_s(UID_INDEX,
+-                                        [(ldap.MOD_DELETE, 'objectClass', b'extensibleObject'),
+-                                         (ldap.MOD_DELETE, 'nsIndexType', b'sub'),
+-                                         (ldap.MOD_DELETE, 'nsSubStrBegin', b'2'),
+-                                         (ldap.MOD_DELETE, 'nsSubStrEnd', b'2')])
+-    except ldap.LDAPError as e:
+-        log.error('Failed to delete substr lengths: error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    '''
+-    Set SubStr lengths to cn=uid,cn=index,...
+-      nsIndexType: sub
+-      nsMatchingRule: nsSubStrBegin=2
+-      nsMatchingRule: nsSubStrEnd=2
+-    '''
+-    log.info('Test case 1')
+-    # add substr setting to UID_INDEX
+-    try:
+-        topology_st.standalone.modify_s(UID_INDEX,
+-                                        [(ldap.MOD_ADD, 'nsIndexType', b'sub'),
+-                                         (ldap.MOD_ADD, 'nsMatchingRule', b'nssubstrbegin=2'),
+-                                         (ldap.MOD_ADD, 'nsMatchingRule', b'nssubstrend=2')])
+-    except ldap.LDAPError as e:
+-        log.error('Failed to add substr lengths: error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    # restart the server to apply the indexing
+-    topology_st.standalone.restart(timeout=10)
+-
+-    # add a test user
+-    UID = 'buser1'
+-    USER_DN = 'uid=%s,%s' % (UID, SUFFIX)
+-    try:
+-        topology_st.standalone.add_s(Entry((USER_DN, {
+-            'objectclass': 'top person organizationalPerson inetOrgPerson'.split(),
+-            'cn': 'b user1',
+-            'sn': 'user1',
+-            'givenname': 'b',
+-            'mail': UID})))
+-    except ldap.LDAPError as e:
+-        log.error('Failed to add ' + USER_DN + ': error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    entries = topology_st.standalone.search_s(SUFFIX, ldap.SCOPE_SUBTREE, '(uid=b*)')
+-    assert len(entries) == 1
+-
+-    # restart the server to check the access log
+-    topology_st.standalone.restart(timeout=10)
+-
+-    cmdline = 'egrep %s %s | egrep "uid=b\*"' % (SUFFIX, topology_st.standalone.accesslog)
+-    p = os.popen(cmdline, "r")
+-    l0 = p.readline()
+-    if l0 == "":
+-        log.error('Search with "(uid=b*)" is not logged in ' + topology_st.standalone.accesslog)
+-        assert False
+-    else:
+-        # regex = re.compile('\(conn=[0-9]* op=[0-9]*\) SRCH .*')
+-        regex = re.compile(r'.*\s+(conn=\d+ op=\d+)\s+SRCH .*')
+-        match = regex.match(l0)
+-        log.info('match: %s' % match.group(1))
+-        cmdline = 'egrep "%s" %s | egrep "RESULT"' % (match.group(1), topology_st.standalone.accesslog)
+-        p = os.popen(cmdline, "r")
+-        l1 = p.readline()
+-        if l1 == "":
+-            log.error('Search result of "(uid=*b)" is not logged in ' + topology_st.standalone.accesslog)
+-            assert False
+-        else:
+-            log.info('l1: %s' % l1)
+-            regex = re.compile(r'.*nentries=(\d+)\s+.*')
+-            match = regex.match(l1)
+-            log.info('match: nentires=%s' % match.group(1))
+-            if match.group(1) == "0":
+-                log.error('Entry uid=*b not found.')
+-                assert False
+-            else:
+-                log.info('Entry uid=*b found.')
+-                regex = re.compile(r'.*(notes=[AU]).*')
+-                match = regex.match(l1)
+-                if match:
+-                    log.error('%s - substr index was not used' % match.group(1))
+-                    assert False
+-                else:
+-                    log.info('Test case 1 - OK - substr index used')
+-
+-    # clean up substr setting to UID_INDEX
+-    try:
+-        topology_st.standalone.modify_s(UID_INDEX,
+-                                        [(ldap.MOD_DELETE, 'nsIndexType', b'sub'),
+-                                         (ldap.MOD_DELETE, 'nsMatchingRule', b'nssubstrbegin=2'),
+-                                         (ldap.MOD_DELETE, 'nsMatchingRule', b'nssubstrend=2')])
+-    except ldap.LDAPError as e:
+-        log.error('Failed to delete substr lengths: error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    '''
+-    Set SubStr conflict formats/lengths to cn=uid,cn=index,...
+-      objectClass: extensibleObject
+-      nsIndexType: sub
+-      nsMatchingRule: nsSubStrBegin=3
+-      nsMatchingRule: nsSubStrEnd=3
+-      nsSubStrBegin: 2
+-      nsSubStrEnd: 2
+-    nsSubStr{Begin,End} are honored.
+-    '''
+-    log.info('Test case 2')
+-
+-    # add substr setting to UID_INDEX
+-    try:
+-        topology_st.standalone.modify_s(UID_INDEX,
+-                                        [(ldap.MOD_ADD, 'nsIndexType', b'sub'),
+-                                         (ldap.MOD_ADD, 'nsMatchingRule', b'nssubstrbegin=3'),
+-                                         (ldap.MOD_ADD, 'nsMatchingRule', b'nssubstrend=3'),
+-                                         (ldap.MOD_ADD, 'objectClass', b'extensibleObject'),
+-                                         (ldap.MOD_ADD, 'nsSubStrBegin', b'2'),
+-                                         (ldap.MOD_ADD, 'nsSubStrEnd', b'2')])
+-    except ldap.LDAPError as e:
+-        log.error('Failed to add substr lengths: error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    # restart the server to apply the indexing
+-    topology_st.standalone.restart(timeout=10)
+-
+-    # add a test user
+-    UID = 'cuser2'
+-    USER_DN = 'uid=%s,%s' % (UID, SUFFIX)
+-    try:
+-        topology_st.standalone.add_s(Entry((USER_DN, {
+-            'objectclass': 'top person organizationalPerson inetOrgPerson'.split(),
+-            'cn': 'c user2',
+-            'sn': 'user2',
+-            'givenname': 'c',
+-            'mail': UID})))
+-    except ldap.LDAPError as e:
+-        log.error('Failed to add ' + USER_DN + ': error {}'.format(e.args[0]['desc']))
+-        assert False
+-
+-    entries = topology_st.standalone.search_s(SUFFIX, ldap.SCOPE_SUBTREE, '(uid=c*)')
+-    assert len(entries) == 1
+-
+-    entries = topology_st.standalone.search_s(SUFFIX, ldap.SCOPE_SUBTREE, '(uid=*2)')
+-    assert len(entries) == 1
+-
+-    # restart the server to check the access log
+-    topology_st.standalone.restart(timeout=10)
+-
+-    cmdline = 'egrep %s %s | egrep "uid=c\*"' % (SUFFIX, topology_st.standalone.accesslog)
+-    p = os.popen(cmdline, "r")
+-    l0 = p.readline()
+-    if l0 == "":
+-        log.error('Search with "(uid=c*)" is not logged in ' + topology_st.standalone.accesslog)
+-        assert False
+-    else:
+-        # regex = re.compile('\(conn=[0-9]* op=[0-9]*\) SRCH .*')
+-        regex = re.compile(r'.*\s+(conn=\d+ op=\d+)\s+SRCH .*')
+-        match = regex.match(l0)
+-        log.info('match: %s' % match.group(1))
+-        cmdline = 'egrep "%s" %s | egrep "RESULT"' % (match.group(1), topology_st.standalone.accesslog)
+-        p = os.popen(cmdline, "r")
+-        l1 = p.readline()
+-        if l1 == "":
+-            log.error('Search result of "(uid=c*)" is not logged in ' + topology_st.standalone.accesslog)
+-            assert False
+-        else:
+-            log.info('l1: %s' % l1)
+-            regex = re.compile(r'.*nentries=(\d+)\s+.*')
+-            match = regex.match(l1)
+-            log.info('match: nentires=%s' % match.group(1))
+-            if match.group(1) == "0":
+-                log.error('Entry uid=c* not found.')
+-                assert False
+-            else:
+-                log.info('Entry uid=c* found.')
+-                regex = re.compile(r'.*(notes=[AU]).*')
+-                match = regex.match(l1)
+-                if match:
+-                    log.error('%s - substr index was not used' % match.group(1))
+-                    assert False
+-                else:
+-                    log.info('Test case 2-1 - OK - correct substr index used')
+-
+-    cmdline = 'egrep %s %s | egrep "uid=\*2"' % (SUFFIX, topology_st.standalone.accesslog)
+-    p = os.popen(cmdline, "r")
+-    l0 = p.readline()
+-    if l0 == "":
+-        log.error('Search with "(uid=*2)" is not logged in ' + topology_st.standalone.accesslog)
+-        assert False
+-    else:
+-        # regex = re.compile('\(conn=[0-9]* op=[0-9]*\) SRCH .*')
+-        regex = re.compile(r'.*\s+(conn=\d+ op=\d+)\s+SRCH .*')
+-        match = regex.match(l0)
+-        log.info('match: %s' % match.group(1))
+-        cmdline = 'egrep "%s" %s | egrep "RESULT"' % (match.group(1), topology_st.standalone.accesslog)
+-        p = os.popen(cmdline, "r")
+-        l1 = p.readline()
+-        if l1 == "":
+-            log.error('Search result of "(uid=*2)" is not logged in ' + topology_st.standalone.accesslog)
+-            assert False
+-        else:
+-            log.info('l1: %s' % l1)
+-            regex = re.compile(r'.*nentries=(\d+)\s+.*')
+-            match = regex.match(l1)
+-            log.info('match: nentires=%s' % match.group(1))
+-            if match.group(1) == "0":
+-                log.error('Entry uid=*2 not found.')
+-                assert False
+-            else:
+-                log.info('Entry uid=*2 found.')
+-                regex = re.compile(r'.*(notes=[AU]).*')
+-                match = regex.match(l1)
+-                if match:
+-                    log.error('%s - substr index was not used' % match.group(1))
+-                    assert False
+-                else:
+-                    log.info('Test case 2-2 - OK - correct substr index used')
+-
+-    # clean up substr setting to UID_INDEX
+-    try:
+-        topology_st.standalone.modify_s(UID_INDEX,
+-                                        [(ldap.MOD_DELETE, 'nsIndexType', b'sub'),
+-                                         (ldap.MOD_DELETE, 'nsMatchingRule', b'nssubstrbegin=3'),
+-                                         (ldap.MOD_DELETE, 'nsMatchingRule', b'nssubstrend=3'),
+-                                         (ldap.MOD_DELETE, 'objectClass', b'extensibleObject'),
+-                                         (ldap.MOD_DELETE, 'nsSubStrBegin', b'2'),
+-                                         (ldap.MOD_DELETE, 'nsSubStrEnd', b'2')])
+-    except ldap.LDAPError as e:
+-        log.error('Failed to delete substr lengths: error {}'.format(e.args[0]['desc']))
+-        assert False
+-    log.info('Testcase PASSED')
+-
+-
+-if __name__ == '__main__':
+-    # Run isolated
+-    # -s for DEBUG mode
+-    CURRENT_FILE = os.path.realpath(__file__)
+-    pytest.main("-s %s" % CURRENT_FILE)
+diff --git a/ldap/servers/plugins/syntaxes/string.c b/ldap/servers/plugins/syntaxes/string.c
+index d63bcf964..61b3e9cf0 100644
+--- a/ldap/servers/plugins/syntaxes/string.c
++++ b/ldap/servers/plugins/syntaxes/string.c
+@@ -551,9 +551,11 @@ string_values2keys(Slapi_PBlock *pb, Slapi_Value **bvals, Slapi_Value ***ivals,
+              * NULL terminated, the only downside is that we
+              * allocate more space than we really need.
+              */
+-            nsubs += slapi_value_get_length(*bvlp) - substrlens[INDEX_SUBSTRMIDDLE] + 3;
++            nsubs += (int)slapi_value_get_length(*bvlp) - substrlens[INDEX_SUBSTRMIDDLE] + 3;
++        }
++        if (substrlens[INDEX_SUBSTRMIDDLE] * 2 > substrlens[INDEX_SUBSTRBEGIN] + substrlens[INDEX_SUBSTREND]) {
++            nsubs += substrlens[INDEX_SUBSTRMIDDLE] * 2 - substrlens[INDEX_SUBSTRBEGIN] - substrlens[INDEX_SUBSTREND];
+         }
+-        nsubs += substrlens[INDEX_SUBSTRMIDDLE] * 2 - substrlens[INDEX_SUBSTRBEGIN] - substrlens[INDEX_SUBSTREND];
+         *ivals = (Slapi_Value **)slapi_ch_calloc((nsubs + 1), sizeof(Slapi_Value *));
+ 
+         n = 0;
+@@ -591,7 +593,7 @@ string_values2keys(Slapi_PBlock *pb, Slapi_Value **bvals, Slapi_Value ***ivals,
+             }
+ 
+             /* leading */
+-            if (bvp->bv_len > substrlens[INDEX_SUBSTRBEGIN] - 2) {
++            if ((int)bvp->bv_len > substrlens[INDEX_SUBSTRBEGIN] - 2) {
+                 buf[0] = '^';
+                 for (i = 0; i < substrlens[INDEX_SUBSTRBEGIN] - 1; i++) {
+                     buf[i + 1] = bvp->bv_val[i];
+@@ -604,7 +606,7 @@ string_values2keys(Slapi_PBlock *pb, Slapi_Value **bvals, Slapi_Value ***ivals,
+ 
+             /* any */
+             for (p = bvp->bv_val;
+-                 p < (bvp->bv_val + bvp->bv_len - substrlens[INDEX_SUBSTRMIDDLE] + 1);
++                 p < (bvp->bv_val + (int)bvp->bv_len - substrlens[INDEX_SUBSTRMIDDLE] + 1);
+                  p++) {
+                 for (i = 0; i < substrlens[INDEX_SUBSTRMIDDLE]; i++) {
+                     buf[i] = p[i];
+@@ -616,7 +618,7 @@ string_values2keys(Slapi_PBlock *pb, Slapi_Value **bvals, Slapi_Value ***ivals,
+             }
+ 
+             /* trailing */
+-            if (bvp->bv_len > substrlens[INDEX_SUBSTREND] - 2) {
++            if ((int)bvp->bv_len > substrlens[INDEX_SUBSTREND] - 2) {
+                 p = bvp->bv_val + bvp->bv_len - substrlens[INDEX_SUBSTREND] + 1;
+                 for (i = 0; i < substrlens[INDEX_SUBSTREND] - 1; i++) {
+                     buf[i] = p[i];
+-- 
+2.54.0
+

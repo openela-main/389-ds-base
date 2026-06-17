@@ -1,0 +1,51 @@
+From 5e4454abcea5e3b0a80f5dc204498a27ec47a14c Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 5 Jun 2026 18:59:25 +0200
+Subject: [PATCH 79/81] Issue 7562 - Error: NssSsl.add_cert() got an unexpected
+ keyword argument 'input_file' (#7563)
+
+Bug Description:
+In #7281 `input_file` parameter was renamed to `cert_file`, but not all
+callers were updated. This causes a TypeError at runtime.
+
+Fix Description:
+Update dscontainer and dsctl to use the new `cert_file` parameter name.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7281
+Fixes: https://github.com/389ds/389-ds-base/issues/7562
+
+Reviewed by: @ mreynolds389 (Thanks!)
+---
+ src/lib389/cli/dscontainer       | 2 +-
+ src/lib389/lib389/cli_ctl/tls.py | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/lib389/cli/dscontainer b/src/lib389/cli/dscontainer
+index 688121c99..bd41b7d7d 100755
+--- a/src/lib389/cli/dscontainer
++++ b/src/lib389/cli/dscontainer
+@@ -145,7 +145,7 @@ def _begin_setup_pem_tls():
+     # Import the ca's
+     for ca_path in [os.path.join(CONTAINER_TLS_SERVER_CADIR, ca) for ca in cas]:
+         log.info("Enrolling -> %s" % ca_path)
+-        tls.add_cert(nickname=ca_path, input_file=ca_path, ca=True)
++        tls.add_cert(nickname=ca_path, cert_file=ca_path, ca=True)
+         tls.edit_cert_trust(ca_path, "C,,")
+     # Import the new server-cert
+     tls.add_server_key_and_cert(CONTAINER_TLS_SERVER_KEY, CONTAINER_TLS_SERVER_CERT)
+diff --git a/src/lib389/lib389/cli_ctl/tls.py b/src/lib389/lib389/cli_ctl/tls.py
+index 91f1f3a59..bd3a61d15 100644
+--- a/src/lib389/lib389/cli_ctl/tls.py
++++ b/src/lib389/lib389/cli_ctl/tls.py
+@@ -43,7 +43,7 @@ def import_client_ca(inst, log, args):
+     if nickname.lower() == CERT_NAME.lower() or nickname.lower() == CA_NAME.lower():
+         log.error("You may not import a CA with the nickname %s or %s" % (CERT_NAME, CA_NAME))
+         return
+-    tls.add_cert(nickname=nickname, input_file=cert_path)
++    tls.add_cert(nickname=nickname, cert_file=cert_path)
+     tls.edit_cert_trust(nickname, "T,,")
+ 
+ 
+-- 
+2.54.0
+

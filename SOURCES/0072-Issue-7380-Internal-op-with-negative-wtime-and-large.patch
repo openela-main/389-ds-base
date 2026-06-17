@@ -1,0 +1,37 @@
+From 2f3857b6dbceeb6fea072c7758a8dec14b8b0183 Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Wed, 1 Apr 2026 23:04:56 +0100
+Subject: [PATCH 72/81] Issue 7380 - Internal op with negative wtime and large
+ optime (#7381)
+
+Description:
+The retro CL plugin triggers internal operations that log incorrect wtime and optime
+to the server access logs.This happens because seq_internal_callback_pb() calls the
+backend directly without setting the operation start time.
+
+Fix:
+Add slapi_operation_set_time_started(op) to seq_internal_callback_pb() to record
+when the operation actually starts processing.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7380
+
+Reviewed by: @mreynolds389 (Thank you)
+---
+ ldap/servers/slapd/plugin_internal_op.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/ldap/servers/slapd/plugin_internal_op.c b/ldap/servers/slapd/plugin_internal_op.c
+index 96e705471..f6f3549cf 100644
+--- a/ldap/servers/slapd/plugin_internal_op.c
++++ b/ldap/servers/slapd/plugin_internal_op.c
+@@ -383,6 +383,7 @@ seq_internal_callback_pb(Slapi_PBlock *pb, void *callback_data, plugin_result_ca
+     set_common_params(pb);
+ 
+     slapi_td_internal_op_start();
++    slapi_operation_set_time_started(op);
+     if (be->be_seq != NULL) {
+         rc = (*be->be_seq)(pb);
+     } else {
+-- 
+2.54.0
+

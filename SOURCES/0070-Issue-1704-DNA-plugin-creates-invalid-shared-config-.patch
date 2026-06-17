@@ -1,0 +1,375 @@
+From a2ae9438d9c548a5914fda027301481338284090 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Fri, 20 Mar 2026 16:47:30 -0700
+Subject: [PATCH 70/81] Issue 1704 - DNA plugin creates invalid shared config
+ entry with port 0 (#7352)
+
+Description: When the server runs in isolated mode (nsslapd-port=0
+and nsslapd-security=off), the DNA plugin creates shared config entries
+with dnaPortNum=0. These entries are never updated and cause other
+servers to target this instance for range requests it cannot serve.
+
+Skip shared config creation and periodic updates when the server is
+isolated. Read nsslapd-security at startup to distinguish isolated
+mode from LDAPS-only mode (port=0, security=on).
+
+Add a test that verifies no dnaPortNum=0 entry is created in isolated
+mode and the original shared config entry persists.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/1704
+
+Reviewed by: @progier389, @tbordaz (Thanks!!)
+---
+ dirsrvtests/tests/suites/plugins/dna_test.py | 129 ++++++++++++++++-
+ ldap/servers/plugins/dna/dna.c               | 138 ++++++++++++++-----
+ 2 files changed, 229 insertions(+), 38 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/plugins/dna_test.py b/dirsrvtests/tests/suites/plugins/dna_test.py
+index 06cf9f2f5..940d7bdf0 100644
+--- a/dirsrvtests/tests/suites/plugins/dna_test.py
++++ b/dirsrvtests/tests/suites/plugins/dna_test.py
+@@ -11,12 +11,15 @@
+ import logging
+ import pytest
+ import os
++import time
++import ldap
++import ldapurl
+ from lib389._constants import DEFAULT_SUFFIX
+ from lib389.plugins import DNAPlugin, DNAPluginSharedConfigs, DNAPluginConfigs
++from lib389.dseldif import DSEldif
+ from lib389.idm.organizationalunit import OrganizationalUnits
+ from lib389.idm.user import UserAccounts, UserAccount
+ from lib389.topologies import topology_st
+-import ldap
+ 
+ pytestmark = pytest.mark.tier1
+ 
+@@ -190,6 +193,130 @@ def test_dna_exclude_scope_functionality(topology_st):
+         dna_config.add('dnaExcludeScope', invalid_dn)
+ 
+ 
++def test_dna_no_shared_config_when_isolated(topology_st):
++    """Test that DNA plugin does not create shared config entries when
++    the server is isolated (port=0 and security=off).
++
++    :id: e0ad2f90-bf94-46c0-8caf-46f1448cb181
++    :setup: Standalone Instance
++    :steps:
++        1. Configure DNA plugin with shared config using unique names
++        2. Enable plugin, restart, and verify shared config entry
++        3. Stop instance, set nsslapd-port=0 and nsslapd-security=off offline
++        4. Start instance in isolated mode, connect via LDAPI
++        5. Wait for DNA event and verify no dnaPortNum=0 entry was created
++           and original shared config entry with correct port persists
++        6. Stop instance, restore port and security to original values offline
++        7. Start normally and verify shared config entry is recreated
++    :expectedresults:
++        1. Successful
++        2. Shared config entry exists with the instance port
++        3. dse.ldif modified successfully
++        4. Instance starts in isolated mode
++        5. No dnaPortNum=0 entry exists, original entry persists
++        6. dse.ldif restored to original values
++        7. Shared config entry with correct port exists
++    """
++
++    inst = topology_st.standalone
++    plugin = DNAPlugin(inst)
++    original_port = str(inst.port)
++    original_security = inst.config.get_attr_val_utf8('nsslapd-security') or 'off'
++
++    log.info("Creating \"ou=isolated-ranges\" for shared config...")
++    ous = OrganizationalUnits(inst, DEFAULT_SUFFIX)
++    ou_ranges = ous.create(properties={'ou': 'isolated-ranges'})
++    ou_people = ous.get("People")
++
++    log.info("Add DNA plugin config entry with shared config...")
++    configs = DNAPluginConfigs(inst, plugin.dn)
++    dna_config = configs.create(properties={
++        'cn': 'dna isolated config',
++        'dnaType': 'description',
++        'dnaMaxValue': '10000',
++        'dnaMagicRegen': '0',
++        'dnaFilter': '(objectclass=top)',
++        'dnaScope': ou_people.dn,
++        'dnaNextValue': '500',
++        'dnaSharedCfgDN': ou_ranges.dn})
++
++    log.info("Enable the DNA plugin and restart...")
++    plugin.enable()
++    inst.restart()
++
++    log.info("Waiting for DNA plugin shared config event to fire...")
++    time.sleep(35)
++
++    log.info("Verify shared config entry exists with correct port...")
++    shared_configs = DNAPluginSharedConfigs(inst, ou_ranges.dn)
++    entries = shared_configs.list()
++    valid_entry = None
++    for entry in entries:
++        if entry.get_attr_val_utf8('dnaPortNum') == original_port:
++            valid_entry = entry
++            break
++    assert valid_entry is not None, \
++        f"Expected shared config entry with port {original_port}"
++
++    try:
++        log.info("Stopping instance to simulate isolated mode...")
++        inst.stop()
++
++        log.info("Editing dse.ldif: nsslapd-port=0, nsslapd-security=off...")
++        dse = DSEldif(inst)
++        dse.replace('cn=config', 'nsslapd-port', '0')
++        dse.replace('cn=config', 'nsslapd-security', 'off')
++
++        log.info("Starting instance in isolated mode (LDAPI only)...")
++        inst.start(post_open=False)
++
++        ldapi_uri = f"ldapi://{ldapurl.ldapUrlEscape(inst.ds_paths.ldapi)}"
++        log.info(f"Connecting via LDAPI: {ldapi_uri}")
++        inst.open(uri=ldapi_uri)
++
++        log.info("Waiting for DNA plugin shared config event...")
++        time.sleep(35)
++
++        log.info("Checking that no dnaPortNum=0 shared config entry was created...")
++        shared_configs = DNAPluginSharedConfigs(inst, ou_ranges.dn)
++        entries = shared_configs.list()
++        for entry in entries:
++            entry_port = entry.get_attr_val_utf8('dnaPortNum')
++            assert entry_port != '0', \
++                f"DNA plugin should not create shared config with port 0 " \
++                f"when server is isolated, but found: {entry.dn}"
++
++        log.info("Verify original shared config entry persists during isolated mode...")
++        original_persists = any(
++            e.get_attr_val_utf8('dnaPortNum') == original_port for e in entries
++        )
++        assert original_persists, \
++            f"Original shared config entry with port {original_port} " \
++            f"should persist during isolated mode"
++    finally:
++        log.info("Restoring instance to normal state...")
++        if inst.status():
++            inst.stop()
++
++        dse = DSEldif(inst)
++        dse.replace('cn=config', 'nsslapd-port', original_port)
++        dse.replace('cn=config', 'nsslapd-security', original_security)
++        inst.start()
++
++    time.sleep(35)
++
++    log.info("Verify shared config entry is recreated with correct port...")
++    shared_configs = DNAPluginSharedConfigs(inst, ou_ranges.dn)
++    entries = shared_configs.list()
++    valid_found = False
++    for entry in entries:
++        if entry.get_attr_val_utf8('dnaPortNum') == original_port:
++            valid_found = True
++            break
++    assert valid_found, \
++        f"Shared config entry with port {original_port} should exist after restore"
++
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/ldap/servers/plugins/dna/dna.c b/ldap/servers/plugins/dna/dna.c
+index 4cd27e138..7c11ff27a 100644
+--- a/ldap/servers/plugins/dna/dna.c
++++ b/ldap/servers/plugins/dna/dna.c
+@@ -169,6 +169,7 @@ static const char *_PluginDN = NULL;
+ static char *hostname = NULL;
+ static char *portnum = NULL;
+ static char *secureportnum = NULL;
++static bool security_enabled = false;
+ 
+ static Slapi_Eq_Context eq_ctx = {0};
+ 
+@@ -1551,6 +1552,29 @@ dna_delete_shared_servers(PRCList **servers)
+     return;
+ }
+ 
++/*
++ * dna_is_server_isolated()
++ *
++ * Returns true if the server cannot be reached by other servers
++ * for DNA range requests. This happens when the LDAP port is disabled
++ * (nsslapd-port: 0) AND security/LDAPS is also off — meaning only LDAPI
++ * is available. This is the state FreeIPA may put the server during
++ * upgrades.
++ *
++ * Note: if port is 0 but security is on (LDAPS-only mode), the server
++ * can be reached via the secure port, so it's not isolated.
++ */
++static bool
++dna_is_server_isolated(void)
++{
++    if (portnum == NULL || strcmp(portnum, "0") == 0) {
++        if (!security_enabled) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static int
+ dna_load_host_port(void)
+ {
+@@ -1558,7 +1582,8 @@ dna_load_host_port(void)
+     int status = DNA_SUCCESS;
+     Slapi_Entry *e = NULL;
+     Slapi_DN *config_dn = NULL;
+-    char *attrs[4];
++    char *attrs[5];
++    char *secval = NULL;
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, DNA_PLUGIN_SUBSYSTEM,
+                   "--> dna_load_host_port\n");
+@@ -1566,7 +1591,8 @@ dna_load_host_port(void)
+     attrs[0] = "nsslapd-localhost";
+     attrs[1] = "nsslapd-port";
+     attrs[2] = "nsslapd-secureport";
+-    attrs[3] = NULL;
++    attrs[3] = "nsslapd-security";
++    attrs[4] = NULL;
+ 
+     config_dn = slapi_sdn_new_ndn_byref("cn=config");
+     if (config_dn) {
+@@ -1578,6 +1604,13 @@ dna_load_host_port(void)
+         hostname = slapi_entry_attr_get_charptr(e, "nsslapd-localhost");
+         portnum = slapi_entry_attr_get_charptr(e, "nsslapd-port");
+         secureportnum = slapi_entry_attr_get_charptr(e, "nsslapd-secureport");
++        secval = slapi_entry_attr_get_charptr(e, "nsslapd-security");
++        if (secval && strcasecmp(secval, "on") == 0) {
++            security_enabled = true;
++        } else {
++            security_enabled = false;
++        }
++        slapi_ch_free_string(&secval);
+     }
+     slapi_search_get_entry_done(&pb);
+ 
+@@ -1632,8 +1665,25 @@ dna_update_config_event(time_t event_time __attribute__((unused)), void *arg __a
+             if (config_entry->shared_cfg_dn != NULL) {
+                 int rc = 0;
+                 Slapi_PBlock *dna_pb = NULL;
+-                Slapi_DN *sdn = slapi_sdn_new_normdn_byref(config_entry->shared_cfg_dn);
+-                Slapi_Backend *be = slapi_be_select(sdn);
++                Slapi_DN *sdn = NULL;
++                Slapi_Backend *be = NULL;
++
++                /* Skip shared config update if the server is isolated
++                 * (port=0 and security off). The server cannot be reached
++                 * by other servers for range requests in this state.
++                 * Note: LDAPS-only mode (port=0, security on) is not skipped. */
++                if (dna_is_server_isolated()) {
++                    slapi_log_err(SLAPI_LOG_WARNING, DNA_PLUGIN_SUBSYSTEM,
++                                  "dna_update_config_event - Server is isolated "
++                                  "(port is disabled and security is off). "
++                                  "Skipping shared config update for %s\n",
++                                  config_entry->shared_cfg_dn);
++                    list = PR_NEXT_LINK(list);
++                    continue;
++                }
++
++                sdn = slapi_sdn_new_normdn_byref(config_entry->shared_cfg_dn);
++                be = slapi_be_select(sdn);
+ 
+                 slapi_sdn_free(&sdn);
+                 if (be) {
+@@ -2688,42 +2738,56 @@ dna_update_shared_config(struct configEntry *config_entry)
+             /* If the shared config for this instance doesn't
+              * already exist, we add it. */
+             if (ret == LDAP_NO_SUCH_OBJECT) {
+-                Slapi_Entry *e = NULL;
+-                Slapi_DN *sdn = slapi_sdn_new_normdn_byref(config_entry->shared_cfg_dn);
+-                char bind_meth[DNA_REMOTE_BUFSIZ];
+-                char conn_prot[DNA_REMOTE_BUFSIZ];
+-
+-                /* Set up the new shared config entry */
+-                e = slapi_entry_alloc();
+-                /* the entry now owns the dup'd dn */
+-                slapi_entry_init_ext(e, sdn, NULL); /* sdn is copied into e */
+-                slapi_sdn_free(&sdn);
+-
+-                slapi_entry_add_string(e, SLAPI_ATTR_OBJECTCLASS, DNA_SHAREDCONFIG);
+-                slapi_entry_add_string(e, DNA_HOSTNAME, hostname);
+-                slapi_entry_add_string(e, DNA_PORTNUM, portnum);
+-                if (secureportnum) {
+-                    slapi_entry_add_string(e, DNA_SECURE_PORTNUM, secureportnum);
+-                }
+-                slapi_entry_add_string(e, DNA_REMAINING, remaining_vals);
++                /* Don't create a shared config entry if the server is
++                 * isolated (port=0 and security off). This prevents
++                 * creating orphaned entries.
++                 * This check covers all callers of dna_update_shared_config
++                 * (dna_notice_allocation, dna_activate_next_range, etc). */
++                if (dna_is_server_isolated()) {
++                    slapi_log_err(SLAPI_LOG_WARNING, DNA_PLUGIN_SUBSYSTEM,
++                                  "dna_update_shared_config - Server is isolated "
++                                  "(port is disabled and security is off). "
++                                  "Skipping creation of shared config entry: %s\n",
++                                  config_entry->shared_cfg_dn);
++                    ret = LDAP_SUCCESS;
++                } else {
++                    Slapi_Entry *e = NULL;
++                    Slapi_DN *sdn = slapi_sdn_new_normdn_byref(config_entry->shared_cfg_dn);
++                    char bind_meth[DNA_REMOTE_BUFSIZ];
++                    char conn_prot[DNA_REMOTE_BUFSIZ];
++
++                    /* Set up the new shared config entry */
++                    e = slapi_entry_alloc();
++                    /* the entry now owns the dup'd dn */
++                    slapi_entry_init_ext(e, sdn, NULL); /* sdn is copied into e */
++                    slapi_sdn_free(&sdn);
++
++                    slapi_entry_add_string(e, SLAPI_ATTR_OBJECTCLASS, DNA_SHAREDCONFIG);
++                    slapi_entry_add_string(e, DNA_HOSTNAME, hostname);
++                    slapi_entry_add_string(e, DNA_PORTNUM, portnum);
++                    if (secureportnum) {
++                        slapi_entry_add_string(e, DNA_SECURE_PORTNUM, secureportnum);
++                    }
++                    slapi_entry_add_string(e, DNA_REMAINING, remaining_vals);
+ 
+-                /* Grab the remote server settings */
+-                dna_server_read_lock();
+-                if (dna_get_shared_config_attr_val(config_entry, DNA_REMOTE_BIND_METHOD, bind_meth)) {
+-                    slapi_entry_add_string(e, DNA_REMOTE_BIND_METHOD, bind_meth);
+-                }
+-                if (dna_get_shared_config_attr_val(config_entry, DNA_REMOTE_CONN_PROT, conn_prot)) {
+-                    slapi_entry_add_string(e, DNA_REMOTE_CONN_PROT, conn_prot);
+-                }
+-                dna_server_unlock();
++                    /* Grab the remote server settings */
++                    dna_server_read_lock();
++                    if (dna_get_shared_config_attr_val(config_entry, DNA_REMOTE_BIND_METHOD, bind_meth)) {
++                        slapi_entry_add_string(e, DNA_REMOTE_BIND_METHOD, bind_meth);
++                    }
++                    if (dna_get_shared_config_attr_val(config_entry, DNA_REMOTE_CONN_PROT, conn_prot)) {
++                        slapi_entry_add_string(e, DNA_REMOTE_CONN_PROT, conn_prot);
++                    }
++                    dna_server_unlock();
+ 
+-                /* clear pb for re-use */
+-                slapi_pblock_init(pb);
++                    /* clear pb for re-use */
++                    slapi_pblock_init(pb);
+ 
+-                /* e will be consumed by slapi_add_internal() */
+-                slapi_add_entry_internal_set_pb(pb, e, NULL, getPluginID(), 0);
+-                slapi_add_internal_pb(pb);
+-                slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &ret);
++                    /* e will be consumed by slapi_add_internal() */
++                    slapi_add_entry_internal_set_pb(pb, e, NULL, getPluginID(), 0);
++                    slapi_add_internal_pb(pb);
++                    slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &ret);
++                }
+             }
+ 
+             if (ret != LDAP_SUCCESS) {
+-- 
+2.54.0
+
