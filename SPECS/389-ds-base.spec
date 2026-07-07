@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.8.0
-Release:          7%{?dist}
+Release:          8%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -332,6 +332,9 @@ Patch:            0043-Issue-7503-CVE-2026-9064-Add-a-limit-to-the-number-c.patc
 Patch:            0044-Issue-7372-Reindex-adds-tombstones-to-ancestorid-cau.patch
 Patch:            0045-Issue-7539-Server-shutdown-during-online-reindex-may.patch
 Patch:            0046-Issue-7198-Web-console-doesn-t-show-sub-suffix-when-.patch
+Patch:            0047-Issue-7593-Reject-invalid-SASL-packet-length-values-.patch
+Patch:            0048-Issue-7593-Fix-testimony-docstring-for-SASL-overflow.patch
+Patch:            0049-Security-Advisory-Heap-Buffer-Overflow-in-sasl_io_re.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -781,6 +784,10 @@ exit 0
 %endif
 
 %changelog
+* Thu Jun 25 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-8
+- Resolves: RHEL-182159 - CVE-2026-11610 389-ds-base: 389-ds-base: Heap buffer overflow in sasl_io_recv() via padded SASL UNBIND [rhel-9.8.z]
+- Resolves: RHEL-183103 - CVE-2026-11774 389-ds-base: 389-ds-base: integer overflow in SASL packet length bypasses size limit leading to heap buffer overflow [rhel-9.8.z]
+
 * Thu Jun 11 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-7
 - Resolves: RHEL-152356 - Getting "build_candidate_list - Database error 11" messages after migrating to LMDB. [rhel-9.8.z]
 - Resolves: RHEL-168967 - Web console doesn't show the sub suffix of ou=foo,ou=people,dc=example,dc=com. [rhel-9.8.z]
