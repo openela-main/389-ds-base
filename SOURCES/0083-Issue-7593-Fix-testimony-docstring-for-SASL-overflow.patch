@@ -1,0 +1,32 @@
+From de87d8164ddc90153c42582b63503ea193dfb0eb Mon Sep 17 00:00:00 2001
+From: James Chapman <jachapma@redhat.com>
+Date: Thu, 25 Jun 2026 10:45:21 +0100
+Subject: [PATCH 83/84] Issue 7593 - Fix testimony docstring for SASL overflow
+ test (#7606)
+
+Description:
+The test added in #7594 failed testimony validation because the docstring
+summary was not separated from the metadata fields with a blank line.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7593
+
+Reviewed by: @progier389 (Thank you)
+---
+ dirsrvtests/tests/suites/sasl/sasl_io_overflow_test.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dirsrvtests/tests/suites/sasl/sasl_io_overflow_test.py b/dirsrvtests/tests/suites/sasl/sasl_io_overflow_test.py
+index ac1f3760f..43fc344df 100644
+--- a/dirsrvtests/tests/suites/sasl/sasl_io_overflow_test.py
++++ b/dirsrvtests/tests/suites/sasl/sasl_io_overflow_test.py
+@@ -28,6 +28,7 @@ SASL_OVERFLOW_PAYLOAD_SIZE = 65536
+ 
+ def test_sasl_io_packet_length_overflow(topology_st):
+     """Malformed SASL length prefix must not crash the server
++
+     :id: 318f871d-2f17-461b-98ed-04cdff6ab41a
+     :setup: Standalone instance
+     :steps:
+-- 
+2.54.0
+
