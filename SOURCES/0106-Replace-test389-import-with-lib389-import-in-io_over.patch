@@ -1,0 +1,27 @@
+From aee19d28b57273a15afc93d5cacb76dac1d853f0 Mon Sep 17 00:00:00 2001
+From: Anuar Beisembayev <abeisemb@redhat.com>
+Date: Thu, 25 Jun 2026 09:06:59 -0400
+Subject: [PATCH 3/3] Replace test389 import with lib389 import in
+ io_overflow_asan_test.py.
+
+Signed-off-by: Anuar Beisembayev <abeisemb@redhat.com>
+---
+ dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py b/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py
+index aff93eb8b..26a57ffba 100644
+--- a/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py
++++ b/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py
+@@ -18,7 +18,7 @@ from ldap import sasl as ldap_sasl
+ from lib389._constants import DEFAULT_SUFFIX, PASSWORD
+ from lib389.idm.user import UserAccounts
+ from lib389.utils import check_asan_report
+-from test389.topologies import topology_st as topo
++from lib389.topologies import topology_st as topo
+ 
+ log = logging.getLogger(__name__)
+ 
+-- 
+2.54.0
+
