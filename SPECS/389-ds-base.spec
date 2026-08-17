@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.8.0
-Release:          8%{?dist}
+Release:          9%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -335,6 +335,9 @@ Patch:            0046-Issue-7198-Web-console-doesn-t-show-sub-suffix-when-.patc
 Patch:            0047-Issue-7593-Reject-invalid-SASL-packet-length-values-.patch
 Patch:            0048-Issue-7593-Fix-testimony-docstring-for-SASL-overflow.patch
 Patch:            0049-Security-Advisory-Heap-Buffer-Overflow-in-sasl_io_re.patch
+Patch:            0050-CVE-2026-11770-pre-auth-LDAP-filter-injection-in-Cle.patch
+Patch:            0051-Issue-7554-deref-plugin-null-pointer-dereference-if-.patch
+Patch:            0052-Issue-CVE-2026-15722-pre-authentication-stack-buffer.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -784,6 +787,11 @@ exit 0
 %endif
 
 %changelog
+* Mon Jul 27 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-9
+- Resolves: RHEL-183082 - CVE-2026-11770 389-ds-base: 389-ds-base: pre-auth LDAP filter injection in CleanAllRUV status check [rhel-9.8.z]
+- Resolves: RHEL-190775 - CVE-2026-11788 389-ds-base: 389-ds-base: NULL pointer dereference in deref control plugin BER parser [rhel-9.8.z]
+- Resolves: RHEL-210875 - CVE-2026-15722 389-ds-base: 389-ds-base: pre-authentication stack buffer overflow in get_ruvelement_from_berval() via unbounded replica ID parsing [rhel-9.8.z]
+
 * Thu Jun 25 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-8
 - Resolves: RHEL-182159 - CVE-2026-11610 389-ds-base: 389-ds-base: Heap buffer overflow in sasl_io_recv() via padded SASL UNBIND [rhel-9.8.z]
 - Resolves: RHEL-183103 - CVE-2026-11774 389-ds-base: 389-ds-base: integer overflow in SASL packet length bypasses size limit leading to heap buffer overflow [rhel-9.8.z]

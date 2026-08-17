@@ -1,0 +1,45 @@
+From aa6e57af6b740376f1eb069a17f4c08d5bedbfcb Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Wed, 3 Jun 2026 17:52:09 -0400
+Subject: [PATCH] Issue 7554 - deref plugin null pointer dereference if
+ ber_init fails
+
+Description:
+
+**CWE**: CWE-476 (NULL Pointer Dereference)
+
+A flaw in the 389 Directory Server's dereference control plugin allows an
+unauthenticated attacker to crash the LDAP server when the system is under
+memory pressure(OOM). The deref plugin, enabled by default, fails to check for
+a memory allocation failure before using the result, causing the server
+process to terminate.
+
+CI test 'test_deref_and_access_control' already covers this fix.
+
+relates: https://github.com/389ds/389-ds-base/issues/7554
+
+Reviewed by: tbordaz & progier(Thanks!!)
+---
+ ldap/servers/plugins/deref/deref.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/ldap/servers/plugins/deref/deref.c b/ldap/servers/plugins/deref/deref.c
+index fc1c10f71..fc157f6d6 100644
+--- a/ldap/servers/plugins/deref/deref.c
++++ b/ldap/servers/plugins/deref/deref.c
+@@ -357,6 +357,12 @@ deref_parse_ctrl_value(DerefSpecList *speclist, const struct berval *ctrlbv, int
+     }
+ 
+     ber = ber_init((struct berval *)ctrlbv);
++    if (!ber) {
++        *ldapcode = LDAP_UNWILLING_TO_PERFORM;
++        *ldaperrtext = "Deref control parsing failed to initialize BER element";
++        return;
++    }
++
+     for (tag = ber_first_element(ber, &len, &last);
+          (tag != LBER_ERROR) && (tag != LBER_END_OF_SEQORSET);
+          tag = ber_next_element(ber, &len, last)) {
+-- 
+2.55.0
+
