@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}26%{?prerel}%{?dist}
+Release:          %{?relprefix}28%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -407,6 +407,12 @@ Patch106:         0106-Replace-test389-import-with-lib389-import-in-io_over.patc
 Patch107:         0107-CVE-2026-11770-pre-auth-LDAP-filter-injection-in-Cle.patch
 Patch108:         0108-Issue-7554-deref-plugin-null-pointer-dereference-if-.patch
 Patch109:         0109-Issue-CVE-2026-15722-pre-authentication-stack-buffer.patch
+Patch110:         0110-Security-fix-for-CVE-2026-18453.patch
+Patch111:         0111-Security-fix-for-CVE-2026-18355.patch
+Patch112:         0112-Security-fix-for-CVE-2026-18922.patch
+Patch113:         0113-Issue-7707-lib389-set-nsDS5ReplicaBindDNGroup-before.patch
+Patch114:         0114-Security-fix-for-CVE-2026-76560.patch
+Patch115:         0115-CVE-2026-11770-Fix-StartReplicationRequest-auth-gate.patch
 
 #Patch100:         cargo.patch
 
@@ -1066,6 +1072,24 @@ exit 0
 %doc README.md
 
 %changelog
+* Fri Sep 04 2026 Anuar Beisembayev <abeisemb@redhat.com> - 1.4.3.39-28
+- Bump version to 1.4.3.39-28
+- Resolves: RHEL-222326 - EMBARGOED CVE-2026-18453 389-ds:1.4/389-ds-base: 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-8.10.z]
+- Resolves: RHEL-220511 - EMBARGOED CVE-2026-18355 389-ds:1.4/389-ds-base: 389-ds-base: heap buffer overflow via SASL wrapped-record length lower-bound underflow in sasl_io_start_packet() [rhel-8.10.z]
+- Resolves: RHEL-232864 - EMBARGOED CVE-2026-18922 389-ds:1.4/389-ds-base: 389-ds-base: SASL PLAIN authentication allows privilege escalation to Directory Manager via stale identity in Cyrus SASL auxiliary property [rhel-8.10.z]
+- Resolves: RHEL-244463 - lib389: set nsDS5ReplicaBindDNGroup before ensure_agreement() [rhel-8.10.z]
+- Resolves: RHEL-245383 - EMBARGOED CVE-2026-76560 389-ds-base: 389-ds: anonymous LDAP client can defeat SELFDN ACI bind-rule checks via empty bind DN [rhel-8.10.z]
+- Resolves: RHEL-248762 - CVE-2026-11770 fix breaks replication total init when nsDS5ReplicaBindDNGroup is set after agreement creation [rhel-8.10.z]
+
+* Tue Aug 25 2026 Anuar Beisembayev <abeisemb@redhat.com> - 1.4.3.39-27
+- Bump version to 1.4.3.39-27
+- Resolves: RHEL-222326 - EMBARGOED CVE-2026-18453 389-ds:1.4/389-ds-base: 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-8.10.z]
+- Resolves: RHEL-220511 - EMBARGOED CVE-2026-18355 389-ds:1.4/389-ds-base: 389-ds-base: heap buffer overflow via SASL wrapped-record length lower-bound underflow in sasl_io_start_packet() [rhel-8.10.z]
+- Resolves: RHEL-232864 - EMBARGOED CVE-2026-18922 389-ds:1.4/389-ds-base: 389-ds-base: SASL PLAIN authentication allows privilege escalation to Directory Manager via stale identity in Cyrus SASL auxiliary property [rhel-8.10.z]
+- Resolves: RHEL-244463 - lib389: set nsDS5ReplicaBindDNGroup before ensure_agreement() [rhel-8.10.z]
+- Resolves: RHEL-245383 - EMBARGOED CVE-2026-76560 389-ds-base: 389-ds: anonymous LDAP client can defeat SELFDN ACI bind-rule checks via empty bind DN [rhel-8.10.z]
+- Resolves: RHEL-248762 - CVE-2026-11770 fix breaks replication total init when nsDS5ReplicaBindDNGroup is set after agreement creation [rhel-8.10.z]
+
 * Mon Jul 27 2026 Anuar Beisembayev <abeisemb@redhat.com> - 1.4.3.39-26
 - Bump version to 1.4.3.39-26
 - Resolves: RHEL-183073 - EMBARGOED CVE-2026-11770 389-ds-base: 389-ds-base: pre-auth LDAP filter injection in CleanAllRUV status check [rhel-8.10.z]
