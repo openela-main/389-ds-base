@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.8.0
-Release:          9%{?dist}
+Release:          10%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -338,6 +338,14 @@ Patch:            0049-Security-Advisory-Heap-Buffer-Overflow-in-sasl_io_re.patc
 Patch:            0050-CVE-2026-11770-pre-auth-LDAP-filter-injection-in-Cle.patch
 Patch:            0051-Issue-7554-deref-plugin-null-pointer-dereference-if-.patch
 Patch:            0052-Issue-CVE-2026-15722-pre-authentication-stack-buffer.patch
+Patch:            0053-Issue-3082-Add-test389.topologies-compatibility-shim.patch
+Patch:            0054-Issue-7707-lib389-set-nsDS5ReplicaBindDNGroup-before.patch
+Patch:            0055-Issue-7658-Heap-Buffer-Overflow-in-sasl_io_recv-via-.patch
+Patch:            0056-CVE-2026-11770-Fix-StartReplicationRequest-auth-gate.patch
+Patch:            0057-Security-fix-for-CVE-2026-18453.patch
+Patch:            0058-Security-fix-for-CVE-2026-18355.patch
+Patch:            0059-Security-fix-for-CVE-2026-18922.patch
+Patch:            0060-Security-fix-for-CVE-2026-76560.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -787,6 +795,15 @@ exit 0
 %endif
 
 %changelog
+* Mon Aug 31 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-10
+- Resolves: RHEL-220502 - CVE-2026-18355 389-ds-base: heap buffer overflow via SASL wrapped-record length lower-bound underflow in sasl_io_start_packet() [rhel-9.8.z]
+- Resolves: RHEL-222321 - CVE-2026-18453 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-9.8.z]
+- Resolves: RHEL-232854 - CVE-2026-18922 389-ds-base: SASL PLAIN authentication allows privilege escalation to Directory Manager via stale identity in Cyrus SASL auxiliary property [rhel-9.8.z]
+- Resolves: RHEL-244467 - lib389: set nsDS5ReplicaBindDNGroup before ensure_agreement() [rhel-9.8.z]
+- Resolves: RHEL-245374 - CVE-2026-76560 389-ds-base: anonymous LDAP client can defeat SELFDN ACI bind-rule checks via empty bind DN [rhel-9.8.z]
+- Resolves: RHEL-247865 - CVE-2026-78701 389-ds-base: CVE-2026-11610 incomplete fix may introduce a connection-stall DoS [rhel-9.8.z]
+- Resolves: RHEL-248766 - CVE-2026-11770 fix breaks replication total init when nsDS5ReplicaBindDNGroup is set after agreement creation [rhel-9.8.z]
+
 * Mon Jul 27 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-9
 - Resolves: RHEL-183082 - CVE-2026-11770 389-ds-base: 389-ds-base: pre-auth LDAP filter injection in CleanAllRUV status check [rhel-9.8.z]
 - Resolves: RHEL-190775 - CVE-2026-11788 389-ds-base: 389-ds-base: NULL pointer dereference in deref control plugin BER parser [rhel-9.8.z]

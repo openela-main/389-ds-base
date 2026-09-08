@@ -1,0 +1,549 @@
+From 8a866ff7a3a79267b21acef85bbb709a7d6121e9 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Mon, 31 Aug 2026 16:13:47 +0200
+Subject: [PATCH] Issue 7658 - Heap Buffer Overflow in sasl_io_recv() via
+ Padded SASL UNBIND
+
+Backport the remaining fixes for 7658.
+
+(cherry-picked from b9404b3c7f8acfb7a14f6cc3c0a01438b8831426)
+---
+ .../suites/sasl/io_overflow_asan_test.py      | 214 ++++++++++++++----
+ ldap/servers/slapd/sasl_io.c                  | 163 +++++++------
+ 2 files changed, 269 insertions(+), 108 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py b/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py
+index 26a57ffba..65fc06303 100644
+--- a/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py
++++ b/dirsrvtests/tests/suites/sasl/io_overflow_asan_test.py
+@@ -18,14 +18,34 @@ from ldap import sasl as ldap_sasl
+ from lib389._constants import DEFAULT_SUFFIX, PASSWORD
+ from lib389.idm.user import UserAccounts
+ from lib389.utils import check_asan_report
+-from lib389.topologies import topology_st as topo
++from test389.topologies import topology_st as topo
+ 
+ log = logging.getLogger(__name__)
+ 
++pytestmark = pytest.mark.tier1
++
+ PADDED_UNBIND_SIZE = 9000
++STALL_PADDED_UNBIND_SIZE = 508
++STALL_IOBLOCK_TIMEOUT_MS = 30000
++STALL_CLIENT_TIMEOUT_SECONDS = 3
++UNBIND_CONTROL_VALUE_SIZE = 512
++
++
++def encode_ber_length(length):
++    """Encode a non-negative BER definite length."""
++    if length < 0x80:
++        return bytes([length])
++
++    encoded = length.to_bytes((length.bit_length() + 7) // 8, 'big')
++    return bytes([0x80 | len(encoded)]) + encoded
+ 
+ 
+-def build_padded_unbind():
++def encode_ber_element(tag, value):
++    """Encode a single-byte BER tag and its value."""
++    return bytes([tag]) + encode_ber_length(len(value)) + value
++
++
++def build_padded_unbind(padding_size=PADDED_UNBIND_SIZE):
+     """Build an oversized LDAP UNBIND packet.
+ 
+     Normal UNBIND is 7 bytes:
+@@ -46,7 +66,7 @@ def build_padded_unbind():
+     """
+     inner = b'\x02\x01\x01'  # msgid = 1
+     inner += b'\x42\x00'     # UNBIND (application tag 2, primitive, length 0)
+-    inner += b'A' * PADDED_UNBIND_SIZE  # attacker-controlled padding
++    inner += b'A' * padding_size  # attacker-controlled padding
+ 
+     # SEQUENCE (0x30) with 4-byte definite length encoding (0x84)
+     length = len(inner)
+@@ -54,13 +74,17 @@ def build_padded_unbind():
+     return packet
+ 
+ 
+-def build_normal_unbind():
+-    """Build a standard 7-byte LDAP UNBIND for comparison."""
+-    return bytes([
+-        0x30, 0x05,        # SEQUENCE, length 5
+-        0x02, 0x01, 0x01,  # INTEGER msgid=1
+-        0x42, 0x00         # UNBIND
+-    ])
++def build_controlled_unbind():
++    """Build a valid UNBIND with a noncritical control larger than 512 bytes."""
++    control_oid = encode_ber_element(0x04, b'1.3.6.1.4.1.4203.666.11.999')
++    control_value = encode_ber_element(0x04, b'V' * UNBIND_CONTROL_VALUE_SIZE)
++    control = encode_ber_element(0x30, control_oid + control_value)
++    controls = encode_ber_element(0xa0, control)
++
++    message = b'\x02\x01\x01'  # msgid = 1
++    message += b'\x42\x00'     # UNBIND
++    message += controls
++    return encode_ber_element(0x30, message)
+ 
+ 
+ def do_sasl_bind_and_get_fd(host, port, user):
+@@ -106,7 +130,7 @@ def do_sasl_bind_and_get_fd(host, port, user):
+     return conn, fd
+ 
+ 
+-def send_padded_unbind(fd):
++def send_padded_unbind(fd, padding_size=PADDED_UNBIND_SIZE):
+     """Send a padded UNBIND directly on the raw socket FD.
+ 
+     This bypasses the SASL framing layer on the CLIENT side. The server's
+@@ -125,31 +149,133 @@ def send_padded_unbind(fd):
+          where buf is sized to len (caller's buffer), NOT encrypted_buffer_count
+       9. OVERFLOW: encrypted_buffer_count (pad_size + 7) >> len (caller's buf size)
+     """
+-    packet = build_padded_unbind()
++    packet = build_padded_unbind(padding_size)
+     total_size = len(packet)
+ 
+     log.info(f"[*] Sending padded UNBIND: {total_size} bytes total")
+-    log.info(f"[*]   Padding size: {PADDED_UNBIND_SIZE} bytes of attacker-controlled data")
++    log.info(f"[*]   Padding size: {padding_size} bytes of attacker-controlled data")
+     log.info(f"[*]   Packet header: {packet[:10].hex()}")
+ 
+     # Send directly on the raw FD, bypassing SASL wrapper
+-    sock = socket.fromfd(fd, socket.AF_INET, socket.SOCK_STREAM)
+-    # Prevent socket.fromfd from closing the original fd when sock is gc'd
++    with socket.fromfd(fd, socket.AF_INET, socket.SOCK_STREAM) as sock:
++        sock.sendall(packet)
++    log.info(f"[+] Sent {total_size} bytes on raw socket (bypassing SASL layer)")
++
++    return total_size
++
++
++def send_raw_packet(fd, packet):
++    """Send a complete packet on the raw socket, bypassing the SASL layer."""
++    with socket.fromfd(fd, socket.AF_INET, socket.SOCK_STREAM) as sock:
++        sock.sendall(packet)
++
++
++def wait_for_connection_close(fd):
++    """Wait briefly for the server to close a raw client socket."""
++    with socket.fromfd(fd, socket.AF_INET, socket.SOCK_STREAM) as sock:
++        sock.settimeout(STALL_CLIENT_TIMEOUT_SECONDS)
++        try:
++            data = sock.recv(1)
++        except socket.timeout:
++            pytest.fail(
++                "Plaintext UNBIND stalled in sasl_io_recv instead of being "
++                "drained or rejected"
++            )
++
++    assert data == b'', "Server did not close the connection after UNBIND"
++
++def test_sasl_io_padded_unbind_does_not_stall(topo):
++    """Verify a padded plaintext UNBIND does not stall the SASL I/O layer
++
++    The LDAP connection buffer is 512 bytes. The padded UNBIND is 519 bytes,
++    so sasl_io_recv must return it over multiple calls. The server must drain
++    the already-buffered remainder or reject the PDU instead of waiting for
++    more network data until nsslapd-ioblocktimeout expires.
++
++    :id: ee28256e-5f97-4a19-8178-28d1e372695d
++    :setup: Standalone Instance
++    :steps:
++        1. Configure a fixed 512-byte connection buffer and a 30-second I/O timeout
++        2. Create a user and perform a SASL DIGEST-MD5 bind with SSF greater than zero
++        3. Send a 519-byte plaintext UNBIND directly on the raw socket
++        4. Wait up to 3 seconds for the server to close the connection
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. The connection closes without waiting for the server I/O timeout
++    """
++
++    inst = topo.standalone
++    inst.config.set('passwordStorageScheme', 'CLEAR')
++    inst.config.set('nsslapd-connection-buffer', '1')
++    inst.config.set('nsslapd-ioblocktimeout', str(STALL_IOBLOCK_TIMEOUT_MS))
++
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    user = users.create_test_user(uid=2)
++    user.set('userPassword', PASSWORD)
++
++    conn, fd = do_sasl_bind_and_get_fd(inst.host, inst.port, 'test_user_2')
+     try:
+-        sent = sock.send(packet)
+-        log.info(f"[+] Sent {sent} bytes on raw socket (bypassing SASL layer)")
+-    except OSError as e:
+-        log.info(f"[-] Send failed: {e}")
+-        # Try dup first
+-        new_fd = os.dup(fd)
+-        sock2 = socket.socket(fileno=new_fd)
+-        sent = sock2.send(packet)
+-        log.info(f"[+] Sent {sent} bytes via dup'd socket")
++        send_padded_unbind(fd, STALL_PADDED_UNBIND_SIZE)
++
++        wait_for_connection_close(fd)
+     finally:
+-        # Detach without closing underlying fd
+-        sock.detach()
++        try:
++            conn.unbind_s()
++        except ldap.LDAPError:
++            pass
+ 
+-    return total_size
++
++def test_sasl_io_large_controlled_unbind_is_processed(topo):
++    """Verify a valid plaintext UNBIND larger than the read buffer is processed
++
++    LDAP permits controls on an UNBIND request. The SASL compatibility path must
++    return such a request over multiple recv calls instead of rejecting it based
++    on the size of the current connection read buffer.
++
++    :id: a0496a4c-70e0-4d04-92d6-20f3977489fe
++    :setup: Standalone Instance
++    :steps:
++        1. Configure a fixed 512-byte connection buffer and unbuffered access logging
++        2. Create a user and perform a SASL DIGEST-MD5 bind with SSF greater than zero
++        3. Send a valid plaintext UNBIND containing a large noncritical control
++        4. Verify the connection closes and the server logs a processed UNBIND
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. The UNBIND is processed normally rather than rejected by the I/O layer
++    """
++
++    inst = topo.standalone
++    inst.config.set('passwordStorageScheme', 'CLEAR')
++    inst.config.set('nsslapd-connection-buffer', '1')
++    inst.config.set('nsslapd-ioblocktimeout', str(STALL_IOBLOCK_TIMEOUT_MS))
++    inst.config.set('nsslapd-accesslog-logbuffering', 'off')
++
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    user = users.create_test_user(uid=3)
++    user.set('userPassword', PASSWORD)
++
++    conn, fd = do_sasl_bind_and_get_fd(inst.host, inst.port, 'test_user_3')
++    unbind_count = len(inst.ds_access_log.match('.* UNBIND.*'))
++
++    try:
++        packet = build_controlled_unbind()
++        assert len(packet) > 512
++        send_raw_packet(fd, packet)
++        wait_for_connection_close(fd)
++
++        processed_unbinds = inst.ds_access_log.match('.* UNBIND.*')
++        assert len(processed_unbinds) == unbind_count + 1, (
++            "Large controlled UNBIND did not reach normal UNBIND processing"
++        )
++    finally:
++        try:
++            conn.unbind_s()
++        except ldap.LDAPError:
++            pass
+ 
+ 
+ def test_sasl_io_overflow(topo):
+@@ -193,6 +319,7 @@ def test_sasl_io_overflow(topo):
+ 
+     # Step 1: SASL DIGEST-MD5 bind (pushes SASL I/O layer on server)
+     conn, fd = do_sasl_bind_and_get_fd(inst.host, inst.port, user)
++    server_pid = inst.get_pid()
+ 
+     # Brief pause to ensure server has processed bind response
+     time.sleep(0.5)
+@@ -214,29 +341,26 @@ def test_sasl_io_overflow(topo):
+     log.info("[*]   - With default (non-ASAN) build, crash may be delayed until next heap op")
+     log.info("")
+ 
+-    # Try to read response -- server should either crash or close connection
+-    time.sleep(0.5)
+     try:
+-        log.info("[*] Receiving response from server...")
+-        sock = socket.fromfd(fd, socket.AF_INET, socket.SOCK_STREAM)
++        wait_for_connection_close(fd)
++    finally:
+         try:
+-            data = sock.recv(4096)
+-            if data:
+-                log.info(f"[*] Received {len(data)} bytes back (unexpected)")
+-            else:
+-                log.info("[+] Connection closed by server")
+-        finally:
+-            sock.detach()
+-    except Exception as e:
+-        assert False, f"Socket error: {e}"
+-
+-    # Clean up
+-    log.info("[*] Unbinding from server")
+-    conn.unbind_s()
++            conn.unbind_s()
++        except ldap.LDAPError:
++            pass
++
++    assert inst.status(), "Server crashed while processing padded UNBIND"
++    assert inst.get_pid() == server_pid, "Server restarted while processing padded UNBIND"
+ 
+     # Check ASAN report
+     log.info("[*] Checking ASAN report")
+-    assert not check_asan_report(inst, 'heap-buffer-overflow'), "Heap-buffer-overflow found in ASAN report"
++    overflow_detected = False
++    try:
++        overflow_detected = check_asan_report(inst, 'heap-buffer-overflow')
++    except ValueError as e:
++        log.info('No ASAN report found (expected when no overflow): %s', e)
++
++    assert not overflow_detected, 'heap-buffer-overflow detected in ASAN report'
+ 
+     log.info("[*] Test passed")
+ 
+diff --git a/ldap/servers/slapd/sasl_io.c b/ldap/servers/slapd/sasl_io.c
+index 614db692e..74641e8a9 100644
+--- a/ldap/servers/slapd/sasl_io.c
++++ b/ldap/servers/slapd/sasl_io.c
+@@ -54,6 +54,7 @@
+     const char *send_buffer;  /* encrypted buffer to send to client */
+     unsigned int send_size;   /* size of the encrypted buffer */
+     unsigned int send_offset; /* number of bytes sent so far */
++    bool unencrypted_buffer_ready;
+ };
+ 
+ typedef PRFilePrivate sasl_io_private;
+@@ -153,6 +154,34 @@ sasl_io_finished_packet(sasl_io_private *sp)
+     return (sp->encrypted_buffer_count && (sp->encrypted_buffer_offset == sp->encrypted_buffer_count));
+ }
+ 
++static PRInt32
++sasl_io_drain_unencrypted_buffer(sasl_io_private *sp, void *buf, PRInt32 len)
++{
++    uint32_t bytes_to_copy;
++
++    if (len <= 0) {
++        return 0;
++    }
++
++    PR_ASSERT(sp->unencrypted_buffer_ready);
++    PR_ASSERT(sp->encrypted_buffer_offset <= sp->encrypted_buffer_count);
++
++    bytes_to_copy = sp->encrypted_buffer_count - sp->encrypted_buffer_offset;
++    if (bytes_to_copy > (uint32_t)len) {
++        bytes_to_copy = (uint32_t)len;
++    }
++    memcpy(buf, sp->encrypted_buffer + sp->encrypted_buffer_offset, bytes_to_copy);
++    sp->encrypted_buffer_offset += bytes_to_copy;
++
++    if (sp->encrypted_buffer_offset == sp->encrypted_buffer_count) {
++        sp->encrypted_buffer_offset = 0;
++        sp->encrypted_buffer_count = 0;
++        sp->unencrypted_buffer_ready = false;
++    }
++
++    return (PRInt32)bytes_to_copy;
++}
++
+ static const char *const sasl_LayerName = "SASL";
+ static PRDescIdentity sasl_LayerID;
+ static PRIOMethods sasl_IoMethods;
+@@ -190,34 +219,33 @@ sasl_io_start_packet(PRFileDesc *fd, PRIntn flags, PRIntervalTime timeout, PRInt
+ 
+     *err = 0;
+     debug_print_layers(fd);
+-    /* first we need the length bytes */
+-    ret = PR_Recv(fd->lower, buffer, amount, flags, timeout);
+-    slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
+-                  "Read sasl packet length returned %d on connection %" PRIu64 "\n",
+-                  ret, c->c_connid);
+-    if (ret <= 0) {
+-        *err = PR_GetError();
+-        if (ret == 0) {
+-            slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
+-                          "Connection closed while reading sasl packet length on connection %" PRIu64 "\n",
+-                          c->c_connid);
+-        } else {
++    /* First read enough bytes to distinguish an LDAP message from a SASL packet. */
++    if (sp->encrypted_buffer_offset < sizeof(buffer)) {
++            amount = sizeof(buffer) - sp->encrypted_buffer_offset;
++            ret = PR_Recv(fd->lower, buffer, amount, flags, timeout);
+             slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
+-                          "Error reading sasl packet length on connection %" PRIu64 " %d:%s\n",
+-                          c->c_connid, *err, slapd_pr_strerror(*err));
++                          "Read sasl packet length returned %d on connection %" PRIu64 "\n",
++                          ret, c->c_connid);
++            if (ret <= 0) {
++                *err = PR_GetError();
++                if (ret == 0) {
++                    slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
++                                  "Connection closed while reading sasl packet length on connection %" PRIu64 "\n",
++                                  c->c_connid);
++                } else {
++                    slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
++                                  "Error reading sasl packet length on connection %" PRIu64 " %d:%s\n",
++                                  c->c_connid, *err, slapd_pr_strerror(*err));
++                }
++                return ret;
+         }
+-        return ret;
+-    }
+-    /*
+-     * Read the bytes and add them to sp->encrypted_buffer
+-     * - if offset < 7, tell caller we didn't read enough bytes yet
+-     * - if offset >= 7, decode the length and proceed.
+-     */
+-    if ((ret + sp->encrypted_buffer_offset) > sp->encrypted_buffer_size) {
+-        sasl_io_resize_encrypted_buffer(sp, ret + sp->encrypted_buffer_offset);
++        if ((ret + sp->encrypted_buffer_offset) > sp->encrypted_buffer_size) {
++            sasl_io_resize_encrypted_buffer(sp, ret + sp->encrypted_buffer_offset);
++        }
++        memcpy(sp->encrypted_buffer + sp->encrypted_buffer_offset, buffer, ret);
++        sp->encrypted_buffer_offset += ret;
+     }
+-    memcpy(sp->encrypted_buffer + sp->encrypted_buffer_offset, buffer, ret);
+-    sp->encrypted_buffer_offset += ret;
++
+     if (sp->encrypted_buffer_offset < sizeof(buffer)) {
+         slapi_log_err(SLAPI_LOG_CONNS,
+                       "sasl_io_start_packet", "Read only %d bytes of sasl packet "
+@@ -242,9 +270,11 @@ sasl_io_start_packet(PRFileDesc *fd, PRIntn flags, PRIntervalTime timeout, PRInt
+         ber_len_t maxbersize = config_get_maxbersize();
+         ber_len_t ber_len = 0;
+         ber_tag_t tag = 0;
++        uint32_t ber_header_len = 2;
++        uint32_t ber_packet_len;
+ 
+-        slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet", "conn=%" PRIu64 " fd=%d "
+-                                                               "Sent an LDAP message that was not encrypted.\n",
++        slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
++                      "conn=%" PRIu64 " fd=%d Sent an LDAP message that was not encrypted.\n",
+                       c->c_connid,
+                       c->c_sd);
+ 
+@@ -265,11 +295,22 @@ sasl_io_start_packet(PRFileDesc *fd, PRIntn flags, PRIntervalTime timeout, PRInt
+             PR_SetError(PR_IO_ERROR, 0);
+             return PR_FAILURE;
+         }
+-        /*
+-         * Bump the ber length by 2 for the tag/length we skipped over when calculating the berval length.
+-         * We now have the total "packet" size, so we know exactly what is left to read in.
+-         */
+-        ber_len += 2;
++        /* Include the tag and the complete short- or long-form BER length. */
++        if (((unsigned char *)sp->encrypted_buffer)[1] & 0x80U) {
++            ber_header_len += ((unsigned char *)sp->encrypted_buffer)[1] & 0x7fU;
++        }
++        if (ber_len > (ber_len_t)(UINT32_MAX - ber_header_len)) {
++            slapi_log_err(SLAPI_LOG_ERR, "sasl_io_start_packet",
++                          "conn=%" PRIu64 " fd=%d Incoming BER Element length cannot be represented.\n",
++                          c->c_connid, c->c_sd);
++            PR_SetError(PR_BUFFER_OVERFLOW_ERROR, 0);
++            return PR_FAILURE;
++        }
++        ber_packet_len = (uint32_t)ber_len + ber_header_len;
++        if (ber_packet_len < sp->encrypted_buffer_offset) {
++            goto done;
++        }
++        sasl_io_resize_encrypted_buffer(sp, ber_packet_len);
+ 
+         /*
+          * Read in the rest of the packet.
+@@ -278,39 +319,35 @@ sasl_io_start_packet(PRFileDesc *fd, PRIntn flags, PRIntervalTime timeout, PRInt
+          * to the buffer.  Once we have the complete LDAP packet we'll set it back to zero,
+          * and adjust the sp->encrypted_buffer_count.
+          */
+-        while (sp->encrypted_buffer_offset < ber_len) {
++        while (sp->encrypted_buffer_offset < ber_packet_len) {
++            uint32_t bytes_to_read = ber_packet_len - sp->encrypted_buffer_offset;
+             unsigned char mybuf[SASL_IO_BUFFER_SIZE];
+ 
+-            ret = PR_Recv(fd->lower, mybuf, SASL_IO_BUFFER_SIZE, flags, timeout);
+-            if (ret == PR_WOULD_BLOCK_ERROR || (ret == 0 && sp->encrypted_buffer_offset < ber_len)) {
+-/*
+-                 * Need more data, go back and try to get more data from connection_read_operation()
+-                 * We can return and continue to update sp->encrypted_buffer because we have
+-                 * maintained the current size in encrypted_buffer_offset.
+-                 */
+-#if defined(EWOULDBLOCK)
+-                errno = EWOULDBLOCK;
+-#elif defined(EAGAIN)
+-                errno = EAGAIN;
+-#endif
+-                PR_SetError(PR_WOULD_BLOCK_ERROR, errno);
+-                return PR_FAILURE;
+-            } else if (ret > 0) {
++            if (bytes_to_read > sizeof(mybuf)) {
++                bytes_to_read = sizeof(mybuf);
++            }
++
++            ret = PR_Recv(fd->lower, mybuf, (PRInt32)bytes_to_read, flags, timeout);
++            if (ret > 0) {
+                 slapi_log_err(SLAPI_LOG_CONNS,
+                               "sasl_io_start_packet",
+                               "Continued: read sasl packet length returned %d on connection %" PRIu64 "\n",
+                               ret, c->c_connid);
+-                if ((ret + sp->encrypted_buffer_offset) > sp->encrypted_buffer_size) {
+-                    sasl_io_resize_encrypted_buffer(sp, ret + sp->encrypted_buffer_offset);
+-                }
+                 memcpy(sp->encrypted_buffer + sp->encrypted_buffer_offset, mybuf, ret);
+                 sp->encrypted_buffer_offset += ret;
+-            } else if (ret < 0) {
++            } else if (ret == 0) {
+                 *err = PR_GetError();
+                 slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
+-                              "Error reading sasl packet length on connection "
+-                              "%" PRIu64 " %d:%s\n",
+-                              c->c_connid, *err, slapd_pr_strerror(*err));
++                              "Connection closed while reading an LDAP packet on connection %" PRIu64 "\n",
++                              c->c_connid);
++                return ret;
++            } else {
++                *err = PR_GetError();
++                if (*err != PR_WOULD_BLOCK_ERROR) {
++                    slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_start_packet",
++                                  "Error reading LDAP packet on connection %" PRIu64 " %d:%s\n",
++                                  c->c_connid, *err, slapd_pr_strerror(*err));
++                }
+                 return ret;
+             }
+         }
+@@ -345,6 +382,7 @@ sasl_io_start_packet(PRFileDesc *fd, PRIntn flags, PRIntervalTime timeout, PRInt
+                                   c->c_sd);
+                     sp->encrypted_buffer_count = sp->encrypted_buffer_offset;
+                     sp->encrypted_buffer_offset = 0;
++                    sp->unencrypted_buffer_ready = true;
+                     ber_free(ber, 1);
+                     return SASL_IO_BUFFER_NOT_ENCRYPTED;
+                 }
+@@ -444,6 +482,10 @@ sasl_io_recv(PRFileDesc *fd, void *buf, PRInt32 len, PRIntn flags, PRIntervalTim
+     uint32_t bytes_in_buffer = 0;
+     int32_t err = 0;
+ 
++    if (sp->unencrypted_buffer_ready) {
++        return sasl_io_drain_unencrypted_buffer(sp, buf, len);
++    }
++
+     /* Do we have decrypted data buffered from 'before' ? */
+     bytes_in_buffer = sp->decrypted_buffer_count - sp->decrypted_buffer_offset;
+     slapi_log_err(SLAPI_LOG_CONNS, "sasl_io_recv",
+@@ -459,15 +501,10 @@ sasl_io_recv(PRFileDesc *fd, void *buf, PRInt32 len, PRIntn flags, PRIntervalTim
+             ret = sasl_io_start_packet(fd, flags, timeout, &err);
+             if (SASL_IO_BUFFER_NOT_ENCRYPTED == ret) {
+                 /*
+-                 * Special case: we received unencrypted data that was actually
+-                 * an unbind.  Copy it to the buffer and return its length.
++                 * Special case: return the validated unencrypted UNBIND over as
++                 * many calls as the caller's buffer requires.
+                  */
+-                uint32_t bytes_to_copy = sp->encrypted_buffer_count;
+-                if (bytes_to_copy > (uint32_t)len) {
+-                    bytes_to_copy = (uint32_t)len;
+-                }
+-                memcpy(buf, sp->encrypted_buffer, bytes_to_copy);
+-                return bytes_to_copy;
++                return sasl_io_drain_unencrypted_buffer(sp, buf, len);
+             }
+             if (0 >= ret) {
+                 /* timeout, connection closed, or error */
+-- 
+2.55.0
+

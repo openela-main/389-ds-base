@@ -1,0 +1,77 @@
+From 38307ab6d3431810590147f8df5c504eeccebc24 Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 25 Aug 2026 10:00:55 +0200
+Subject: [PATCH] Issue 3082 - Add test389.topologies compatibility shim for
+ backports (#7725)
+
+Bug Description:
+Backported tests from main use 'from test389.topologies import ...'
+which fails on older branches where test389 doesn't exist.
+
+Fix Description:
+Add a shim that re-exports lib389.topologies as test389.topologies
+so backports work without per-test fixups.
+
+Relates: https://github.com/389ds/389-ds-base/issues/3082
+
+Reviewed by: @mirielka (Thanks!)
+---
+ dirsrvtests/conftest.py               |  2 ++
+ dirsrvtests/lib/__init__.py           |  0
+ dirsrvtests/lib/test389/__init__.py   |  0
+ dirsrvtests/lib/test389/topologies.py | 15 +++++++++++++++
+ 4 files changed, 17 insertions(+)
+ create mode 100644 dirsrvtests/lib/__init__.py
+ create mode 100644 dirsrvtests/lib/test389/__init__.py
+ create mode 100644 dirsrvtests/lib/test389/topologies.py
+
+diff --git a/dirsrvtests/conftest.py b/dirsrvtests/conftest.py
+index 1312c0b7f..5f4840602 100644
+--- a/dirsrvtests/conftest.py
++++ b/dirsrvtests/conftest.py
+@@ -12,6 +12,7 @@ import pytest
+ import shutil
+ import glob
+ import ldap
++import sys
+ import os
+ import gzip
+ 
+@@ -23,6 +24,7 @@ if "WEBUI" in os.environ:
+     from slugify import slugify
+     from pathlib import Path
+ 
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
+ 
+ pkgs = ['389-ds-base', 'nss', 'nspr', 'openldap', 'cyrus-sasl']
+ p = Paths()
+diff --git a/dirsrvtests/lib/__init__.py b/dirsrvtests/lib/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/dirsrvtests/lib/test389/__init__.py b/dirsrvtests/lib/test389/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/dirsrvtests/lib/test389/topologies.py b/dirsrvtests/lib/test389/topologies.py
+new file mode 100644
+index 000000000..477f27058
+--- /dev/null
++++ b/dirsrvtests/lib/test389/topologies.py
+@@ -0,0 +1,15 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++# Compatibility shim: on main branch, test389.topologies is the real module.
++# On older branches lib389.topologies is the real module.
++# This re-export lets backported tests using "from test389.topologies import ..."
++# work without modification.
++
++from lib389.topologies import *  # noqa: F401,F403
++from lib389.topologies import TopologyMain, create_topology, _remove_ssca_db  # noqa: F401
+-- 
+2.55.0
+

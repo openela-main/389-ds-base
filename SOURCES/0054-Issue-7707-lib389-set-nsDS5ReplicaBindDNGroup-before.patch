@@ -1,0 +1,94 @@
+From c7fc53c8dd81f17dc5da741ca511b2f30bcfcc47 Mon Sep 17 00:00:00 2001
+From: Masahiro Matsuya <mmatsuya@redhat.com>
+Date: Wed, 19 Aug 2026 17:31:10 +0900
+Subject: [PATCH] Issue 7707 - lib389: set nsDS5ReplicaBindDNGroup before
+ ensure_agreement() in join_supplier/hub/consumer (#7708)
+
+Bug Description:
+join_supplier(), join_hub(), and join_consumer() set nsDS5ReplicaBindDNGroup
+on the consumer after calling ensure_agreement(). The supplier's replication
+thread starts immediately when the agreement is created and may send a
+startReplication request before the bind DN group is configured, causing
+check_replica_auth() to reject it with LDAP_INSUFFICIENT_ACCESS and entering
+a permanent 'requires administrator action' state with no retry.
+
+Fix Description:
+Move nsDS5ReplicaBindDNGroup before ensure_agreement() in all three call sites
+and add an explanatory comment to prevent future regressions.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7707
+
+Author: Masahiro Matsuya <mmatsuya@redhat.com>
+
+Reviewed by: @tbordaz, @mreynolds389
+
+Signed-off-by: Masahiro Matsuya <mmatsuya@redhat.com>
+---
+ src/lib389/lib389/replica.py | 24 +++++++++++++++---------
+ 1 file changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/src/lib389/lib389/replica.py b/src/lib389/lib389/replica.py
+index 78d6eb4eb..a3bea4a4b 100644
+--- a/src/lib389/lib389/replica.py
++++ b/src/lib389/lib389/replica.py
+@@ -2195,14 +2195,16 @@ class ReplicationManager(object):
+         # to allow the tot_init to occur.
+         self._bootstrap_replica(from_r, to_r, to_instance)
+ 
++        # Set bind DN group BEFORE creating agreements: the supplier's replication
++        # thread starts immediately on agreement creation and will fail auth permanently
++        # if nsDS5ReplicaBindDNGroup is not yet configured on the consumer.
++        to_r.set('nsDS5ReplicaBindDNGroup', repl_dn)
++
+         # Now put in an agreement from to -> from
+         # both ends.
+         self.ensure_agreement(from_instance, to_instance)
+         self.ensure_agreement(to_instance, from_instance, init=True)
+ 
+-        # Now fix our replica credentials from -> to
+-        to_r.set('nsDS5ReplicaBindDNGroup', repl_dn)
+-
+         # Now finally test it ...
+         self.test_replication(from_instance, to_instance)
+         self.test_replication(to_instance, from_instance)
+@@ -2252,13 +2254,15 @@ class ReplicationManager(object):
+         # to allow the tot_init to occur.
+         self._bootstrap_replica(from_r, to_r, to_instance)
+ 
++        # Set bind DN group BEFORE creating agreements: the supplier's replication
++        # thread starts immediately on agreement creation and will fail auth permanently
++        # if nsDS5ReplicaBindDNGroup is not yet configured on the consumer.
++        to_r.set('nsDS5ReplicaBindDNGroup', repl_dn)
++
+         # Now put in an agreement from to -> from
+         # both ends.
+         self.ensure_agreement(from_instance, to_instance)
+ 
+-        # Now fix our replica credentials from -> to
+-        to_r.set('nsDS5ReplicaBindDNGroup', repl_dn)
+-
+         # Now finally test it ...
+         self.test_replication(from_instance, to_instance)
+         # Done!
+@@ -2306,13 +2310,15 @@ class ReplicationManager(object):
+         # to allow the tot_init to occur.
+         self._bootstrap_replica(from_r, to_r, to_instance)
+ 
++        # Set bind DN group BEFORE creating agreements: the supplier's replication
++        # thread starts immediately on agreement creation and will fail auth permanently
++        # if nsDS5ReplicaBindDNGroup is not yet configured on the consumer.
++        to_r.set('nsDS5ReplicaBindDNGroup', repl_group.dn)
++
+         # Now put in an agreement from to -> from
+         # both ends.
+         self.ensure_agreement(from_instance, to_instance)
+ 
+-        # Now fix our replica credentials from -> to
+-        to_r.set('nsDS5ReplicaBindDNGroup', repl_group.dn)
+-
+         # Now finally test it ...
+         # If from_instance replica isn't read-write (hub, probably), we will test it later
+         if from_r.get_attr_val_int('nsDS5ReplicaType') == 3:
+-- 
+2.55.0
+
