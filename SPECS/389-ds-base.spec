@@ -52,7 +52,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.4.3.39
-Release:          %{?relprefix}28%{?prerel}%{?dist}
+Release:          %{?relprefix}29%{?prerel}%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (0BSD OR Apache-2.0 OR MIT) AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT OR Zlib) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND BSD-3-Clause AND MIT AND MPL-2.0
 URL:              https://www.port389.org
 Group:            System Environment/Daemons
@@ -413,6 +413,11 @@ Patch112:         0112-Security-fix-for-CVE-2026-18922.patch
 Patch113:         0113-Issue-7707-lib389-set-nsDS5ReplicaBindDNGroup-before.patch
 Patch114:         0114-Security-fix-for-CVE-2026-76560.patch
 Patch115:         0115-CVE-2026-11770-Fix-StartReplicationRequest-auth-gate.patch
+Patch116:         0116-Issue-7460-MOD_REPLACE-on-groups-link-attributes-mod.patch
+Patch117:         0117-Issue-7558-During-online-import-the-IDL-should-be-cr.patch
+Patch118:         0118-Issue-7558-Total-init-sends-the-suffix-entry-twice-7.patch
+Patch119:         0119-Issue-7670-BDB-range-searches-intermittently-fail-wi.patch
+Patch120:         0120-Issue-7723-Range-search-returns-an-empty-result-when.patch
 
 #Patch100:         cargo.patch
 
@@ -1072,6 +1077,12 @@ exit 0
 %doc README.md
 
 %changelog
+* Tue Oct 13 2026 Anuar Beisembayev <abeisemb@redhat.com> - 1.4.3.39-29
+- Bump version to 1.4.3.39-29
+- Resolves: RHEL-216718 - ERR - idl_new_range_fetch - Failed to build range candidate list on entryusn index [rhel-8.10.z]
+- Resolves: RHEL-234359 - Online reinitialization is failing with the supplier being busy calling idrange_add_id() [rhel-8.10.z]
+- Resolves: RHEL-256397 - MOD_REPLACE on groups/link attributes modifies overlap targets [rhel-8.10.z]
+
 * Fri Sep 04 2026 Anuar Beisembayev <abeisemb@redhat.com> - 1.4.3.39-28
 - Bump version to 1.4.3.39-28
 - Resolves: RHEL-222326 - EMBARGOED CVE-2026-18453 389-ds:1.4/389-ds-base: 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-8.10.z]
