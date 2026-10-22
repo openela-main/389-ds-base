@@ -1,0 +1,209 @@
+From 164d276091c437a1aca00d1f6f6bcc8d4946b58d Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 18 Sep 2026 09:20:32 +0200
+Subject: [PATCH] Issue 7827 - Preserve dsEntryDN case from DN cache (#7828)
+
+Bug Description:
+After a backend export, when `nsslapd-return-original-entrydn` is
+enabled, entries loaded from the DN cache can return a normalized DN
+instead of the original-form DN. `dsEntryDN` attribute still contains
+the correct original-form DN, but the response `dn:` value comes from
+the DN cache and differs from `dsEntryDN`.
+This affects entries not previously loaded into the entry cache before
+export.
+
+Fix Description:
+Prefer dsEntryDN when rebuilding entries from a DN cache hit, normalize
+newly cached DNs correctly.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7827
+
+Reviewed by: @mreynolds389 (Thanks!)
+
+(cherry picked from commit 244f307805d18e011783f7836b11f371a52dac7c)
+---
+ .../tests/suites/basic/ds_entrydn_test.py     | 108 +++++++++++++++++-
+ ldap/servers/slapd/back-ldbm/id2entry.c       |  10 +-
+ 2 files changed, 111 insertions(+), 7 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/basic/ds_entrydn_test.py b/dirsrvtests/tests/suites/basic/ds_entrydn_test.py
+index b282b8a91..e6596ca8f 100644
+--- a/dirsrvtests/tests/suites/basic/ds_entrydn_test.py
++++ b/dirsrvtests/tests/suites/basic/ds_entrydn_test.py
+@@ -7,12 +7,17 @@
+ # --- END COPYRIGHT BLOCK ---
+ 
+ import logging
+-import pytest
+ import os
+ import time
+-from lib389.topologies import topology_st as topo
+-from lib389.idm.user import UserAccount, UserAccounts
++
++import pytest
++
++from lib389.backend import Backends
++from lib389.config import BDB_LDBMConfig, LMDB_LDBMConfig
+ from lib389.idm.organizationalunit import OrganizationalUnit
++from lib389.idm.user import UserAccount, UserAccounts
++from lib389.topologies import topology_st as topo
++from lib389.utils import get_default_db_lib
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -26,6 +31,26 @@ NEW_USER_DN = "uid=tUser,ou=humans,dc=Example,DC=COM"
+ NEW_USER_NORM_DN = "uid=tUser,ou=humans,dc=example,dc=com"
+ 
+ 
++@pytest.fixture
++def export_cache_setup(topo, request):
++    inst = topo.standalone
++    export_file = os.path.join(inst.get_ldif_dir(), 'dsentrydn-export.ldif')
++    backend = Backends(inst).get('userRoot')
++    config_ldbm = (BDB_LDBMConfig(inst) if get_default_db_lib() == 'bdb'
++                   else LMDB_LDBMConfig(inst))
++    old_autosize = config_ldbm.get_attr_val_utf8('nsslapd-cache-autosize')
++    old_cache_size = backend.get_attr_val_utf8('nsslapd-cachesize')
++
++    def cleanup():
++        backend.replace('nsslapd-cachesize', old_cache_size)
++        config_ldbm.replace('nsslapd-cache-autosize', old_autosize)
++        if os.path.exists(export_file):
++            os.remove(export_file)
++
++    request.addfinalizer(cleanup)
++    return backend, config_ldbm, export_file
++
++
+ def test_dsentrydn_preserved_on_modify(topo):
+     """Test that dsEntryDN is not corrupted when an entry is modified
+ 
+@@ -91,6 +116,12 @@ def test_dsentrydn_preserved_on_modify(topo):
+     assert current_dsentrydn == orig_dsentrydn, \
+         f"dsEntryDN was corrupted: expected '{orig_dsentrydn}' but got '{current_dsentrydn}'"
+ 
++    users = UserAccounts(inst, SUFFIX).list()
++    matching_users = [entry for entry in users
++                      if entry.get_attr_val_utf8('uid') == 'modUser']
++    assert len(matching_users) == 1
++    assert matching_users[0].dn == orig_dsentrydn
++
+ 
+ def test_dsentrydn_case_only_rename(topo):
+     """Test that dsEntryDN is updated on a case-only MODRDN
+@@ -114,8 +145,7 @@ def test_dsentrydn_case_only_rename(topo):
+     inst = topo.standalone
+     inst.config.replace('nsslapd-return-original-entrydn', 'on')
+ 
+-    users = UserAccounts(inst, SUFFIX)
+-    user = users.create(properties={
++    user = UserAccount(inst, f'uid=caseRenameUser,ou=People,{SUFFIX}').create(properties={
+         'uid': 'caseRenameUser',
+         'givenname': 'Case',
+         'cn': 'Case Rename User',
+@@ -207,6 +237,74 @@ def test_dsentrydn(topo):
+             break
+ 
+ 
++def test_prefer_dsentrydn_over_cached_dn(topo, export_cache_setup):
++    """Returned DN must use dsEntryDN after backend export populates the DN cache
++
++    :id: 2f6e4b8a-1c73-4d95-a0e2-8b6f3c1d7a54
++    :setup: Standalone Instance
++    :steps:
++        1. Enable nsslapd-return-original-entrydn
++        2. Create an entry with mixed-case DN components
++        3. Restart the instance to clear runtime caches
++        4. Export the backend with replication data
++        5. Search for the entry after export
++    :expectedresults:
++        1. Success
++        2. dsEntryDN stores the original-form DN
++        3. Success
++        4. Export completes successfully
++        5. Returned DN matches dsEntryDN:
++           uid=exportCacheUser,dc=Example,DC=COM
++           dsEntryDN: uid=exportCacheUser,dc=Example,DC=COM
++    """
++    inst = topo.standalone
++    inst.config.replace('nsslapd-return-original-entrydn', 'on')
++
++    user = UserAccount(inst, f'uid=exportCacheUser,{SUFFIX}').create(properties={
++        'uid': 'exportCacheUser',
++        'givenname': 'Export Cache',
++        'cn': 'Export Cache User',
++        'sn': 'User',
++        'userpassword': 'password',
++        'uidNumber': '1003',
++        'gidNumber': '1003',
++        'homeDirectory': '/home/exportCacheUser'
++    })
++    original_dn = user.get_attr_val_utf8('dsentrydn')
++    expected_original_dn = f'uid=exportCacheUser,{SUFFIX}'
++    assert original_dn == expected_original_dn
++    second_user = UserAccount(inst, f'uid=exportCacheUser2,{SUFFIX}').create(properties={
++        'uid': 'exportCacheUser2',
++        'givenname': 'Export Cache Two',
++        'cn': 'Export Cache User Two',
++        'sn': 'User',
++        'userpassword': 'password',
++        'uidNumber': '1004',
++        'gidNumber': '1004',
++        'homeDirectory': '/home/exportCacheUser2'
++    })
++
++    inst.restart()
++    backend, config_ldbm, export_file = export_cache_setup
++    export_task = Backends(inst).export_ldif(
++        be_names='userRoot', ldif=export_file, replication=True)
++    export_task.wait()
++
++    # Force entrycache miss with DN cache hit to accelerate the reproducer
++    inst.config.replace('nsslapd-return-original-entrydn', 'off')
++    UserAccount(inst, original_dn).search(scope='base', filter='objectclass=*')
++    config_ldbm.replace('nsslapd-cache-autosize', '0')
++    backend.replace('nsslapd-cachesize', '1')
++    UserAccount(inst, second_user.dn).search(scope='base', filter='objectclass=*')
++    inst.config.replace('nsslapd-return-original-entrydn', 'on')
++
++    returned_dn = UserAccount(inst, original_dn).search(
++        scope='base', filter='objectclass=*')[0].dn
++    assert returned_dn == original_dn, \
++        f"returned DN '{returned_dn}' differs from dsEntryDN '{original_dn}' " \
++        f"(normalized form would be 'uid=exportCacheUser,dc=example,dc=com')"
++
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/ldap/servers/slapd/back-ldbm/id2entry.c b/ldap/servers/slapd/back-ldbm/id2entry.c
+index 14c5ec973..b49adea40 100644
+--- a/ldap/servers/slapd/back-ldbm/id2entry.c
++++ b/ldap/servers/slapd/back-ldbm/id2entry.c
+@@ -358,7 +358,13 @@ id2entry(backend *be, ID id, back_txn *txn, int *err)
+         Slapi_RDN *srdn = NULL;
+         struct backdn *bdn = dncache_find_id(&inst->inst_dncache, id);
+         if (bdn) {
+-            normdn = slapi_ch_strdup(slapi_sdn_get_dn(bdn->dn_sdn));
++            if (config_get_return_orig_dn() &&
++                !get_value_from_string((const char *)data.dptr, SLAPI_ATTR_DS_ENTRYDN, &normdn))
++            {
++                srdn = slapi_rdn_new_all_dn(normdn);
++            } else {
++                normdn = slapi_ch_strdup(slapi_sdn_get_dn(bdn->dn_sdn));
++            }
+             slapi_log_err(SLAPI_LOG_CACHE, ID2ENTRY,
+                           "dncache_find_id returned: %s\n", normdn);
+             CACHE_RETURN(&inst->inst_dncache, &bdn);
+@@ -386,7 +392,7 @@ id2entry(backend *be, ID id, back_txn *txn, int *err)
+                 }
+             }
+ 
+-            sdn = slapi_sdn_new_normdn_byval((const char *)normdn);
++            sdn = slapi_sdn_new_dn_byval((const char *)normdn);
+             bdn = backdn_init(sdn, id, 0);
+             if (CACHE_ADD(&inst->inst_dncache, bdn, NULL)) {
+                 backdn_free(&bdn);
+-- 
+2.55.0
+
