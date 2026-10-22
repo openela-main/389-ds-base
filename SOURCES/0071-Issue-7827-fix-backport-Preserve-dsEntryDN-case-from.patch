@@ -1,0 +1,25 @@
+From 045a864f53786fc51fd72af075d368bbbab6d4d7 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Fri, 16 Oct 2026 14:46:23 +0200
+Subject: [PATCH] Issue 7827 - (fix backport) Preserve dsEntryDN case from DN
+ cache (#8004)
+
+---
+ ldap/servers/slapd/back-ldbm/id2entry.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/id2entry.c b/ldap/servers/slapd/back-ldbm/id2entry.c
+index 34ddce06d..6d9acaa3c 100644
+--- a/ldap/servers/slapd/back-ldbm/id2entry.c
++++ b/ldap/servers/slapd/back-ldbm/id2entry.c
+@@ -360,7 +360,6 @@ id2entry(backend *be, ID id, back_txn *txn, int *err)
+             Slapi_RDN *srdn = NULL;
+             struct backdn *bdn = dncache_find_id(&inst->inst_dncache, id);
+             if (bdn) {
+-                normdn = slapi_ch_strdup(slapi_sdn_get_dn(bdn->dn_sdn));
+                 if (config_get_return_orig_dn() &&
+                     !get_value_from_string((const char *)data.dptr, SLAPI_ATTR_DS_ENTRYDN, &normdn))
+                 {
+-- 
+2.55.0
+

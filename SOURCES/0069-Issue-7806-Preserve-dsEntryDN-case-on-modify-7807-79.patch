@@ -1,0 +1,236 @@
+From 43223aecd0e890eec642a68295d15485a361314b Mon Sep 17 00:00:00 2001
+From: "github-actions[bot]"
+ <41898282+github-actions[bot]@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 13:30:47 +0200
+Subject: [PATCH] Issue 7806 - Preserve dsEntryDN case on modify (#7807)
+ (#7971)
+
+Bug Description:
+`id2entry_add_ext()` unconditionally overwrites dsEntryDN every time an
+entry is written to the database. When an entry is loaded from disk with
+`nsslapd-return-original-entrydn` is off, the DN is rebuilt from the
+entryrdn index in normalized form. A plain modify then permanently
+replaces the original-case dsEntryDN with this normalized value.
+
+Fix Description:
+Compare the existing dsEntryDN with the current entry DN before
+overwriting.
+If they refer to the same entry, keep the stored value.
+If the DN changed (MODRDN) or is not set yet (ADD), update it.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7806
+
+Reviewed by: @mreynolds389, @droideck (Thanks!)
+
+(cherry picked from commit c7c998d2e757889a017e8c24de2f69481dfbe04d)
+
+Co-authored-by: Viktor Ashirov <vashirov@redhat.com>
+Co-authored-by: tbordaz <tbordaz@redhat.com>
+---
+ .../tests/suites/basic/ds_entrydn_test.py     | 119 +++++++++++++++++-
+ ldap/servers/slapd/back-ldbm/id2entry.c       |  16 ++-
+ ldap/servers/slapd/back-ldbm/ldbm_modrdn.c    |   3 +
+ ldap/servers/slapd/back-ldbm/misc.c           |   5 +-
+ 4 files changed, 139 insertions(+), 4 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/basic/ds_entrydn_test.py b/dirsrvtests/tests/suites/basic/ds_entrydn_test.py
+index 1966e8564..b282b8a91 100644
+--- a/dirsrvtests/tests/suites/basic/ds_entrydn_test.py
++++ b/dirsrvtests/tests/suites/basic/ds_entrydn_test.py
+@@ -16,6 +16,8 @@ from lib389.idm.organizationalunit import OrganizationalUnit
+ 
+ log = logging.getLogger(__name__)
+ 
++pytestmark = pytest.mark.tier1
++
+ SUFFIX = "dc=Example,DC=COM"
+ SUBTREE = "ou=People,dc=Example,DC=COM"
+ NEW_SUBTREE = "ou=humans,dc=Example,DC=COM"
+@@ -24,6 +26,122 @@ NEW_USER_DN = "uid=tUser,ou=humans,dc=Example,DC=COM"
+ NEW_USER_NORM_DN = "uid=tUser,ou=humans,dc=example,dc=com"
+ 
+ 
++def test_dsentrydn_preserved_on_modify(topo):
++    """Test that dsEntryDN is not corrupted when an entry is modified
++
++    :id: 7a3b9c1e-4f2d-4e8a-b5c6-9d0e1f2a3b4c
++    :setup: Standalone
++    :steps:
++        1. Enable nsslapd-return-original-entrydn
++        2. Create a user with mixed-case suffix in the DN
++        3. Verify dsEntryDN preserves the original case
++        4. Disable nsslapd-return-original-entrydn and restart
++        5. Modify a non-DN attribute (description)
++        6. Re-enable nsslapd-return-original-entrydn and restart
++        7. Verify dsEntryDN still has the original case
++    :expectedresults:
++        1. Success
++        2. Success
++        3. dsEntryDN matches the DN used at creation time
++        4. Success
++        5. Success
++        6. Success
++        7. dsEntryDN is unchanged
++    """
++
++    inst = topo.standalone
++    inst.config.replace('nsslapd-return-original-entrydn', 'on')
++
++    users = UserAccounts(inst, SUFFIX)
++    user_properties = {
++        'uid': 'modUser',
++        'givenname': 'Modify',
++        'cn': 'Modify User',
++        'sn': 'User',
++        'userpassword': 'password',
++        'uidNumber': '1001',
++        'gidNumber': '1001',
++        'homeDirectory': '/home/modUser'
++    }
++    user = users.create(properties=user_properties)
++    user_dn = user.dn
++    log.info(f"Created user with DN: {user_dn}")
++
++    orig_dsentrydn = user.get_attr_val_utf8('dsentrydn')
++    log.info(f"dsEntryDN after creation: {orig_dsentrydn}")
++    assert orig_dsentrydn == user_dn
++
++    inst.config.replace('nsslapd-return-original-entrydn', 'off')
++    inst.restart()
++
++    user = UserAccount(inst, user_dn)
++    user.replace('description', 'modified while return-original-entrydn is off')
++
++    inst.restart()
++    user = UserAccount(inst, user_dn)
++    stored_dsentrydn = user.get_attr_val_utf8('dsentrydn')
++    log.info(f"dsEntryDN stored on disk (return-orig off): {stored_dsentrydn}")
++
++    inst.config.replace('nsslapd-return-original-entrydn', 'on')
++    inst.restart()
++
++    user = UserAccount(inst, user_dn)
++    current_dsentrydn = user.get_attr_val_utf8('dsentrydn')
++    log.info(f"dsEntryDN after modify + restart: {current_dsentrydn}")
++    assert current_dsentrydn == orig_dsentrydn, \
++        f"dsEntryDN was corrupted: expected '{orig_dsentrydn}' but got '{current_dsentrydn}'"
++
++
++def test_dsentrydn_case_only_rename(topo):
++    """Test that dsEntryDN is updated on a case-only MODRDN
++
++    :id: b2c4d6e8-1a3b-4c5d-9e7f-0a1b2c3d4e5f
++    :setup: Standalone
++    :steps:
++        1. Enable nsslapd-return-original-entrydn
++        2. Create a user uid=caseRenameUser
++        3. Rename to uid=CaseRenameUser (case-only change)
++        4. Restart the server
++        5. Verify dsEntryDN reflects the new case
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Success
++        5. dsEntryDN shows uid=CaseRenameUser, not uid=caseRenameUser
++    """
++
++    inst = topo.standalone
++    inst.config.replace('nsslapd-return-original-entrydn', 'on')
++
++    users = UserAccounts(inst, SUFFIX)
++    user = users.create(properties={
++        'uid': 'caseRenameUser',
++        'givenname': 'Case',
++        'cn': 'Case Rename User',
++        'sn': 'User',
++        'userpassword': 'password',
++        'uidNumber': '1002',
++        'gidNumber': '1002',
++        'homeDirectory': '/home/caseRenameUser'
++    })
++    orig_dn = user.dn
++    log.info(f"Created user with DN: {orig_dn}")
++    assert user.get_attr_val_utf8('dsentrydn') == orig_dn
++
++    user.rename("uid=CaseRenameUser")
++    new_dn = f"uid=CaseRenameUser,ou=People,{SUFFIX}"
++    user = UserAccount(inst, new_dn)
++    log.info(f"After rename: dn={user.dn} dsEntryDN={user.get_attr_val_utf8('dsentrydn')}")
++
++    inst.restart()
++    user = UserAccount(inst, new_dn)
++    current_dsentrydn = user.get_attr_val_utf8('dsentrydn')
++    log.info(f"After restart: dsEntryDN={current_dsentrydn}")
++    assert current_dsentrydn == new_dn, \
++        f"dsEntryDN not updated on case-only rename: expected '{new_dn}' got '{current_dsentrydn}'"
++
++
+ def test_dsentrydn(topo):
+     """Test that the dsentrydn attribute is properly maintained and preserves the case of the DN
+ 
+@@ -94,4 +212,3 @@ if __name__ == '__main__':
+     # -s for DEBUG mode
+     CURRENT_FILE = os.path.realpath(__file__)
+     pytest.main(["-s", CURRENT_FILE])
+-
+diff --git a/ldap/servers/slapd/back-ldbm/id2entry.c b/ldap/servers/slapd/back-ldbm/id2entry.c
+index 869750255..1228ed8b3 100644
+--- a/ldap/servers/slapd/back-ldbm/id2entry.c
++++ b/ldap/servers/slapd/back-ldbm/id2entry.c
+@@ -68,8 +68,20 @@ id2entry_add_ext(backend *be, struct backentry *e, back_txn *txn, int encrypt, i
+         Slapi_Entry *entry_to_use = encrypted_entry ? encrypted_entry->ep_entry : e->ep_entry;
+         memset(&data, 0, sizeof(data));
+         entrydn = slapi_entry_get_dn(entry_to_use);
+-        slapi_entry_attr_set_charptr(entry_to_use, SLAPI_ATTR_DS_ENTRYDN,
+-                entrydn);
++        {
++            char *old_ds_entrydn = slapi_entry_attr_get_charptr(
++                    entry_to_use, SLAPI_ATTR_DS_ENTRYDN);
++            if (old_ds_entrydn == NULL ||
++                slapi_UTF8CASECMP(old_ds_entrydn, entrydn) != 0)
++            {
++                /* ADD: not set yet */
++                /* MODRDN: DN changed, update it */
++                slapi_entry_attr_set_charptr(entry_to_use,
++                        SLAPI_ATTR_DS_ENTRYDN, entrydn);
++            }
++            /* MODIFY: same DN, keep the original case */
++            slapi_ch_free_string(&old_ds_entrydn);
++        }
+ 
+         if (entryrdn_get_switch()) {
+             struct backdn *oldbdn = NULL;
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+index 36377fc01..310854fdd 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_modrdn.c
+@@ -680,6 +680,9 @@ ldbm_back_modrdn(Slapi_PBlock *pb)
+ 
+             /* Set the new dn to the copy of the entry */
+             slapi_entry_set_sdn(ec->ep_entry, &dn_newdn);
++            /* Update dsEntryDN to match the new DN (for case-only renames) */
++            slapi_entry_attr_set_charptr(ec->ep_entry, SLAPI_ATTR_DS_ENTRYDN,
++                                         slapi_sdn_get_dn(&dn_newdn));
+             if (entryrdn_get_switch()) { /* subtree-rename: on */
+                 Slapi_RDN srdn;
+                 /* Set the new rdn to the copy of the entry; store full dn in e_srdn */
+diff --git a/ldap/servers/slapd/back-ldbm/misc.c b/ldap/servers/slapd/back-ldbm/misc.c
+index 061f5b014..398984665 100644
+--- a/ldap/servers/slapd/back-ldbm/misc.c
++++ b/ldap/servers/slapd/back-ldbm/misc.c
+@@ -468,7 +468,10 @@ get_value_from_string(const char *string, char *type, char **value)
+             rc = -1; /* set non-0 to rc */
+             goto bail;
+         }
+-        if (0 != PL_strncasecmp(type, tmptype.bv_val, tmptype.bv_len)) {
++        /* Compare the base type name only, ignoring any CSN state info suffix:
++           "dsEntryDN;vucsn-..." should match "dsEntryDN"
++         */
++        if (0 != PL_strncasecmp(type, tmptype.bv_val, typelen)) {
+             slapi_log_err(SLAPI_LOG_ERR, "get_value_from_string",
+                           "type does not match: %s != %s\n", type, tmptype.bv_val);
+             if (freeval) {
+-- 
+2.55.0
+

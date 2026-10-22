@@ -47,7 +47,7 @@ ExcludeArch: i686
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          2.8.0
-Release:          10%{?dist}
+Release:          11%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -346,6 +346,19 @@ Patch:            0057-Security-fix-for-CVE-2026-18453.patch
 Patch:            0058-Security-fix-for-CVE-2026-18355.patch
 Patch:            0059-Security-fix-for-CVE-2026-18922.patch
 Patch:            0060-Security-fix-for-CVE-2026-76560.patch
+Patch:            0061-Issue-7126-WARN-keys2idl-received-NULL-idl-from-inde.patch
+Patch:            0062-Issue-7558-During-online-import-the-IDL-should-be-cr.patch
+Patch:            0063-Issue-7558-Total-init-sends-the-suffix-entry-twice-7.patch
+Patch:            0064-Issue-7670-BDB-range-searches-intermittently-fail-wi.patch
+Patch:            0065-Issue-7460-MOD_REPLACE-on-groups-link-attributes-mod.patch
+Patch:            0066-Issue-7705-With-memberOfEntryScope-set-deferred-memb.patch
+Patch:            0067-Issue-7723-Range-search-returns-an-empty-result-when.patch
+Patch:            0068-Issue-7339-Return-the-exact-DN-during-export-7956.patch
+Patch:            0069-Issue-7806-Preserve-dsEntryDN-case-on-modify-7807-79.patch
+Patch:            0070-Issue-7827-Preserve-dsEntryDN-case-from-DN-cache-782.patch
+Patch:            0071-Issue-7827-fix-backport-Preserve-dsEntryDN-case-from.patch
+Patch:            0072-Issue-7516-dblayer_bulk_nextdata-should-not-return-a.patch
+Patch:            0073-Issue-7531-Fix-LMDB-replication-regression_m2-failur.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -795,6 +808,16 @@ exit 0
 %endif
 
 %changelog
+* Tue Oct 20 2026 Thierry Bordaz <tbordaz@redhat.com> - 2.8.0-11
+- Resolves: RHEL-216720 - ERR - idl_new_range_fetch - Failed to build range candidate list on entryusn index [rhel-9.8.z]
+- Resolves: RHEL-234360 - Online reinitialization is failing with the supplier being busy calling idrange_add_id() [rhel-9.8.z]
+- Resolves: RHEL-252559 - MOD_REPLACE on groups/link attributes modifies overlap targets [rhel-9.8.z]
+- Resolves: RHEL-256995 - large IdM host group, missing memberof host group, authentication failures, high traffic and contention [rhel-9.8.z]
+- Resolves: RHEL-257002 - WARN - keys2idl - received NULL idl from index_read_ext_allids [rhel-9.8.z]
+- Resolves: RHEL-267288 - dsEntryDN is being updated when nsslapd-return-original-entrydn is set to off [rhel-9.8.z]
+- Resolves: RHEL-267317 - When fetching an entry from the DB, if nsslapd-return-original-entrydn is enabled the return dsEntryDN rather than normalized DN [rhel-9.8.z]
+- Resolves: RHEL-267322 - Differences on export ldif using online of off-line method on RHDS [rhel-9.8.z]
+
 * Mon Aug 31 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-10
 - Resolves: RHEL-220502 - CVE-2026-18355 389-ds-base: heap buffer overflow via SASL wrapped-record length lower-bound underflow in sasl_io_start_packet() [rhel-9.8.z]
 - Resolves: RHEL-222321 - CVE-2026-18453 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-9.8.z]

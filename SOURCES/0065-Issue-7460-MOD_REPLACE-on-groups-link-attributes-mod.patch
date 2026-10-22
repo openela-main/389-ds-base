@@ -1,0 +1,774 @@
+From e3891cffaaff693271f9b13cedf59c822dfb6f9e Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Tue, 12 May 2026 18:08:01 -0700
+Subject: [PATCH] Issue 7460 - MOD_REPLACE on groups/link attributes modifies
+ overlap targets (#7461)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Description: memberof_replace_list and linked_attrs_replace_backpointers
+sort pre/post with slapi_attr_value_cmp_ext, which returns 0 on match
+and a negative value or LDAP error code on non-match — not a strict
+weak ordering. The merge loop's cmp > 0 branch is never taken, so
+overlap members are deleted and re-added on every MOD_REPLACE,
+bumping entryUSN.
+
+Switch both comparators to slapi_utf8casecmp on raw bv_val.
+For that to work, normalize DN-syntax values in str2entry_fast
+(which did not normalize at all — the old code sat under an unset
+OBSOLETE_DN_SYNTAX_CHECK) and route str2entry_dupcheck through the
+same helper. Skip the upgradedn path (SLAPI_STR2ENTRY_USE_OBSOLETE_DNFORMAT)
+in both, preserving raw bytes for the LMDB import. Fix a stray missing
+comma in the dupcheck strict-fail slapi_log_err. Drop the now-unused
+qsortConfig plugin global.
+
+Add Python regression tests for both memberOf and linkedAttrs cases.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7460
+
+Reviewed by: @progier389 (Thanks!)
+---
+ .../suites/memberof_plugin/regression_test.py | 362 +++++++++++++++++-
+ .../suites/plugins/linked_attributes_test.py  | 103 +++++
+ .../plugins/linkedattrs/linked_attrs.c        |  19 +-
+ ldap/servers/plugins/memberof/memberof.c      |  45 +--
+ ldap/servers/slapd/entry.c                    |  68 +---
+ 5 files changed, 503 insertions(+), 94 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/plugins/linked_attributes_test.py
+
+diff --git a/dirsrvtests/tests/suites/memberof_plugin/regression_test.py b/dirsrvtests/tests/suites/memberof_plugin/regression_test.py
+index ce098615b..b26e981ba 100644
+--- a/dirsrvtests/tests/suites/memberof_plugin/regression_test.py
++++ b/dirsrvtests/tests/suites/memberof_plugin/regression_test.py
+@@ -17,7 +17,7 @@ from random import sample
+ from lib389.utils import ds_is_older, ensure_list_bytes, ensure_bytes, ensure_str
+ from lib389.topologies import topology_m1h1c1 as topo, topology_st, topology_m2 as topo_m2
+ from lib389._constants import *
+-from lib389.plugins import MemberOfPlugin
++from lib389.plugins import MemberOfPlugin, USNPlugin
+ from lib389 import Entry
+ from lib389.idm.user import UserAccount, UserAccounts, TEST_USER_PROPERTIES
+ from lib389.idm.group import Groups, Group
+@@ -1466,6 +1466,366 @@ def test_shutdown_on_deferred_memberof(topology_st, request):
+     request.addfinalizer(fin)
+ 
+ 
++def test_replace_list_diff_correctness(topology_st, request):
++    """A group MOD_REPLACE produces the correct diff
++    across overlap, empty, and no-op transitions.
++
++    :id: 2ab5e1ed-7f40-4b4b-8d7e-5b1b5d5f9f7a
++    :setup: Standalone Instance, USN + memberOf enabled
++    :steps:
++        1. Create 60 users and a group with the first 40 as members
++        2. MOD_REPLACE the group to members[20:60]
++        3. MOD_REPLACE the group back to members[:40] using denormalized DNs
++        4. MOD_REPLACE the group to an empty member list
++        5. MOD_REPLACE the group to members[:2]
++        6. MOD_REPLACE the group to members[:2] again (no-op diff)
++    :expectedresults:
++        1. Users 0..39 have memberOf, 40..59 do not; entryUSN advanced
++           only for 0..39
++        2. Users 0..19 lost memberOf, 20..39 kept it, 40..59 gained it;
++           entryUSN advanced only for 0..19 and 40..59 (overlap members
++           20..39 must not be touched)
++        3. Users 0..39 have memberOf, 40..59 do not; entryUSN advanced
++           only for 0..19 and 40..59 (overlap members 20..39 must not be
++           touched, even with denormalized input DNs)
++        4. No user has memberOf; entryUSN advanced only for 0..39
++        5. Users 0..1 have memberOf, 2..59 do not; entryUSN advanced
++           only for 0..1
++        6. Users 0..1 have memberOf, 2..59 do not; no entryUSN advanced
++    """
++    inst = topology_st.standalone
++
++    USNPlugin(inst).enable()
++    memberof = MemberOfPlugin(inst)
++    memberof.set_attr('memberOf')
++    memberof.replace_groupattr('member')
++    memberof.remove_all_entryscope()
++    memberof.remove_all_excludescope()
++    memberof.remove_configarea()
++    memberof.set_autoaddoc('nsMemberOf')
++    memberof.enable()
++    deferred = memberof.get_memberofdeferredupdate()
++    delay = 3 if deferred and deferred.lower() == "on" else 0
++    inst.restart()
++
++    users_idm = UserAccounts(inst, DEFAULT_SUFFIX)
++    user_list = []
++    group = None
++
++    def fin():
++        try:
++            if group is not None and group.exists():
++                group.delete()
++        except ldap.LDAPError as e:
++            log.warning('cleanup: group delete failed: %s', e)
++        for u in user_list:
++            try:
++                u.delete()
++            except ldap.NO_SUCH_OBJECT:
++                pass
++    request.addfinalizer(fin)
++
++    for i in range(60):
++        user_list.append(users_idm.create(properties={
++            'uid': 'diffuser%03d' % i,
++            'sn': 'diffuser%03d' % i,
++            'cn': 'diffuser%03d' % i,
++            'uidNumber': str(200000 + i),
++            'gidNumber': str(200000 + i),
++            'homeDirectory': '/home/diffuser%03d' % i,
++        }))
++
++    def read_entryusns():
++        return [u.get_attr_val_int('entryusn') for u in user_list]
++
++    def assert_usn(changed_indices, before, after, label):
++        changed = set(changed_indices)
++        for i in range(len(user_list)):
++            if i in changed:
++                assert after[i] > before[i], (
++                    '%s: user %d entryUSN should have advanced (%d -> %d)'
++                    % (label, i, before[i], after[i]))
++            else:
++                assert after[i] == before[i], (
++                    '%s: user %d entryUSN should not have changed '
++                    '(%d -> %d) but it did'
++                    % (label, i, before[i], after[i]))
++
++    def assert_members(expected_in, expected_out, label):
++        for u in expected_in:
++            assert group_dn_l in u.get_attr_vals_utf8_l('memberOf'), \
++                '%s: %s missing memberOf %s' % (label, u.dn, group.dn)
++        for u in expected_out:
++            assert group_dn_l not in u.get_attr_vals_utf8_l('memberOf'), \
++                '%s: %s still has memberOf %s' % (label, u.dn, group.dn)
++
++    usn_before = read_entryusns()
++    groups = Groups(inst, DEFAULT_SUFFIX, rdn=None)
++    group = groups.create(properties={
++        'cn': 'diff_bench_group',
++        'member': [u.dn for u in user_list[:40]],
++    })
++    group_dn_l = group.dn.lower()
++    time.sleep(delay)
++    usn_after = read_entryusns()
++    assert_members(user_list[:40], user_list[40:], 'initial')
++    assert_usn(range(40), usn_before, usn_after, 'initial')
++
++    usn_before = usn_after
++    group.replace('member', [u.dn for u in user_list[20:60]])
++    time.sleep(delay)
++    usn_after = read_entryusns()
++    assert_members(user_list[20:60], user_list[:20], 'replace-overlap')
++    assert_usn(list(range(20)) + list(range(40, 60)),
++               usn_before, usn_after, 'replace-overlap')
++
++    def denorm(dn):
++        rdns = []
++        for rdn in dn.split(','):
++            attr, _, value = rdn.partition('=')
++            rdns.append('{} = {}'.format(attr.strip().upper(), value.strip()))
++        return ' , '.join(rdns)
++
++    usn_before = usn_after
++    group.replace('member', [denorm(u.dn) for u in user_list[:40]])
++    time.sleep(delay)
++    usn_after = read_entryusns()
++    assert_members(user_list[:40], user_list[40:], 'replace-denormalized')
++    assert_usn(list(range(20)) + list(range(40, 60)),
++               usn_before, usn_after, 'replace-denormalized')
++
++    usn_before = usn_after
++    group.replace('member', [])
++    time.sleep(delay)
++    usn_after = read_entryusns()
++    assert_members([], user_list, 'replace-empty')
++    assert_usn(range(40), usn_before, usn_after, 'replace-empty')
++
++    usn_before = usn_after
++    group.replace('member', [u.dn for u in user_list[:2]])
++    time.sleep(delay)
++    usn_after = read_entryusns()
++    assert_members(user_list[:2], user_list[2:], 'replace-from-empty')
++    assert_usn(range(2), usn_before, usn_after, 'replace-from-empty')
++
++    usn_before = usn_after
++    group.replace('member', [u.dn for u in user_list[:2]])
++    time.sleep(delay)
++    usn_after = read_entryusns()
++    assert_members(user_list[:2], user_list[2:], 'replace-noop')
++    assert_usn([], usn_before, usn_after, 'replace-noop')
++
++
++def test_replace_list_after_ldif_import(topology_st, request):
++    """An LDIF import of denormalized member DNs stores canonical values in the
++    valueset, and a subsequent group MOD_REPLACE produces correct memberOf.
++
++    :id: 1c742145-e967-4a9d-8d0d-29e92cd46078
++    :setup: Standalone Instance
++    :steps:
++        1. ldif2db an LDIF with 20 users and a group whose member values
++           are denormalized (uppercase attr types, whitespace padding)
++        2. Check stored member values no longer carry the padding
++        3. Run memberOf fixup
++        4. MOD_REPLACE the group's members to users[5:15]
++    :expectedresults:
++        1. Import succeeds
++        2. member values are canonical (no ' = ' or ' , ')
++        3. Users 0..9 have memberOf, 10..19 do not
++        4. Users 0..4 lost memberOf, 5..14 have it, 15..19 do not
++    """
++    inst = topology_st.standalone
++    memberof = MemberOfPlugin(inst)
++    memberof.set_attr('memberOf')
++    memberof.replace_groupattr('member')
++    memberof.remove_all_entryscope()
++    memberof.remove_all_excludescope()
++    memberof.remove_configarea()
++    memberof.set_autoaddoc('nsMemberOf')
++    memberof.enable()
++    deferred = memberof.get_memberofdeferredupdate()
++    delay = 3 if deferred and deferred.lower() == "on" else 0
++    inst.restart()
++
++    user_dns = ['uid=denormu%02d,ou=People,%s' % (i, DEFAULT_SUFFIX) for i in range(20)]
++    group_dn = 'cn=denorm_import_group,%s' % DEFAULT_SUFFIX
++
++    def denorm(dn):
++        rdns = []
++        for rdn in dn.split(','):
++            attr, _, value = rdn.partition('=')
++            rdns.append('{} = {}'.format(attr.strip().upper(), value.strip()))
++        return ' , '.join(rdns)
++
++    def fin():
++        try:
++            if not inst.status():
++                inst.start()
++            for dn in [group_dn] + user_dns:
++                try:
++                    inst.delete_s(dn)
++                except ldap.NO_SUCH_OBJECT:
++                    pass
++        except ldap.LDAPError as e:
++            log.warning('cleanup failed: %s', e)
++    request.addfinalizer(fin)
++
++    ldif_path = os.path.join(inst.get_ldif_dir(), 'memberof_denorm_import.ldif')
++    with open(ldif_path, 'w') as f:
++        f.write('dn: %s\nobjectClass: top\nobjectClass: domain\ndc: example\n\n'
++                % DEFAULT_SUFFIX)
++        f.write('dn: ou=People,%s\nobjectClass: top\n'
++                'objectClass: organizationalUnit\nou: People\n\n' % DEFAULT_SUFFIX)
++        for i, dn in enumerate(user_dns):
++            f.write('dn: %s\nobjectClass: top\nobjectClass: person\n'
++                    'objectClass: inetOrgPerson\nobjectClass: posixAccount\n'
++                    'objectClass: nsMemberOf\n'
++                    'uid: denormu%02d\ncn: denormu%02d\nsn: denormu%02d\n'
++                    'uidNumber: %d\ngidNumber: %d\nhomeDirectory: /home/denormu%02d\n\n'
++                    % (dn, i, i, i, 300000 + i, 300000 + i, i))
++        f.write('dn: %s\nobjectClass: top\nobjectClass: groupOfNames\n'
++                'cn: denorm_import_group\n' % group_dn)
++        for dn in user_dns[:10]:
++            f.write('member: %s\n' % denorm(dn))
++        f.write('\n')
++    os.chmod(ldif_path, 0o644)
++
++    inst.stop()
++    assert inst.ldif2db('userRoot', None, None, None, ldif_path), 'ldif2db failed'
++    inst.start()
++
++    stored = Group(inst, group_dn).get_attr_vals_utf8('member')
++    assert sorted(v.lower() for v in stored) == sorted(d.lower() for d in user_dns[:10]), \
++        'member values not normalized after ldif2db: %r' % stored
++    for v in stored:
++        assert ' = ' not in v and ' , ' not in v, \
++            'member value retains non-canonical whitespace: %r' % v
++
++    fixup_task = memberof.fixup(basedn=DEFAULT_SUFFIX)
++    fixup_task.wait(timeout=0)
++    assert fixup_task.get_exit_code() == 0, 'memberOf fixup failed'
++    time.sleep(delay)
++
++    group_dn_l = group_dn.lower()
++
++    def assert_members(in_dns, out_dns, label):
++        for dn in in_dns:
++            u = UserAccount(inst, dn)
++            assert group_dn_l in u.get_attr_vals_utf8_l('memberOf'), \
++                '%s: %s missing memberOf' % (label, dn)
++        for dn in out_dns:
++            u = UserAccount(inst, dn)
++            assert group_dn_l not in u.get_attr_vals_utf8_l('memberOf'), \
++                '%s: %s unexpectedly has memberOf' % (label, dn)
++
++    assert_members(user_dns[:10], user_dns[10:], 'post-import+fixup')
++
++    Group(inst, group_dn).replace('member', user_dns[5:15])
++    time.sleep(delay)
++    assert_members(user_dns[5:15], user_dns[:5] + user_dns[15:], 'post-replace')
++
++
++def test_replace_list_no_spurious_member_mods(topology_st, request):
++    """A group MOD_REPLACE must not re-modify overlap members.
++
++    :id: 6de82dc9-4727-4757-b0d2-69a7907a8dbe
++    :setup: Standalone Instance, USN + memberOf enabled
++    :steps:
++        1. Create four users
++        2. Create a group containing two of them
++        3. Replace the group's member list with all four users
++        4. Check entryUSN of every user
++    :expectedresults:
++        1. Users created
++        2. Initial members hold memberOf for the group
++        3. Replace succeeds; all four users hold memberOf
++        4. The two pre-existing members' entryUSN is unchanged;
++           the two newly added members' entryUSN has advanced
++    """
++    inst = topology_st.standalone
++
++    USNPlugin(inst).enable()
++    memberof = MemberOfPlugin(inst)
++    memberof.set_attr('memberOf')
++    memberof.replace_groupattr('member')
++    memberof.remove_all_entryscope()
++    memberof.remove_all_excludescope()
++    memberof.remove_configarea()
++    memberof.set_autoaddoc('nsMemberOf')
++    memberof.enable()
++    deferred = memberof.get_memberofdeferredupdate()
++    delay = 3 if deferred and deferred.lower() == "on" else 0
++    inst.restart()
++
++    users_idm = UserAccounts(inst, DEFAULT_SUFFIX)
++    user_names = ['alpha', 'beta', 'charlie', 'delta']
++    user_objs = {}
++    group = None
++
++    def fin():
++        try:
++            if group is not None and group.exists():
++                group.delete()
++        except ldap.LDAPError as e:
++            log.warning('cleanup: group delete failed: %s', e)
++        for u in user_objs.values():
++            try:
++                u.delete()
++            except ldap.LDAPError as e:
++                log.warning('cleanup: user delete failed: %s', e)
++    request.addfinalizer(fin)
++
++    for i, name in enumerate(user_names):
++        user_objs[name] = users_idm.create(properties={
++            'uid': name,
++            'cn': name,
++            'sn': name,
++            'uidNumber': str(400000 + i),
++            'gidNumber': str(400000 + i),
++            'homeDirectory': '/home/%s' % name,
++        })
++
++    groups = Groups(inst, DEFAULT_SUFFIX, rdn=None)
++    group = groups.create(properties={
++        'cn': 'replace_no_spurious_group',
++        'member': [user_objs['alpha'].dn, user_objs['delta'].dn],
++    })
++    group_dn_l = group.dn.lower()
++    time.sleep(delay)
++
++    for shared in ('alpha', 'delta'):
++        assert group_dn_l in user_objs[shared].get_attr_vals_utf8_l('memberOf'), \
++            'pre-replace: %s missing memberOf %s' % (shared, group.dn)
++
++    usn_before = {
++        name: user_objs[name].get_attr_val_int('entryusn')
++        for name in user_names
++    }
++
++    group.replace('member', [user_objs[n].dn for n in user_names])
++    time.sleep(delay)
++
++    for name in user_names:
++        assert group_dn_l in user_objs[name].get_attr_vals_utf8_l('memberOf'), \
++            'post-replace: %s missing memberOf %s' % (name, group.dn)
++
++    usn_after = {
++        name: user_objs[name].get_attr_val_int('entryusn')
++        for name in user_names
++    }
++
++    for shared in ('alpha', 'delta'):
++        assert usn_after[shared] == usn_before[shared], (
++            '%s was modified (entryUSN %d -> %d) but it was already a '
++            'member before the replace and is still a member after'
++            % (shared, usn_before[shared], usn_after[shared]))
++
++    for added in ('beta', 'charlie'):
++        assert usn_after[added] > usn_before[added], (
++            '%s was not modified (entryUSN %d -> %d) but should have '
++            'gained memberOf' % (added, usn_before[added], usn_after[added]))
++
++
+ if __name__ == '__main__':
+     # Run isolated
+     # -s for DEBUG mode
+diff --git a/dirsrvtests/tests/suites/plugins/linked_attributes_test.py b/dirsrvtests/tests/suites/plugins/linked_attributes_test.py
+new file mode 100644
+index 000000000..ef808cc54
+--- /dev/null
++++ b/dirsrvtests/tests/suites/plugins/linked_attributes_test.py
+@@ -0,0 +1,103 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2025 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++import pytest
++import ldap
++from lib389.topologies import topology_st
++from lib389._constants import DEFAULT_SUFFIX
++from lib389.plugins import LinkedAttributesPlugin, LinkedAttributesConfigs, USNPlugin
++from lib389.idm.user import UserAccounts
++
++pytestmark = pytest.mark.tier1
++
++log = logging.getLogger(__name__)
++
++LINKTYPE = 'directReport'
++MANAGEDTYPE = 'manager'
++
++
++@pytest.fixture(scope='function')
++def setup_linked_attributes(topology_st, request):
++    """Fixture to set up the Linked Attributes plugin."""
++    log.info('Setting up Linked Attributes plugin')
++
++    log.info('Enable Linked Attributes plugin')
++    linkedattr = LinkedAttributesPlugin(topology_st.standalone)
++    linkedattr.enable()
++    topology_st.standalone.restart()
++
++    log.info('Add the plugin config entry')
++    la_configs = LinkedAttributesConfigs(topology_st.standalone)
++    config = la_configs.create(properties={'cn': 'Manager Link',
++                                  'linkType': LINKTYPE,
++                                  'managedType': MANAGEDTYPE})
++
++    def fin():
++        log.info('Cleaning up Linked Attributes plugin')
++        config.delete()
++        linkedattr.disable()
++        topology_st.standalone.restart()
++
++    request.addfinalizer(fin)
++
++
++def test_replace_linktype_no_spurious_managedtype_mods(topology_st, setup_linked_attributes, request):
++    """A linktype MOD_REPLACE must not re-modify overlap targets.
++
++    :id: 405f7dab-1c36-458d-a2bf-abf3284c7c41
++    :setup: Standalone Instance, USN + Linked Attributes enabled
++    :steps:
++        1. Set linkType=[t0, t3] on a source entry
++        2. Snapshot entryUSN of every target
++        3. MOD_REPLACE linkType to [t0, t1, t2, t3]
++    :expectedresults:
++        1. Success
++        2. Success
++        3. t0 and t3 entryUSN unchanged (overlap), t1 and t2 advanced
++    """
++    inst = topology_st.standalone
++    USNPlugin(inst).enable()
++    inst.restart()
++
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    targets = [users.create_test_user(uid=500000 + i, gid=500000 + i)
++               for i in range(4)]
++    source = users.create_test_user(uid=500099, gid=500099)
++    source.add('objectclass', 'extensibleObject')
++
++    def fin():
++        for u in targets + [source]:
++            try:
++                u.delete()
++            except ldap.LDAPError:
++                pass
++    request.addfinalizer(fin)
++
++    source.replace(LINKTYPE, [targets[0].dn, targets[3].dn])
++    assert targets[0].present(MANAGEDTYPE, source.dn)
++    assert targets[3].present(MANAGEDTYPE, source.dn)
++
++    usn_before = [t.get_attr_val_int('entryusn') for t in targets]
++    source.replace(LINKTYPE, [t.dn for t in targets])
++    usn_after = [t.get_attr_val_int('entryusn') for t in targets]
++
++    for i in (0, 3):
++        assert usn_after[i] == usn_before[i], (
++            f't{i} entryUSN advanced ({usn_before[i]} -> {usn_after[i]}); '
++            f'it was already linked before and after the replace')
++    for i in (1, 2):
++        assert usn_after[i] > usn_before[i], f't{i} should have been linked'
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main("-s %s" % CURRENT_FILE)
+diff --git a/ldap/servers/plugins/linkedattrs/linked_attrs.c b/ldap/servers/plugins/linkedattrs/linked_attrs.c
+index fe585041c..4728abc55 100644
+--- a/ldap/servers/plugins/linkedattrs/linked_attrs.c
++++ b/ldap/servers/plugins/linkedattrs/linked_attrs.c
+@@ -1182,15 +1182,16 @@ linked_attrs_load_array(Slapi_Value **array, Slapi_Attr *attr)
+ 
+ /* linked_attrs_compare()
+  *
+- * Compare two attr values using the DN syntax.
++ * Tri-valued ordering on linktype DNs. The linktype attribute is
++ * DN syntax and the valueset stores bv_val already normalized modulo
++ * case, so utf8casecmp gives a valid strict weak ordering matching
++ * valueset_value_cmp.
+  */
+ int
+ linked_attrs_compare(const void *a, const void *b)
+ {
+     Slapi_Value *val1;
+     Slapi_Value *val2;
+-    Slapi_Attr *linkattr;
+-    int rc = 0;
+ 
+     if (a == NULL && b != NULL) {
+         return 1;
+@@ -1201,17 +1202,9 @@ linked_attrs_compare(const void *a, const void *b)
+     }
+     val1 = *((Slapi_Value **)a);
+     val2 = *((Slapi_Value **)b);
+-    linkattr = slapi_attr_new();
+-
+-    slapi_attr_init(linkattr, "distinguishedName");
+-
+-    rc = slapi_attr_value_cmp(linkattr,
+-                              slapi_value_get_berval(val1),
+-                              slapi_value_get_berval(val2));
+ 
+-    slapi_attr_free(&linkattr);
+-
+-    return rc;
++    return slapi_utf8casecmp((unsigned char *)slapi_value_get_string(val1),
++                             (unsigned char *)slapi_value_get_string(val2));
+ }
+ 
+ /*
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index 3c8509e74..282a38aed 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -51,7 +51,6 @@ static void *_PluginID = NULL;
+ static Slapi_DN *_ConfigAreaDN = NULL;
+ static Slapi_RWLock *config_rwlock = NULL;
+ static Slapi_DN* _pluginDN = NULL;
+-MemberOfConfig *qsortConfig = 0;
+ static int usetxn = 0;
+ static int premodfn = 0;
+ static PRLock *fixup_lock = NULL;
+@@ -3752,14 +3751,6 @@ memberof_replace_list(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *group_
+                 slapi_attr_get_numvalues(post_attr, &post_total);
+             }
+ 
+-            /* Stash a plugin global pointer here and have memberof_qsort_compare
+-             * use it.  We have to do this because we use memberof_qsort_compare
+-             * as the comparator function for qsort, which requires the function
+-             * to only take two void* args.  This is thread-safe since we only
+-             * store and use the pointer while holding the memberOf operation
+-             * lock. */
+-            qsortConfig = config;
+-
+             if (pre_total) {
+                 pre_array =
+                     (Slapi_Value **)
+@@ -3784,9 +3775,6 @@ memberof_replace_list(Slapi_PBlock *pb, MemberOfConfig *config, Slapi_DN *group_
+                     memberof_qsort_compare);
+             }
+ 
+-            qsortConfig = 0;
+-
+-
+             /*     work through arrays, following these rules:
+                 in pre, in post, do nothing
+                 in pre, not in post, delete from entry
+@@ -3865,12 +3853,16 @@ memberof_load_array(Slapi_Value **array, Slapi_Attr *attr)
+     }
+ }
+ 
+-/* memberof_compare()
++/* memberof_compare() and memberof_qsort_compare()
+  *
+- * compare two attr values
++ * Tri-valued ordering on grouping-attr DNs. Grouping attrs are DN or
++ * Name-and-Optional-UID syntax and the valueset stores bv_val already
++ * normalized modulo case, so utf8casecmp gives a valid strict weak
++ * ordering.
+  */
+ int
+-memberof_compare(MemberOfConfig *config, const void *a, const void *b)
++memberof_compare(MemberOfConfig *config __attribute__((unused)),
++                 const void *a, const void *b)
+ {
+     Slapi_Value *val1;
+     Slapi_Value *val2;
+@@ -3885,20 +3877,16 @@ memberof_compare(MemberOfConfig *config, const void *a, const void *b)
+     val1 = *((Slapi_Value **)a);
+     val2 = *((Slapi_Value **)b);
+ 
+-    /* We only need to provide a Slapi_Attr here for it's syntax.  We
+-     * already validated all grouping attributes to use the Distinguished
+-     * Name syntax, so we can safely just use the first attr. */
+-    return slapi_attr_value_cmp_ext(config->group_slapiattrs[0], val1, val2);
++    return slapi_utf8casecmp((unsigned char *)slapi_value_get_string(val1),
++                             (unsigned char *)slapi_value_get_string(val2));
+ }
+ 
+ /* memberof_qsort_compare()
+  *
+- * This is a version of memberof_compare that uses a plugin
+- * global copy of the config.  We'd prefer to pass in a copy
+- * of config that is local to the running thread, but we can't
+- * do this since qsort is using us as a comparator function.
+- * We should only use this function when using qsort, and only
+- * when the memberOf lock is acquired.
++ * Tri-valued ordering on memberof attribute DNs. The memberof attribute
++ * is DN syntax and the valueset stores bv_val already normalized modulo
++ * case, so utf8casecmp gives a valid strict weak ordering matching
++ * valueset_value_cmp.
+  */
+ int
+ memberof_qsort_compare(const void *a, const void *b)
+@@ -3906,11 +3894,8 @@ memberof_qsort_compare(const void *a, const void *b)
+     Slapi_Value *val1 = *((Slapi_Value **)a);
+     Slapi_Value *val2 = *((Slapi_Value **)b);
+ 
+-    /* We only need to provide a Slapi_Attr here for it's syntax.  We
+-     * already validated all grouping attributes to use the Distinguished
+-     * Name syntax, so we can safely just use the first attr. */
+-    return slapi_attr_value_cmp_ext(qsortConfig->group_slapiattrs[0],
+-                                    val1, val2);
++    return slapi_utf8casecmp((unsigned char *)slapi_value_get_string(val1),
++                             (unsigned char *)slapi_value_get_string(val2));
+ }
+ 
+ void
+diff --git a/ldap/servers/slapd/entry.c b/ldap/servers/slapd/entry.c
+index 6040eb419..8f491bf6f 100644
+--- a/ldap/servers/slapd/entry.c
++++ b/ldap/servers/slapd/entry.c
+@@ -461,45 +461,18 @@ str2entry_fast(const char *rawdn, const Slapi_RDN *srdn, const char *s, int flag
+                     /* break; ??? */
+                 }
+             }
+-            /* moved the value setting code here to check Slapi_Attr 'a'
+-             * to retrieve the attribute syntax info */
+             svalue = value_new(NULL, CSN_TYPE_NONE, NULL);
+-#ifdef OBSOLETE_DN_SYNTAX_CHECK
+-            if (slapi_attr_is_dn_syntax_attr(*a)) {
+-                int rc = 0;
+-                char *dn_aval = NULL;
+-                if (strict) {
+-                    /* check that the dn is formatted correctly */
+-                    rc = slapi_dn_syntax_check(NULL, value.bv_val, 1);
+-                    if (rc) { /* syntax check failed */
+-                        slapi_log_err(SLAPI_LOG_TRACE,
+-                                      "str2entry_fast", "strict: Invalid DN value: %s: %s\n",
+-                                      type.bv_val, value.bv_val);
+-                        slapi_entry_free(e);
+-                        if (freeval)
+-                            slapi_ch_free_string(&value.bv_val);
+-                        e = NULL;
+-                        goto done;
+-                    }
+-                }
+-                if (flags & SLAPI_STR2ENTRY_USE_OBSOLETE_DNFORMAT) {
+-                    dn_aval = slapi_dn_normalize_original(value.bv_val);
+-                    slapi_value_set(svalue, dn_aval, strlen(dn_aval));
+-                } else {
+-                    Slapi_DN *sdn = slapi_sdn_new_dn_byref(value.bv_val);
+-                    /* Note: slapi_sdn_get_dn returns normalized DN with
+-                     * case-intact. Thus, the length of dn_aval is
+-                     * slapi_sdn_get_ndn_len(sdn). */
+-                    dn_aval = (char *)slapi_sdn_get_dn(sdn);
+-                    slapi_value_set(svalue, (void *)dn_aval,
+-                                    slapi_sdn_get_ndn_len(sdn));
+-                    slapi_sdn_free(&sdn);
++            slapi_value_set_berval(svalue, &value);
++            if (slapi_attr_is_dn_syntax_attr(*a) &&
++                !(flags & SLAPI_STR2ENTRY_USE_OBSOLETE_DNFORMAT)) {
++                /* valueset_value_cmp uses slapi_utf8casecmp on raw bv_val
++                 * for DN syntax; normalize so the invariant holds. The
++                 * upgradedn path (SLAPI_STR2ENTRY_USE_OBSOLETE_DNFORMAT)
++                 * must preserve raw bytes, so skip it there. */
++                if (value_dn_normalize_value(svalue) == 0) {
++                    (*a)->a_flags |= SLAPI_ATTR_FLAG_NORMALIZED_CES;
+                 }
+-            } else {
+-                slapi_value_set_berval(svalue, &value);
+             }
+-#endif
+-            slapi_value_set_berval(svalue, &value);
+             /* the memory below was not allocated by the slapi_ch_ functions */
+             if (freeval)
+                 slapi_ch_free_string(&value.bv_val);
+@@ -1041,16 +1014,17 @@ str2entry_dupcheck(const char *rawdn, const char *s, int flags, int read_statein
+ 
+         sa = prev_attr; /* For readability */
+         value = value_new(NULL, CSN_TYPE_NONE, NULL);
+-        if (slapi_attr_is_dn_syntax_attr(&(sa->sa_attr))) {
+-            Slapi_DN *sdn = NULL;
+-            const char *dn_aval = NULL;
++        slapi_value_set_berval(value, &bvvalue);
++        if (slapi_attr_is_dn_syntax_attr(&(sa->sa_attr)) &&
++            !(flags & SLAPI_STR2ENTRY_USE_OBSOLETE_DNFORMAT)) {
+             if (strict) {
+                 /* check that the dn is formatted correctly */
+                 rc = slapi_dn_syntax_check(NULL, valuecharptr, 1);
+                 if (rc) { /* syntax check failed */
+-                    slapi_log_err(SLAPI_LOG_ERR, "str2entry_dupcheck"
+-                                                 "strict: Invalid DN value: %s: %s\n",
++                    slapi_log_err(SLAPI_LOG_ERR, "str2entry_dupcheck",
++                                  "strict: Invalid DN value: %s: %s\n",
+                                   type, valuecharptr);
++                    slapi_value_free(&value);
+                     slapi_entry_free(e);
+                     e = NULL;
+                     if (freeval)
+@@ -1058,15 +1032,9 @@ str2entry_dupcheck(const char *rawdn, const char *s, int flags, int read_statein
+                     goto free_and_return;
+                 }
+             }
+-            sdn = slapi_sdn_new_dn_byref(bvvalue.bv_val);
+-            /* Note: slapi_sdn_get_dn returns the normalized DN
+-             * with case-intact. Thus, the length of dn_aval is
+-             * slapi_sdn_get_ndn_len(sdn). */
+-            dn_aval = slapi_sdn_get_dn(sdn);
+-            slapi_value_set(value, (void *)dn_aval, slapi_sdn_get_ndn_len(sdn));
+-            slapi_sdn_free(&sdn);
+-        } else {
+-            slapi_value_set_berval(value, &bvvalue);
++            if (value_dn_normalize_value(value) == 0) {
++                sa->sa_attr.a_flags |= SLAPI_ATTR_FLAG_NORMALIZED_CES;
++            }
+         }
+         /* the memory below was not allocated by the slapi_ch_ functions */
+         if (freeval)
+-- 
+2.55.0
+

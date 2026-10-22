@@ -1,0 +1,243 @@
+From 17d2d603b06bb30ecd564973fe63250215411d26 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Fri, 10 Jul 2026 18:17:40 -0700
+Subject: [PATCH] Issue 7558 - Total init sends the suffix entry twice (#7640)
+
+Description: Exclude the suffix entry from the depth-first parentid
+walk because total init sends it separately.
+Preserve NEW_IDL_NO_ALLID across all parentid fetches and honor it in
+the LMDB fetch path to maintain parent-first ordering.
+Update LMDB reindex handling so entries with an explicit parentid are
+treated as regular entries when their RDN matches the suffix.
+
+Add a regression test with a wide moved subtree that verifies entry order
+and ensures the suffix is sent only once.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7558
+Fixes: https://github.com/389ds/389-ds-base/issues/7604
+
+Reviewed by: progier389 (Thanks!)
+---
+ .../suites/replication/regression_m2_test.py  | 105 +++++++++++++++++-
+ .../back-ldbm/db-mdb/mdb_import_threads.c     |  10 ++
+ .../slapd/back-ldbm/db-mdb/mdb_layer.c        |   2 +-
+ ldap/servers/slapd/back-ldbm/idl_new.c        |  25 +++--
+ 4 files changed, 131 insertions(+), 11 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/replication/regression_m2_test.py b/dirsrvtests/tests/suites/replication/regression_m2_test.py
+index db5140b0b..11f3a1fc0 100644
+--- a/dirsrvtests/tests/suites/replication/regression_m2_test.py
++++ b/dirsrvtests/tests/suites/replication/regression_m2_test.py
+@@ -19,6 +19,7 @@ import time
+ import random
+ import string
+ from shutil import rmtree
++from lib389.backend import DatabaseConfig
+ from lib389.dbgen import dbgen_users
+ from lib389.idm.user import TEST_USER_PROPERTIES, UserAccount, UserAccounts
+ from lib389.pwpolicy import PwPolicyManager
+@@ -1321,8 +1322,108 @@ def test_get_with_normalized_rid_dict():
+     assert nrd.get('099') is None
+ 
+ 
+-@pytest.mark.ds49915
+-@pytest.mark.bz1626375
++def test_online_init_no_duplicate_suffix(topo_m2, request):
++    """Total init must preserve tree order without sending the suffix twice
++
++    :id: f0ccfb02-6c9d-48dd-9482-8a2c0763d485
++    :setup: Two suppliers replication setup
++    :steps:
++        1. Add a parent with more direct children than the ID list scan limit
++        2. Move the subtree below a newer top-level ancestor
++        3. Lower the ID list scan limit on supplier1
++        4. Perform online initialization from supplier1 to supplier2
++        5. Search supplier2 for entries with the suffix DN
++        6. Compare the number of entries on both suppliers
++    :expectedresults:
++        1. Success
++        2. Success
++        3. Success
++        4. Success
++        5. Exactly one entry has the suffix DN
++        6. Both suppliers have the same number of entries
++    """
++    m1 = topo_m2.ms["supplier1"]
++    m2 = topo_m2.ms["supplier2"]
++
++    scan_limit = 100
++    parent_rdn = 'ou=total-init-scanlimit'
++    ancestor_rdn = 'ou=total-init-ancestor'
++    original_parent_dn = f'{parent_rdn},{DEFAULT_SUFFIX}'
++    ancestor_dn = f'{ancestor_rdn},{DEFAULT_SUFFIX}'
++    moved_parent_dn = f'{parent_rdn},{ancestor_dn}'
++    db_config = DatabaseConfig(m1)
++    original_scan_limit = db_config.get_attr_vals_utf8('nsslapd-idlistscanlimit')
++    repl = ReplicationManager(DEFAULT_SUFFIX)
++
++    def delete_test_subtrees(supplier):
++        deleted = False
++        for dn in (moved_parent_dn, original_parent_dn, ancestor_dn):
++            try:
++                supplier.delete_branch_s(dn, ldap.SCOPE_SUBTREE)
++                deleted = True
++            except ldap.NO_SUCH_OBJECT:
++                pass
++        return deleted
++
++    def fin():
++        for supplier in (m1, m2):
++            if not supplier.status():
++                supplier.start()
++        db_config.set([('nsslapd-idlistscanlimit', original_scan_limit)])
++        try:
++            if delete_test_subtrees(m1):
++                repl.wait_for_replication(m1, m2)
++            else:
++                delete_test_subtrees(m2)
++        except Exception as err:
++            log.warning("Replication cleanup failed, deleting supplier2 entries directly: %s", err)
++            delete_test_subtrees(m2)
++
++    request.addfinalizer(fin)
++
++    test_parent = OrganizationalUnits(m1, DEFAULT_SUFFIX).create(
++        properties={'ou': 'total-init-scanlimit'}
++    )
++    # Force the parentid index lookup for this parent past the ALLIDS threshold.
++    test_children = OrganizationalUnits(m1, test_parent.dn)
++    for idx in range(scan_limit + 1):
++        last_child = test_children.create(properties={'ou': f'child{idx}'})
++
++    test_ancestor = OrganizationalUnits(m1, DEFAULT_SUFFIX).create(
++        properties={'ou': 'total-init-ancestor'}
++    )
++    assert int(test_ancestor.get_attr_val_utf8('entryid')) > int(
++        last_child.get_attr_val_utf8('entryid')
++    )
++    test_parent.rename(parent_rdn, newsuperior=test_ancestor.dn)
++    assert test_parent.dn.lower() == moved_parent_dn.lower()
++    assert repl.wait_for_replication(m1, m2)
++
++    db_config.set([('nsslapd-idlistscanlimit', str(scan_limit))])
++    assert db_config.get_attr_val_utf8('nsslapd-idlistscanlimit') == str(scan_limit)
++
++    agmt = Agreements(m1).list()[0]
++    agmt.begin_reinit()
++    (done, error) = agmt.wait_reinit()
++    assert done is True
++    assert error is False
++
++    # The consumer used to store the suffix entry twice: the supplier sent
++    # it explicitly and again as part of the bulk import candidate list
++    filter_all = '(|(objectclass=ldapsubentry)(objectclass=nstombstone)(nsuniqueid=*))'
++    m2entries = m2.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, filter_all,
++                            escapehatch='i am sure')
++    suffix_entries = [e for e in m2entries if e.dn.lower() == DEFAULT_SUFFIX.lower()]
++    log.info("%d entries with the suffix DN found on supplier2", len(suffix_entries))
++    assert len(suffix_entries) == 1
++
++    m1entries = m1.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, filter_all,
++                            escapehatch='i am sure')
++    log.info("supplier1 has %d entries, supplier2 has %d entries",
++             len(m1entries), len(m2entries))
++    assert len(m1entries) == len(m2entries)
++
++
+ def test_online_reinit_may_hang(topo_with_sigkill):
+     """Online reinitialization may hang when the first
+        entry of the DB is RUV entry instead of the suffix
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
+index 0f7020e98..0ff0eba7e 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import_threads.c
+@@ -856,6 +856,16 @@ dbmdb_import_entry_info_by_param(EntryInfoParam_t *param, WorkerQueueData_t *wqe
+     }
+ 
+     dnrc = get_entry_type(wqelmt, &param->sdn);
++    if (dnrc == DNRC_BAD_SUFFIX_ID && (param->flags & EIP_RDN)) {
++        /* In reindex mode the sdn contains only the RDN. A non-root record
++         * with an explicit parentid is therefore a regular entry even when
++         * its RDN equals a one-RDN suffix. */
++        char *pidstr = NULL;
++        if (get_value_from_string(wqelmt->data, "parentid", &pidstr) == 0) {
++            slapi_ch_free_string(&pidstr);
++            dnrc = DNRC_OK;
++        }
++    }
+     if (dnrc == DNRC_SUFFIX) {
+         if ( param->eid != 1) {
+             dnrc = DNRC_BAD_SUFFIX_ID;
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
+index d1aa68d56..119f33397 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_layer.c
+@@ -2932,7 +2932,7 @@ dbmdb_idl_new_fetch(backend *be, dbi_db_t *db, dbi_val_t *inkey, dbi_txn_t *txn,
+         }
+     }
+ 
+-    if (allidslimit && count >= allidslimit) {
++    if ((NEW_IDL_NO_ALLID != *flag_err) && allidslimit && count >= allidslimit) {
+         idl = idl_allids(be);
+         slapi_log_err(SLAPI_LOG_TRACE, "dbmdb_idl_new_fetch", "%s returns allids (attribute: %s)\n",
+                       (char *)key.mv_data, index_id);
+diff --git a/ldap/servers/slapd/back-ldbm/idl_new.c b/ldap/servers/slapd/back-ldbm/idl_new.c
+index 29457500e..0fa48ea5f 100644
+--- a/ldap/servers/slapd/back-ldbm/idl_new.c
++++ b/ldap/servers/slapd/back-ldbm/idl_new.c
+@@ -468,14 +468,14 @@ idl_parentid_walk_push(ID **stack, size_t *stack_size, size_t *stack_top, ID id)
+ /*
+  * Walk the parentid index depth-first starting at root_id.
+  * For each parent, look up index key "=parent_id" (direct get, not cursor next),
+- * append the parent to the IDList, then visit each child the same way.
++ * append each descendant (but not root_id) to the IDList, then visit its children.
+  */
+ static int
+ idl_parentid_walk_tree(idl_parentid_walk_ctx_t *ctx, ID root_id, ID **stack,
+                        size_t *stack_size, size_t *stack_top)
+ {
+     IDList *children = NULL;
+-    int fetch_err = NEW_IDL_NO_ALLID;
++    int fetch_err = 0;
+     size_t i;
+ 
+     if (idl_parentid_walk_push(stack, stack_size, stack_top, root_id) != 0) {
+@@ -489,13 +489,18 @@ idl_parentid_walk_tree(idl_parentid_walk_ctx_t *ctx, ID root_id, ID **stack,
+             return -1;
+         }
+ 
+-        if (idl_append_extend(&ctx->idl, parent_id) != 0) {
+-            slapi_log_err(SLAPI_LOG_ERR, "idl_new_parentid_sorted_range_fetch",
+-                          "Unable to extend id list for attribute (%s)\n", ctx->index_id);
+-            idl_free(&ctx->idl);
+-            return -1;
++        if (parent_id != root_id) {
++            /* The suffix entry itself is not a candidate: bulk import
++             * (total init) sends it separately before walking the tree,
++             * and the pre-walk implementation never returned it either. */
++            if (idl_append_extend(&ctx->idl, parent_id) != 0) {
++                slapi_log_err(SLAPI_LOG_ERR, "idl_new_parentid_sorted_range_fetch",
++                              "Unable to extend id list for attribute (%s)\n", ctx->index_id);
++                idl_free(&ctx->idl);
++                return -1;
++            }
++            ctx->count++;
+         }
+-        ctx->count++;
+ 
+ #if defined(DB_ALLIDS_ON_READ)
+         if ((NEW_IDL_NO_ALLID != *(ctx->flag_err)) && ctx->ai && (ctx->idl != NULL) &&
+@@ -506,6 +511,10 @@ idl_parentid_walk_tree(idl_parentid_walk_ctx_t *ctx, ID root_id, ID **stack,
+         }
+ #endif
+         idl_parentid_set_index_key(ctx, parent_id);
++        /* idl_fetch_ext resets *err to 0 on success, so re-arm the
++         * no-allids hint for every fetch: collapsing one parent's
++         * children to ALLIDS would collapse the whole candidate list. */
++        fetch_err = NEW_IDL_NO_ALLID;
+         children = idl_fetch_ext(ctx->be, ctx->db, &ctx->key, ctx->txn, ctx->ai,
+                                  &fetch_err, ctx->allidslimit);
+         if (fetch_err != 0 && fetch_err != DBI_RC_NOTFOUND) {
+-- 
+2.55.0
+
