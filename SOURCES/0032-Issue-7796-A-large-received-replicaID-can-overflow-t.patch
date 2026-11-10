@@ -1,0 +1,46 @@
+From 247745c47399b4b2845ecc2612f8f512a8d00675 Mon Sep 17 00:00:00 2001
+From: tbordaz <tbordaz@redhat.com>
+Date: Tue, 8 Sep 2026 11:46:17 +0200
+Subject: [PATCH] Issue 7796 - A large received replicaID can overflow the
+ storage buffer (#7797)
+
+Security fix for: CVE-2026-15722
+
+Bug description:
+	The function get_ruvelement_from_berval() in ldap/servers/plugins/replication/repl5_ruv.c
+	parses a replica ID from a Replica Update Vector (RUV) berval by copying digit
+	characters into a 16-byte stack buffer (ridbuff[RIDSTR_SIZE]). The copy loop
+	has no bounds check
+	it keeps writing as long as isdigit() returns true.
+	A berval with more than 16 digit characters in the replica ID position overflows the buffer.
+
+Fix description:
+	if the berval contains more than RIDSTR_SIZE-1 digits it fails
+
+fixes: #7796
+
+Reviewed by: Mark Reynolds, Pierre Rogier
+---
+ ldap/servers/plugins/replication/repl5_ruv.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/ldap/servers/plugins/replication/repl5_ruv.c b/ldap/servers/plugins/replication/repl5_ruv.c
+index fc74869dd..ce285a463 100644
+--- a/ldap/servers/plugins/replication/repl5_ruv.c
++++ b/ldap/servers/plugins/replication/repl5_ruv.c
+@@ -1987,6 +1987,12 @@ get_ruvelement_from_berval(const struct berval *bval)
+         /* replica id must be here */
+         i = 0;
+         while (isdigit(bval->bv_val[urlbegin])) {
++            if (i >= RIDSTR_SIZE - 1) {
++                /* An authenticated RA is sending an invalid replica id */
++                slapi_log_err(SLAPI_LOG_WARNING, repl_plugin_name,
++                              "get_ruvelement_from_berval - Replica ID too long\n");
++                goto loser;
++            }
+             ridbuff[i] = bval->bv_val[urlbegin];
+             i++;
+             urlbegin++;
+-- 
+2.55.0
+

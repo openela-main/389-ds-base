@@ -1,0 +1,89 @@
+From 6ae6fdbf9c42f30a5653215ff271d700e6a1a0ce Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 18 May 2026 14:27:04 -0400
+Subject: [PATCH 09/14] Issue 7500 - Prevent unsigned integer underflow during
+ stalled import
+
+Description:
+
+During a stalled import the foreman's first ID could be greater than the
+history progress size which leads to underflowing the rate. Check if the
+foreman's first ID is greater than the progress size and just set it to
+zero.
+
+Relates: https://github.com/389ds/389-ds-base/issues/7500
+
+Reviewed by: progier(Thanks!)
+---
+ .../slapd/back-ldbm/db-bdb/bdb_import.c       | 22 ++++++++++++++-----
+ .../slapd/back-ldbm/db-mdb/mdb_import.c       |  4 ++--
+ 2 files changed, 19 insertions(+), 7 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+index bdc4ee4f6..0815c48e9 100644
+--- a/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-bdb/bdb_import.c
+@@ -1765,16 +1765,28 @@ bdb_import_monitor_threads(ImportJob *job, int *status)
+             /* Now calculate our rate of progress overall for this chunk */
+             if (time_now != job->start_time) {
+                 /* log a cute chart of the worker progress */
++                uint32_t history_size = 0;
++                double rate = 0.0;
++
+                 bdb_import_log_status_start(job);
+                 bdb_import_log_status_add_line(job,
+-                                           "Index status for import of %s:", job->inst->inst_name);
++                                               "Index status for import of %s:",
++                                               job->inst->inst_name);
+                 bdb_import_log_status_add_line(job,
+-                                           "-------Index Task-------State---Entry----Rate-");
++                        "-------Index Task-------State---Entry----Rate-");
+ 
+                 bdb_import_push_progress_history(job, foreman->last_ID_processed,
+-                                             time_now);
+-                job->average_progress_rate =
+-                    (double)(HISTORY(IMPORT_JOB_PROG_HISTORY_SIZE - 1) + 1 - foreman->first_ID) /
++                                                 time_now);
++
++                history_size = HISTORY(IMPORT_JOB_PROG_HISTORY_SIZE - 1) + 1;
++                if (foreman->first_ID > history_size) {
++                    /* Import is stalled and subtracting first_ID will
++                     * underflow the rate - so set it to 0.0 */
++                    rate = 0.0;
++                } else {
++                    rate = (double)(history_size - foreman->first_ID);
++                }
++                job->average_progress_rate = rate /
+                     (double)(TIMES(IMPORT_JOB_PROG_HISTORY_SIZE - 1) - job->start_time);
+                 job->recent_progress_rate =
+                     PROGRESS(0, IMPORT_JOB_PROG_HISTORY_SIZE - 1);
+diff --git a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
+index 51f1272f4..10ac903d2 100644
+--- a/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
++++ b/ldap/servers/slapd/back-ldbm/db-mdb/mdb_import.c
+@@ -586,7 +586,6 @@ dbmdb_import_monitor_threads(ImportJob *job, int *status)
+     int count = 1; /* 1 to prevent premature status report */
+     const int display_interval = 200;
+     time_t time_now = 0;
+-    int i = 0;
+ 
+     for (current_worker = job->worker_list; current_worker != NULL;
+          current_worker = current_worker->next)
+@@ -615,12 +614,13 @@ dbmdb_import_monitor_threads(ImportJob *job, int *status)
+     dbmdb_import_clear_progress_history(job);
+ 
+     while (!finished) {
++        size_t max_slots = ctx->workerq.max_slots;
+         DS_Sleep(tenthsecond);
+         finished = 1;
+ 
+         /* Compute the number of entries processed by the workers */
+         entry_processed = 0;
+-        for (i=0; i<ctx->workerq.max_slots; i++) {
++        for (size_t i = 0; i < max_slots; i++) {
+             entry_processed += slots[i].count;
+         }
+ 
+-- 
+2.54.0
+

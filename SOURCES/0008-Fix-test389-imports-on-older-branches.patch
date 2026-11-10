@@ -1,0 +1,39 @@
+From 853d11cd6abc69a8e93172771b19b52950293e6f Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 5 Jun 2026 11:17:35 +0200
+Subject: [PATCH 8/8] Fix test389 imports on older branches
+
+---
+ dirsrvtests/tests/suites/basic/modrdn_bulk_children_test.py | 2 +-
+ dirsrvtests/tests/suites/features/ldap_controls_test.py     | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/basic/modrdn_bulk_children_test.py b/dirsrvtests/tests/suites/basic/modrdn_bulk_children_test.py
+index 77f839c40..adbe2861a 100644
+--- a/dirsrvtests/tests/suites/basic/modrdn_bulk_children_test.py
++++ b/dirsrvtests/tests/suites/basic/modrdn_bulk_children_test.py
+@@ -13,7 +13,7 @@ import pytest
+ from lib389._constants import DEFAULT_SUFFIX
+ from lib389.idm.organizationalunit import OrganizationalUnit, OrganizationalUnits
+ from lib389.idm.user import UserAccount, UserAccounts
+-from test389.topologies import topology_st as topo
++from lib389.topologies import topology_st as topo
+ 
+ pytestmark = pytest.mark.tier1
+ 
+diff --git a/dirsrvtests/tests/suites/features/ldap_controls_test.py b/dirsrvtests/tests/suites/features/ldap_controls_test.py
+index 59a58b21d..7d8b21c8f 100644
+--- a/dirsrvtests/tests/suites/features/ldap_controls_test.py
++++ b/dirsrvtests/tests/suites/features/ldap_controls_test.py
+@@ -12,7 +12,7 @@ import ldap
+ from ldap.controls import RequestControl
+ from ldap.controls.readentry import PostReadControl
+ from lib389.idm.user import UserAccounts, UserAccount
+-from test389.topologies import topology_st
++from lib389.topologies import topology_st
+ from lib389._constants import DEFAULT_SUFFIX, DN_DM, PASSWORD
+ 
+ pytestmark = pytest.mark.tier1
+-- 
+2.54.0
+

@@ -1,0 +1,39 @@
+From e0f7cd98f9cc80ac2b7c3eed0f663c1c25de0e3f Mon Sep 17 00:00:00 2001
+From: Akshay Adhikari <aadhikar@redhat.com>
+Date: Thu, 26 Mar 2026 21:37:11 +0530
+Subject: [PATCH] Issue 7284 - CI - Fix test_grace_limit_section after pwpolicy
+ validation fix (#7357)
+
+Description:
+The test replaced passwordGraceLimit with a space to remove it, which is
+now correctly rejected after attr_check_minmax validation was tightened.
+Use remove_all() to properly delete the attribute instead.
+
+Fixes: #7284
+
+Reviewed by: progier389, droideck
+---
+ dirsrvtests/tests/suites/password/password_policy_test.py | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/dirsrvtests/tests/suites/password/password_policy_test.py b/dirsrvtests/tests/suites/password/password_policy_test.py
+index 8622ea0cb..20e2fa973 100644
+--- a/dirsrvtests/tests/suites/password/password_policy_test.py
++++ b/dirsrvtests/tests/suites/password/password_policy_test.py
+@@ -1427,8 +1427,11 @@ def test_grace_limit_section(topo, policy_setup, _fixture_for_grace_limit):
+     for att1, att2 in [('passwordGraceLimit', '10')]:
+         _do_transaction_for_pwp(topo, att1, att2)
+     # removing the passwordgracelimit attribute should make it default to 0
+-    for att1, att2 in [('passwordGraceLimit', ' ')]:
+-        _do_transaction_for_pwp(topo, att1, att2)
++    pwp = PwPolicyManager(topo.standalone)
++    for dn in [f'uid=orla,ou=dirsec,{DEFAULT_SUFFIX}',
++               f'uid=joe,ou=people,{DEFAULT_SUFFIX}',
++               f'ou=people,{DEFAULT_SUFFIX}']:
++        pwp.get_pwpolicy_entry(dn).remove_all('passwordGraceLimit')
+     change_password_with_admin(topo, [
+         ('uid=orla,ou=dirsec', '000rLb1'),
+         ('uid=joe,ou=people', '00J0e1'),
+-- 
+2.55.0
+

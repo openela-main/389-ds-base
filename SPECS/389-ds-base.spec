@@ -46,8 +46,8 @@ ExcludeArch: i686
 
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
-Version:          2.8.0
-Release:          11%{?dist}
+Version:          2.9.0
+Release:          5%{?dist}
 License:          GPL-3.0-or-later WITH GPL-3.0-389-ds-base-exception AND (Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT) AND (Apache-2.0 OR LGPL-2.1-or-later OR MIT) AND (Apache-2.0 OR MIT) AND (MIT OR Apache-2.0) AND Unicode-3.0 AND (MIT OR Unlicense) AND Apache-2.0 AND MIT AND MPL-2.0 AND Zlib
 URL:              https://www.port389.org
 Conflicts:        selinux-policy-base < 3.9.8
@@ -63,7 +63,7 @@ Provides:  bundled(crate(anyhow)) = 1.0.102
 Provides:  bundled(crate(atty)) = 0.2.14
 Provides:  bundled(crate(autocfg)) = 1.5.1
 Provides:  bundled(crate(base64)) = 0.13.1
-Provides:  bundled(crate(bitflags)) = 2.13.0
+Provides:  bundled(crate(bitflags)) = 2.12.1
 Provides:  bundled(crate(byteorder)) = 1.5.0
 Provides:  bundled(crate(cbindgen)) = 0.26.0
 Provides:  bundled(crate(cc)) = 1.2.63
@@ -283,82 +283,49 @@ Source3:          https://github.com/jemalloc/%{jemalloc_name}/releases/download
 %endif
 Source4:          389-ds-base.sysusers
 
-Source5:          vendor-%{version}-7.tar.gz
-Source6:          Cargo-%{version}-7.lock
+Source5:          vendor-%{version}-1.tar.gz
+Source6:          Cargo-%{version}-1.lock
 
-Patch:            0001-Issue-7049-RetroCL-plugin-generates-invalid-LDIF.patch
-Patch:            0002-Issue-7096-During-replication-online-total-init-the-.patch
-Patch:            0003-Issue-Revise-paged-result-search-locking.patch
-Patch:            0004-Issue-7172-Index-ordering-mismatch-after-upgrade-717.patch
-Patch:            0005-Issue-7172-2nd-Index-ordering-mismatch-after-upgrade.patch
-Patch:            0006-Issue-7189-DSBLE0007-generates-incorrect-remediation.patch
-Patch:            0007-Issue-7184-argparse.HelpFormatter-_format_actions_us.patch
-Patch:            0008-Issue-7027-2nd-389-ds-base-OpenScanHub-Leaks-Detecte.patch
-Patch:            0009-Issue-7213-MDB_BAD_VALSIZE-error-while-handling-VLV-.patch
-Patch:            0010-Issue-6542-RPM-build-errors-on-Fedora-42.patch
-Patch:            0011-Issue-6476-Fix-build-failure-with-GCC-15.patch
-Patch:            0012-Issue-7223-Revert-index-scan-limits-for-system-index.patch
-Patch:            0013-Issue-7223-Add-upgrade-function-to-remove-nsIndexIDL.patch
-Patch:            0014-Issue-7223-Add-upgrade-function-to-remove-ancestorid.patch
-Patch:            0015-Issue-7223-Detect-and-log-index-ordering-mismatch-du.patch
-Patch:            0016-Issue-7223-Add-dsctl-index-check-command-for-offline.patch
-Patch:            0017-Issue-7096-2nd-During-replication-online-total-init-.patch
-Patch:            0018-Issue-7076-6992-6784-6214-Fix-CI-test-failures-7077.patch
-Patch:            0019-Issue-7076-Fix-revert_cache-never-called-in-modrdn-7.patch
-Patch:            0020-Issue-6947-Fix-health_system_indexes_test.py.patch
-Patch:            0021-Issue-7121-2nd-LeakSanitizer-various-leaks-during-re.patch
-Patch:            0022-Issue-7150-Compressed-access-log-rotations-skipped-a.patch
-Patch:            0023-Issue-7224-CI-Test-Simplify-test_reserve_descriptor_.patch
-Patch:            0024-Issue-7231-Sync-repl-tests-fail-in-FIPS-mode-due-to-.patch
-Patch:            0025-Issue-7248-CLI-attribute-uniqueness-fix-usage-for-ex.patch
-Patch:            0026-Issue-CLI-dsctl-db2index-needs-some-hardening-with-M.patch
-Patch:            0027-Issue-7184-2nd-argparse.HelpFormatter-_format_action.patch
-Patch:            0028-Issue-7213-2nd-MDB_BAD_VALSIZE-error-while-handling-.patch
-Patch:            0029-Issue-7223-Use-lexicographical-order-for-ancestorid-.patch
-Patch:            0030-Issue-7066-7052-allow-password-history-to-be-set-to-.patch
-Patch:            0031-Issue-7243-UI-fix-certificate-table-and-modal.patch
-Patch:            0032-Issue-7223-Remove-integerOrderingMatch-requirement-f.patch
-Patch:            0033-Issue-7053-Remove-memberof_del_dn_from_groups-from-M.patch
-Patch:            0034-Issue-5853-Update-concread-to-0.5.10.patch
-Patch:            0035-Issue-7271-plugins-that-create-threads-need-to-updat.patch
-Patch:            0036-Security-fix-for-CVE-2025-14905.patch
-Patch:            0037-Issue-7271-implement-a-pre-close-plugin-function.patch
-Patch:            0038-Issue-7271-Add-new-plugin-pre-close-function-check-t.patch
-Patch:            0039-Issue-7233-test_produce_division_by_zero-fails-with-.patch
-Patch:            0040-Issue-7346-DS-does-not-handle-escape-char-in-bind-us.patch
-Patch:            0041-Issue-7155-build_candidate_list-Database-error-11-wi.patch
-Patch:            0042-Issue-7300-RFE-Add-OS-level-thread-names-to-all-serv.patch
-Patch:            0043-Issue-7503-CVE-2026-9064-Add-a-limit-to-the-number-c.patch
-Patch:            0044-Issue-7372-Reindex-adds-tombstones-to-ancestorid-cau.patch
-Patch:            0045-Issue-7539-Server-shutdown-during-online-reindex-may.patch
-Patch:            0046-Issue-7198-Web-console-doesn-t-show-sub-suffix-when-.patch
-Patch:            0047-Issue-7593-Reject-invalid-SASL-packet-length-values-.patch
-Patch:            0048-Issue-7593-Fix-testimony-docstring-for-SASL-overflow.patch
-Patch:            0049-Security-Advisory-Heap-Buffer-Overflow-in-sasl_io_re.patch
-Patch:            0050-CVE-2026-11770-pre-auth-LDAP-filter-injection-in-Cle.patch
-Patch:            0051-Issue-7554-deref-plugin-null-pointer-dereference-if-.patch
-Patch:            0052-Issue-CVE-2026-15722-pre-authentication-stack-buffer.patch
-Patch:            0053-Issue-3082-Add-test389.topologies-compatibility-shim.patch
-Patch:            0054-Issue-7707-lib389-set-nsDS5ReplicaBindDNGroup-before.patch
-Patch:            0055-Issue-7658-Heap-Buffer-Overflow-in-sasl_io_recv-via-.patch
-Patch:            0056-CVE-2026-11770-Fix-StartReplicationRequest-auth-gate.patch
-Patch:            0057-Security-fix-for-CVE-2026-18453.patch
-Patch:            0058-Security-fix-for-CVE-2026-18355.patch
-Patch:            0059-Security-fix-for-CVE-2026-18922.patch
-Patch:            0060-Security-fix-for-CVE-2026-76560.patch
-Patch:            0061-Issue-7126-WARN-keys2idl-received-NULL-idl-from-inde.patch
-Patch:            0062-Issue-7558-During-online-import-the-IDL-should-be-cr.patch
-Patch:            0063-Issue-7558-Total-init-sends-the-suffix-entry-twice-7.patch
-Patch:            0064-Issue-7670-BDB-range-searches-intermittently-fail-wi.patch
-Patch:            0065-Issue-7460-MOD_REPLACE-on-groups-link-attributes-mod.patch
-Patch:            0066-Issue-7705-With-memberOfEntryScope-set-deferred-memb.patch
-Patch:            0067-Issue-7723-Range-search-returns-an-empty-result-when.patch
-Patch:            0068-Issue-7339-Return-the-exact-DN-during-export-7956.patch
-Patch:            0069-Issue-7806-Preserve-dsEntryDN-case-on-modify-7807-79.patch
-Patch:            0070-Issue-7827-Preserve-dsEntryDN-case-from-DN-cache-782.patch
-Patch:            0071-Issue-7827-fix-backport-Preserve-dsEntryDN-case-from.patch
-Patch:            0072-Issue-7516-dblayer_bulk_nextdata-should-not-return-a.patch
-Patch:            0073-Issue-7531-Fix-LMDB-replication-regression_m2-failur.patch
+Patch:            0001-Issue-7554-deref-plugin-null-pointer-dereference-if-.patch
+Patch:            0002-Issue-3555-UI-Fix-audit-issue-with-npm-brace-expansi.patch
+Patch:            0003-Issue-6922-AddressSanitizer-leaks-found-by-acl-test-.patch
+Patch:            0004-Issue-7437-LeakSanitizer-memory-leaks-in-CoS-cache-e.patch
+Patch:            0005-Issue-7372-Reindex-adds-tombstones-to-ancestorid-cau.patch
+Patch:            0006-Issue-7327-dsctl-healthcheck-DSMOLE0001-inaccurate-r.patch
+Patch:            0007-Issue-7267-MDB_BAD_VALSIZE-error-when-updating-index.patch
+Patch:            0008-Fix-test389-imports-on-older-branches.patch
+Patch:            0009-Issue-6753-Port-ticket-47963-49184-tests-6970.patch
+Patch:            0010-Issue-7500-Prevent-unsigned-integer-underflow-during.patch
+Patch:            0011-Issue-7558-During-online-import-the-IDL-should-be-cr.patch
+Patch:            0012-Issue-7198-Web-console-doesn-t-show-sub-suffix-when-.patch
+Patch:            0013-Issue-7593-Reject-invalid-SASL-packet-length-values-.patch
+Patch:            0014-Issue-7593-Fix-testimony-docstring-for-SASL-overflow.patch
+Patch:            0015-Issue-7558-Total-init-sends-the-suffix-entry-twice-7.patch
+Patch:            0016-Issue-7200-repl-agmt-create-doesn-t-set-some-paramet.patch
+Patch:            0017-Issue-7705-With-memberOfEntryScope-set-deferred-memb.patch
+Patch:            0018-Issue-7711-Fix-typo-in-accountpolicy-login-history-s.patch
+Patch:            0019-Issue-7658-Heap-Buffer-Overflow-in-sasl_io_recv-via-.patch
+Patch:            0020-Issue-7284-Creating-local-password-policy-succeeds-w.patch
+Patch:            0021-Issue-7284-CI-Fix-test_grace_limit_section-after-pwp.patch
+Patch:            0022-Issue-7284-Automated-test-for-creating-local-passwor.patch
+Patch:            0023-Issue-7284-Creating-local-password-policy-succeeds-w.patch
+Patch:            0024-Issue-7707-lib389-set-nsDS5ReplicaBindDNGroup-before.patch
+Patch:            0025-Issue-7201-Syscall-overhead-in-LMDB-import-writer-th.patch
+Patch:            0026-Issue-7460-MOD_REPLACE-on-groups-link-attributes-mod.patch
+Patch:            0027-Security-fix-for-CVE-2026-76560.patch
+Patch:            0028-Security-fix-for-CVE-2026-18922.patch
+Patch:            0029-Security-fix-for-CVE-2026-18355.patch
+Patch:            0030-Issue-7666-Replication-performance-degradation-durin.patch
+Patch:            0031-Issue-7670-BDB-range-searches-intermittently-fail-wi.patch
+Patch:            0032-Issue-7796-A-large-received-replicaID-can-overflow-t.patch
+Patch:            0033-Issue-7560-lib389-Add-helper-function-for-checking-A.patch
+Patch:            0034-Issue-7539-Server-shutdown-during-online-reindex-may.patch
+Patch:            0035-Security-fix-for-CVE-2026-11770.patch
+Patch:            0036-CVE-2026-11770-Fix-StartReplicationRequest-auth-gate.patch
+Patch:            0037-Issue-7710-MemberOf-deferred-update-Use-condvar-inst.patch
+Patch:            0038-Issue-7698-Fix-silent-entry-loss-in-LMDB-bulk-import.patch
+Patch:            0039-Issue-7723-Range-search-returns-an-empty-result-when.patch
+Patch:            0040-Security-fix-for-CVE-2026-18453.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -808,42 +775,60 @@ exit 0
 %endif
 
 %changelog
-* Tue Oct 20 2026 Thierry Bordaz <tbordaz@redhat.com> - 2.8.0-11
-- Resolves: RHEL-216720 - ERR - idl_new_range_fetch - Failed to build range candidate list on entryusn index [rhel-9.8.z]
-- Resolves: RHEL-234360 - Online reinitialization is failing with the supplier being busy calling idrange_add_id() [rhel-9.8.z]
-- Resolves: RHEL-252559 - MOD_REPLACE on groups/link attributes modifies overlap targets [rhel-9.8.z]
-- Resolves: RHEL-256995 - large IdM host group, missing memberof host group, authentication failures, high traffic and contention [rhel-9.8.z]
-- Resolves: RHEL-257002 - WARN - keys2idl - received NULL idl from index_read_ext_allids [rhel-9.8.z]
-- Resolves: RHEL-267288 - dsEntryDN is being updated when nsslapd-return-original-entrydn is set to off [rhel-9.8.z]
-- Resolves: RHEL-267317 - When fetching an entry from the DB, if nsslapd-return-original-entrydn is enabled the return dsEntryDN rather than normalized DN [rhel-9.8.z]
-- Resolves: RHEL-267322 - Differences on export ldif using online of off-line method on RHDS [rhel-9.8.z]
+* Tue Sep 22 2026 Viktor Ashirov <vashirov@redhat.com> - 2.9.0-5
+- Resolves: RHEL-222324 - CVE-2026-18453 389-ds-base: 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-9.9]
 
-* Mon Aug 31 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-10
-- Resolves: RHEL-220502 - CVE-2026-18355 389-ds-base: heap buffer overflow via SASL wrapped-record length lower-bound underflow in sasl_io_start_packet() [rhel-9.8.z]
-- Resolves: RHEL-222321 - CVE-2026-18453 389-ds-base: pre-authentication NULL pointer dereference via paged results and USE_ONE_BACKEND control in op_shared_search [rhel-9.8.z]
-- Resolves: RHEL-232854 - CVE-2026-18922 389-ds-base: SASL PLAIN authentication allows privilege escalation to Directory Manager via stale identity in Cyrus SASL auxiliary property [rhel-9.8.z]
-- Resolves: RHEL-244467 - lib389: set nsDS5ReplicaBindDNGroup before ensure_agreement() [rhel-9.8.z]
-- Resolves: RHEL-245374 - CVE-2026-76560 389-ds-base: anonymous LDAP client can defeat SELFDN ACI bind-rule checks via empty bind DN [rhel-9.8.z]
-- Resolves: RHEL-247865 - CVE-2026-78701 389-ds-base: CVE-2026-11610 incomplete fix may introduce a connection-stall DoS [rhel-9.8.z]
-- Resolves: RHEL-248766 - CVE-2026-11770 fix breaks replication total init when nsDS5ReplicaBindDNGroup is set after agreement creation [rhel-9.8.z]
+* Fri Sep 11 2026 Viktor Ashirov <vashirov@redhat.com> - 2.9.0-4
+- Resolves: RHEL-173699 - ns-slapd freezes when deleting large group with deferred memberof updates enabled
+- Resolves: RHEL-183080 - CVE-2026-11770 389-ds-base: 389-ds-base: pre-auth LDAP filter injection in CleanAllRUV status check [rhel-9.9]
+- Resolves: RHEL-183896 - Server shutdown during online reindex may lead to data loss [rhel-9]
+- Resolves: RHEL-191338 - lib389 is missing helper functions for reading ASAN files [rhel-9]
+- Resolves: RHEL-210881 - CVE-2026-15722 389-ds-base: 389-ds-base: pre-authentication stack buffer overflow in get_ruvelement_from_berval() via unbounded replica ID parsing [rhel-9.9]
+- Resolves: RHEL-216717 - ERR - idl_new_range_fetch - Failed to build range candidate list on entryusn index
+- Resolves: RHEL-216936 - Replication performance degradation during total init on high-latency storage [rhel-9]
+- Resolves: RHEL-220509 - CVE-2026-18355 389-ds-base: 389-ds-base: heap buffer overflow via SASL wrapped-record length lower-bound underflow in sasl_io_start_packet() [rhel-9.9]
+- Resolves: RHEL-228260 - LMDB backend in 389-ds-base is now fully supported
+- Resolves: RHEL-232845 - [Minor Incident] CVE-2026-18922 389-ds-base: 389-ds-base: SASL PLAIN authentication allows privilege escalation to Directory Manager via stale identity in Cyrus SASL auxiliary property [rhel-9.9]
+- Resolves: RHEL-245971 - MOD_REPLACE on groups/link attributes modifies overlap targets
 
-* Mon Jul 27 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-9
-- Resolves: RHEL-183082 - CVE-2026-11770 389-ds-base: 389-ds-base: pre-auth LDAP filter injection in CleanAllRUV status check [rhel-9.8.z]
-- Resolves: RHEL-190775 - CVE-2026-11788 389-ds-base: 389-ds-base: NULL pointer dereference in deref control plugin BER parser [rhel-9.8.z]
-- Resolves: RHEL-210875 - CVE-2026-15722 389-ds-base: 389-ds-base: pre-authentication stack buffer overflow in get_ruvelement_from_berval() via unbounded replica ID parsing [rhel-9.8.z]
+* Tue Aug 18 2026 Simon Pichugin <spichugi@redhat.com> - 2.9.0-3
+- Bump version to 2.9.0-3
+- Resolves: RHEL-243052 - IPA - segfault with libjemalloc.so.2 [rhel-9]
+- Resolves: RHEL-221410 - large IdM host group, missing memberof host group, authentication failures, high traffic and contention
+- Resolves: RHEL-243050 - repl-agmt create doesn't set some parameters [rhel-9]
+- Resolves: RHEL-243053 - 389-ds accountpolicy.py attribute name typo in help message [rhel-9]
+- Resolves: RHEL-244870 - Local password policies can be created with unallowed values [rhel-9]
+- Resolves: RHEL-238566 - lib389: join_supplier() sets nsDS5ReplicaBindDNGroup after ensure_agreement(), causing replication auth race [rhel-9]
+- Resolves: RHEL-182153 - CVE-2026-11610 389-ds-base: 389-ds-base: Heap buffer overflow in sasl_io_recv() via padded SASL UNBIND [rhel-9.9]
 
-* Thu Jun 25 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-8
-- Resolves: RHEL-182159 - CVE-2026-11610 389-ds-base: 389-ds-base: Heap buffer overflow in sasl_io_recv() via padded SASL UNBIND [rhel-9.8.z]
-- Resolves: RHEL-183103 - CVE-2026-11774 389-ds-base: 389-ds-base: integer overflow in SASL packet length bypasses size limit leading to heap buffer overflow [rhel-9.8.z]
+* Fri Jul 17 2026 Simon Pichugin <spichugi@redhat.com> - 2.9.0-2
+- Bump version to 2.9.0-2
+- Resolves: RHEL-88942 - LDAP healthcheck and ignoring entrydn index and associated config
+- Resolves: RHEL-168964 - Web console doesn't show the sub suffix of ou=foo,ou=people,dc=example,dc=com.
+- Resolves: RHEL-212097 - Online reinitialization is failing with the supplier being busy calling idrange_add_id()
+- Resolves: RHEL-212816 - import_monitor_threads and average rate 214748364.8/sec rate calculation issue [rhel-9]
+- Resolves: RHEL-190777 - CVE-2026-11788 389-ds-base: 389-ds-base: NULL pointer dereference in deref control plugin BER parser [rhel-9.9]
+- Resolves: RHEL-183108 - CVE-2026-11774 389-ds-base: 389-ds-base: integer overflow in SASL packet length bypasses size limit leading to heap buffer overflow [rhel-9.9]
 
-* Thu Jun 11 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-7
-- Resolves: RHEL-152356 - Getting "build_candidate_list - Database error 11" messages after migrating to LMDB. [rhel-9.8.z]
-- Resolves: RHEL-168967 - Web console doesn't show the sub suffix of ou=foo,ou=people,dc=example,dc=com. [rhel-9.8.z]
-- Resolves: RHEL-170269 - DS 12 does not handle escape char in bind user [rhel-9.8.z]
-- Resolves: RHEL-174524 - [RFE] Add OS-level thread names to all server threads [rhel-9.8.z]
-- Resolves: RHEL-178086 - CVE-2026-9064 389-ds-base: 389-ds-base: unbounded LDAP controls count in get_ldapmessage_controls_ext() causes CPU and heap amplification (remote DoS) [rhel-9.8]
-- Resolves: RHEL-180716 - Online export is failing when using the option "-s" [rhel-9.8.z]
-- Resolves: RHEL-183895 - Server shutdown during online reindex may lead to data loss [rhel-9.8.z]
+* Fri Jun 05 2026 Viktor Ashirov <vashirov@redhat.com> - 2.9.0-1
+- Bump version to 2.9.0
+- Resolves: RHEL-165978 - Replication halt caused by an incorrect setting of "nsslapd-changelogmaxage"
+- Resolves: RHEL-166003 - Crash in replica_config_add when manually configuring a replica with an incorrect nsds5ReplicaRoot.
+- Resolves: RHEL-166004 - Possible memory leak when using the Retro Changelog plugin.
+- Resolves: RHEL-168908 - ns-slapd fails to shutdown when deferred memberof update is in progress
+- Resolves: RHEL-168964 - Web console doesn't show the sub suffix of ou=foo,ou=people,dc=example,dc=com. [rhel-9]
+- Resolves: RHEL-168972 - Replica installation is failing with message MDB_BAD_VALSIZE: Unsupported size of key/DB name/data, or wrong DUPFIXED [rhel-9]
+- Resolves: RHEL-169530 - Rebase 389-ds-base to 2.9.x
+- Resolves: RHEL-170270 - DS 12 does not handle escape char in bind user [rhel-9]
+- Resolves: RHEL-170275 - dnaSharedConfig: "dnaPortNum: 0" [rhel-9]
+- Resolves: RHEL-170280 - Memory leaks in syncrepl plugin during persistent search operations [rhel-9]
+- Resolves: RHEL-170287 - access log - suspicious wtime  optime negative and large values in internal op [rhel-9]
+- Resolves: RHEL-170477 - An online reinitialization with LMDB is terminating the receiving server [rhel-9]
+- Resolves: RHEL-170480 - dsctl healthcheck DSMOLE0001 inaccurate recommendations when there is more than 1 LDAP backend [rhel-9]
+- Resolves: RHEL-170651 - passwordbadwords attribute of the local password policy is not functioning [rhel-9]
+- Resolves: RHEL-170732 - Memory leaks in IPA context on server restart [rhel-9]
+- Resolves: RHEL-174525 - [RFE] Add OS-level thread names to all server threads [rhel-9]
+- Resolves: RHEL-180717 - Online export is failing when using the option "-s" [rhel-9]
 
 * Thu Mar 05 2026 Viktor Ashirov <vashirov@redhat.com> - 2.8.0-6
 - Resolves: RHEL-152335 - Crash in trim_changelog() during the Retro Changelog trimming. [rhel-9.8]

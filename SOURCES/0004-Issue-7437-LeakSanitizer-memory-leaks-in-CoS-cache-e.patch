@@ -1,0 +1,54 @@
+From 56dde3de7c90d9d81f4588a5afda2cfa05bdb20f Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Fri, 24 Apr 2026 11:19:04 +0200
+Subject: [PATCH 4/8] Issue 7437 - LeakSanitizer: memory leaks in CoS cache
+ error paths (#7438)
+
+Description:
+Fix memory leaks in CoS plugin when a CoS definition fails validation
+or is incomplete.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7437
+
+Reviewed by: @mreynolds389 (Thanks!)
+---
+ ldap/servers/plugins/cos/cos_cache.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/ldap/servers/plugins/cos/cos_cache.c b/ldap/servers/plugins/cos/cos_cache.c
+index d8ebbbe3d..7074cb60a 100644
+--- a/ldap/servers/plugins/cos/cos_cache.c
++++ b/ldap/servers/plugins/cos/cos_cache.c
+@@ -1007,6 +1007,14 @@ cos_dn_defs_cb(Slapi_Entry *e, void *callback_data)
+             cos_cache_del_attrval_list(&pCosSpecifier);
+         if (pCosAttribute)
+             cos_cache_del_attrval_list(&pCosAttribute);
++        if (pCosOverrides)
++            cos_cache_del_attrval_list(&pCosOverrides);
++        if (pCosOperational)
++            cos_cache_del_attrval_list(&pCosOperational);
++        if (pCosMerge)
++            cos_cache_del_attrval_list(&pCosMerge);
++        if (pCosOpDefault)
++            cos_cache_del_attrval_list(&pCosOpDefault);
+         if (pDn)
+             cos_cache_del_attrval_list(&pDn);
+     }
+@@ -1430,6 +1438,14 @@ out:
+             cos_cache_del_attrval_list(spec);
+         if (pAttrs)
+             cos_cache_del_attrval_list(pAttrs);
++        if (pOverrides)
++            cos_cache_del_attrval_list(pOverrides);
++        if (pOperational)
++            cos_cache_del_attrval_list(pOperational);
++        if (pCosMerge)
++            cos_cache_del_attrval_list(pCosMerge);
++        if (pCosOpDefault)
++            cos_cache_del_attrval_list(pCosOpDefault);
+     }
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, COS_PLUGIN_SUBSYSTEM, "<-- cos_cache_add_defn\n");
+-- 
+2.54.0
+
