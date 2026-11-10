@@ -1,0 +1,36 @@
+From f98e364a5714a14aea2c10f56cc960ed762fcfff Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Thu, 4 Jun 2026 11:50:42 +0200
+Subject: [PATCH 2/6] Issue 7532 - CI - Fix BDB CLU dbmon tests leaving
+ instance offline (#7553)
+
+Fix CLU dbmon CI test by adding the missing import
+
+Issue #7532
+
+Reviewed by: @mreynolds389 (Thanks!)
+
+Summary by Sourcery
+Tests:
+
+Update CLU dbmon test module to import the DSEldif helper needed for its execution.
+---
+ dirsrvtests/tests/suites/clu/dbmon_test.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/dirsrvtests/tests/suites/clu/dbmon_test.py b/dirsrvtests/tests/suites/clu/dbmon_test.py
+index 1ff012fcb..6b287b1f2 100644
+--- a/dirsrvtests/tests/suites/clu/dbmon_test.py
++++ b/dirsrvtests/tests/suites/clu/dbmon_test.py
+@@ -20,6 +20,8 @@ from lib389.cli_conf.monitor import db_monitor
+ from lib389.monitor import MonitorLDBM
+ from lib389.cli_base import FakeArgs, LogCapture
+ from lib389.backend import Backends
++from lib389.dseldif import DSEldif
++
+ 
+ pytestmark = pytest.mark.tier1
+ 
+-- 
+2.54.0
+

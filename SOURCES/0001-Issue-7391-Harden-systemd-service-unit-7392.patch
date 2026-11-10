@@ -1,0 +1,66 @@
+From 514a374149e004a3af2f33996cfb086228d38b95 Mon Sep 17 00:00:00 2001
+From: progier389 <progier@redhat.com>
+Date: Thu, 4 Jun 2026 11:43:29 +0200
+Subject: [PATCH 1/6] Issue 7391 - Harden systemd service unit (#7392)
+
+* Issue 7391 - Harden systemd service unit
+
+Set NoNewPrivileges and MemoryDenyWriteExecute settings in systemd unit
+
+Issue: #7391
+
+Reviewed by: @droideck (Thanks!)
+---
+ rpm/389-ds-base.spec.in              | 2 +-
+ wrappers/systemd-snmp.service.in     | 5 +++++
+ wrappers/systemd.template.service.in | 5 +++++
+ 3 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/rpm/389-ds-base.spec.in b/rpm/389-ds-base.spec.in
+index 25f86649c..618a5ac03 100644
+--- a/rpm/389-ds-base.spec.in
++++ b/rpm/389-ds-base.spec.in
+@@ -488,7 +488,7 @@ autoreconf -fiv
+ 
+ # Avoid "Unknown key name 'XXX' in section 'Service', ignoring." warnings from systemd on older releases
+ %if 0%{?rhel} && 0%{?rhel} < 9
+-  sed -r -i '/^(Protect(Home|Hostname|KernelLogs)|PrivateMounts)=/d' %{_builddir}/%{name}-%{version}/wrappers/*.service.in
++  sed -r -i '/^(Protect(Home|Hostname|KernelLogs)|PrivateMounts|NoExecPaths)=/d' %{_builddir}/%{name}-%{version}/wrappers/*.service.in
+ %endif
+ 
+ # lib389
+diff --git a/wrappers/systemd-snmp.service.in b/wrappers/systemd-snmp.service.in
+index 824547b22..b0a20d41a 100644
+--- a/wrappers/systemd-snmp.service.in
++++ b/wrappers/systemd-snmp.service.in
+@@ -24,6 +24,11 @@ ProtectKernelModules=true
+ ProtectKernelLogs=true
+ ProtectControlGroups=true
+ RestrictRealtime=true
++NoNewPrivileges=yes
++MemoryDenyWriteExecute=yes
++# InaccessiblePaths=/dev/shm  (not possible because semaphore are used)
++NoExecPaths=/dev/shm
++SystemCallFilter=~memfd_create:EPERM
+ 
+ [Install]
+ WantedBy=multi-user.target
+diff --git a/wrappers/systemd.template.service.in b/wrappers/systemd.template.service.in
+index 8d2b96c7e..5f3d9148c 100644
+--- a/wrappers/systemd.template.service.in
++++ b/wrappers/systemd.template.service.in
+@@ -45,6 +45,11 @@ ProtectKernelModules=true
+ ProtectKernelLogs=true
+ ProtectControlGroups=true
+ RestrictRealtime=true
++NoNewPrivileges=yes
++MemoryDenyWriteExecute=yes
++# InaccessiblePaths=/dev/shm  (not possible because semaphore are used)
++NoExecPaths=/dev/shm
++SystemCallFilter=~memfd_create:EPERM
+ 
+ [Install]
+ WantedBy=multi-user.target
+-- 
+2.54.0
+

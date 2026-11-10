@@ -1,0 +1,2874 @@
+From 06ecd39cc3e1104254d2dddb7f4ceae60c821fb5 Mon Sep 17 00:00:00 2001
+From: Simon Pichugin <spichugi@redhat.com>
+Date: Mon, 15 Jun 2026 17:49:46 -0700
+Subject: [PATCH] Issue 7490 - Enable USDT probes by default in RPM (#7491)
+
+Description: STAP_PROBE points exist in the source tree
+but production RPMs are built without --enable-systemtap
+and don't pull in systemtap-sdt-devel, so operators
+cannot attach bpftrace or stap to a live ns-slapd
+without rebuilding.
+
+Default the RPM build to USDT-on. Rename the configure
+flag to --enable-usdt (SystemTap is one of several
+consumers). Add five work-queue probes: work_q__enqueue,
+work_q__dequeue, worker__busy, worker__idle,
+work__blocked. Ship paired bpftrace .bt scripts.
+
+Fixes: https://github.com/389ds/389-ds-base/issues/7490
+
+Assisted by (writing tests): Claude Code
+
+Reviewed by: @mreynolds389 (Thanks!)
+---
+ Makefile.am                                   |  21 +-
+ configure.ac                                  |  19 +-
+ dirsrvtests/tests/suites/usdt/__init__.py     |   3 +
+ dirsrvtests/tests/suites/usdt/_common.py      | 439 +++++++++++++
+ .../suites/usdt/usdt_bpftrace_scripts_test.py | 363 +++++++++++
+ .../tests/suites/usdt/usdt_probes_test.py     | 278 +++++++++
+ .../suites/usdt/usdt_stap_scripts_test.py     | 354 +++++++++++
+ .../tests/suites/usdt/usdt_tracing_test.py    | 586 ++++++++++++++++++
+ ldap/servers/slapd/connection.c               |  43 ++
+ ldap/servers/slapd/log.c                      |  26 +-
+ ldap/servers/slapd/opshared.c                 |  10 +-
+ ldap/servers/slapd/search.c                   |   6 +-
+ profiling/bpftrace/probe_do_search_detail.bt  |  47 ++
+ profiling/bpftrace/probe_log_access_detail.bt |  38 ++
+ profiling/bpftrace/probe_op_shared_search.bt  |  47 ++
+ profiling/bpftrace/probe_work_queue.bt        |  36 ++
+ profiling/stap/probe_do_search_detail.stp     |  12 +-
+ profiling/stap/probe_log_access_detail.stp    |   8 +-
+ profiling/stap/probe_op_shared_search.stp     |   8 +-
+ profiling/stap/probe_work_queue.stp           |  52 ++
+ rpm/389-ds-base.spec.in                       |  18 +-
+ 21 files changed, 2364 insertions(+), 50 deletions(-)
+ create mode 100644 dirsrvtests/tests/suites/usdt/__init__.py
+ create mode 100644 dirsrvtests/tests/suites/usdt/_common.py
+ create mode 100644 dirsrvtests/tests/suites/usdt/usdt_bpftrace_scripts_test.py
+ create mode 100644 dirsrvtests/tests/suites/usdt/usdt_probes_test.py
+ create mode 100644 dirsrvtests/tests/suites/usdt/usdt_stap_scripts_test.py
+ create mode 100644 dirsrvtests/tests/suites/usdt/usdt_tracing_test.py
+ create mode 100644 profiling/bpftrace/probe_do_search_detail.bt
+ create mode 100644 profiling/bpftrace/probe_log_access_detail.bt
+ create mode 100644 profiling/bpftrace/probe_op_shared_search.bt
+ create mode 100644 profiling/bpftrace/probe_work_queue.bt
+ create mode 100644 profiling/stap/probe_work_queue.stp
+
+diff --git a/Makefile.am b/Makefile.am
+index 1986efc3b..b5e1fb5ac 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -52,7 +52,7 @@ SYSTEMD_DEFINES = @systemd_defs@
+ CMOCKA_INCLUDES = $(CMOCKA_CFLAGS)
+ 
+ PROFILING_DEFINES = @profiling_defs@
+-SYSTEMTAP_DEFINES = @systemtap_defs@
++USDT_DEFINES = @usdt_defs@
+ NSPR_INCLUDES = $(NSPR_CFLAGS)
+ 
+ # Rust inclusions.
+@@ -158,7 +158,7 @@ PATH_DEFINES = -DLOCALSTATEDIR="\"$(localstatedir)\"" -DSYSCONFDIR="\"$(sysconfd
+ # Now that we have all our defines in place, setup the CPPFLAGS
+ 
+ # These flags are the "must have" for all components
+-AM_CPPFLAGS = $(DEBUG_DEFINES) $(PROFILING_DEFINES) $(SYSTEMTAP_DEFINES) $(RUST_DEFINES)
++AM_CPPFLAGS = $(DEBUG_DEFINES) $(PROFILING_DEFINES) $(USDT_DEFINES) $(RUST_DEFINES)
+ AM_CFLAGS = $(DEBUG_CFLAGS) $(GCCSEC_CFLAGS) $(ASAN_CFLAGS) $(MSAN_CFLAGS) $(TSAN_CFLAGS) $(UBSAN_CFLAGS)
+ AM_CXXFLAGS = $(DEBUG_CXXFLAGS) $(GCCSEC_CFLAGS) $(ASAN_CFLAGS) $(MSAN_CFLAGS) $(TSAN_CFLAGS) $(UBSAN_CFLAGS)
+ # Flags for Directory Server
+@@ -712,6 +712,23 @@ gdbautoload_DATA = ldap/admin/src/scripts/ns-slapd-gdb.py
+ 
+ dist_sysctl_DATA = ldap/admin/src/70-dirsrv.conf
+ 
++if USDT
++profilingstapdir = $(datadir)/$(PACKAGE_NAME)/profiling/stap
++profilingbpftracedir = $(datadir)/$(PACKAGE_NAME)/profiling/bpftrace
++
++dist_profilingstap_DATA = \
++	profiling/stap/probe_work_queue.stp \
++	profiling/stap/probe_do_search_detail.stp \
++	profiling/stap/probe_op_shared_search.stp \
++	profiling/stap/probe_log_access_detail.stp
++
++dist_profilingbpftrace_DATA = \
++	profiling/bpftrace/probe_work_queue.bt \
++	profiling/bpftrace/probe_do_search_detail.bt \
++	profiling/bpftrace/probe_op_shared_search.bt \
++	profiling/bpftrace/probe_log_access_detail.bt
++endif
++
+ if SYSTEMD
+ # yes, that is an @ in the filename . . .
+ systemdsystemunit_DATA = wrappers/$(PACKAGE_NAME)@.service \
+diff --git a/configure.ac b/configure.ac
+index c770fb109..a9401665e 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -286,16 +286,19 @@ fi
+ AC_SUBST([profiling_defs])
+ AC_SUBST([profiling_links])
+ 
+-AC_MSG_CHECKING(for --enable-systemtap)
+-AC_ARG_ENABLE(systemtap, AS_HELP_STRING([--enable-systemtap], [Enable systemtap probe features (default: no)]),
+-              [], [ enable_systemtap=no ])
+-AC_MSG_RESULT($enable_systemtap)
+-if test "$enable_systemtap" = yes ; then
+-  systemtap_defs="-DSYSTEMTAP"
++AC_MSG_CHECKING(for --enable-usdt)
++AC_ARG_ENABLE(usdt, AS_HELP_STRING([--enable-usdt], [Enable USDT (User-level Statically Defined Tracing) probes, consumed by bpftrace, SystemTap, dtrace, perf (default: no)]),
++              [], [ enable_usdt=no ])
++AC_MSG_RESULT($enable_usdt)
++if test "$enable_usdt" = yes ; then
++  AC_CHECK_HEADER([sys/sdt.h], [],
++    [AC_MSG_ERROR([USDT support requires <sys/sdt.h>. Install systemtap-sdt-devel (Fedora/RHEL) or systemtap-sdt-dev (Debian/Ubuntu).])])
++  usdt_defs="-DUSDT"
+ else
+-  systemtap_defs=""
++  usdt_defs=""
+ fi
+-AC_SUBST([systemtap_defs])
++AC_SUBST([usdt_defs])
++AM_CONDITIONAL([USDT], [test "$enable_usdt" = yes])
+ 
+ 
+ # these enables are for optional or experimental features
+diff --git a/dirsrvtests/tests/suites/usdt/__init__.py b/dirsrvtests/tests/suites/usdt/__init__.py
+new file mode 100644
+index 000000000..e41932a58
+--- /dev/null
++++ b/dirsrvtests/tests/suites/usdt/__init__.py
+@@ -0,0 +1,3 @@
++"""
++   :Requirement: 389-ds-base: USDT Probes (SystemTap / bpftrace)
++"""
+diff --git a/dirsrvtests/tests/suites/usdt/_common.py b/dirsrvtests/tests/suites/usdt/_common.py
+new file mode 100644
+index 000000000..ae28652e7
+--- /dev/null
++++ b/dirsrvtests/tests/suites/usdt/_common.py
+@@ -0,0 +1,439 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import collections
++import concurrent.futures
++import glob
++import os
++import re
++import shutil
++import signal
++import subprocess
++import sys
++import threading
++import time
++
++import ldap
++
++from lib389._constants import DEFAULT_SUFFIX, DN_DM, PW_DM
++
++
++# bpftrace >= 0.16 prints "Attached N probes"; older versions print
++# "Attaching N probes...". Match both, on either stderr or stdout.
++BPFTRACE_READY_MARKER = re.compile(r'Attach(?:ing|ed)\s+\d+\s+probe')
++
++
++def ns_slapd_path(topo):
++    return os.path.join(topo.standalone.ds_paths.sbin_dir, "ns-slapd")
++
++
++def libslapd_path(topo):
++    candidates = []
++    for stem in ("libslapd.so", "libslapd.so.*"):
++        candidates.extend(
++            glob.glob(os.path.join(topo.standalone.ds_paths.lib_dir, "dirsrv", stem))
++        )
++        candidates.extend(
++            glob.glob(os.path.join(topo.standalone.ds_paths.lib_dir, stem))
++        )
++    concrete = [p for p in candidates if not os.path.islink(p)]
++    return (concrete or candidates or [None])[0]
++
++
++def binary_has_sdt_notes(binary):
++    """True if `binary` contains stapsdt notes. Returns False when `readelf`
++    is not on PATH so callers can use this in a fixture without crashing
++    on hosts without binutils; gate the test module with a separate
++    `shutil.which('readelf')` skipif for a clear skip reason.
++    """
++
++    try:
++        out = subprocess.run(
++            ["readelf", "-n", binary],
++            capture_output=True, text=True, check=True,
++        ).stdout
++    except FileNotFoundError:
++        return False
++    return "stapsdt" in out
++
++
++def _tail(text, n):
++    return "\n".join(text.splitlines()[-n:])
++
++
++def _read_float_env(name, default):
++    value = os.environ.get(name)
++    if not value:
++        return default
++    try:
++        return float(value)
++    except ValueError:
++        return default
++
++
++def _read_bool_env(name):
++    return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
++
++
++USDT_DIAG_TIMEOUT = _read_float_env("USDT_DIAG_TIMEOUT", 120.0)
++USDT_DIAG_DEEP = _read_bool_env("USDT_DIAG_DEEP")
++USDT_DIAG_LOGS = _read_bool_env("USDT_DIAG_LOGS")
++
++
++def _clip(text, max_chars=12000):
++    if text is None:
++        return ""
++    if len(text) <= max_chars:
++        return text
++    omitted = len(text) - max_chars
++    return f"{text[:max_chars]}\n...[truncated {omitted} chars]\n"
++
++
++def _run_diag_cmd(cmd, timeout=8, max_chars=12000):
++    try:
++        proc = subprocess.run(
++            cmd,
++            capture_output=True,
++            text=True,
++            check=False,
++            timeout=timeout,
++        )
++    except FileNotFoundError as e:
++        return f"{cmd[0]} not found: {e}\n"
++    except subprocess.TimeoutExpired as e:
++        stdout = e.stdout or ""
++        stderr = e.stderr or ""
++        return _clip(
++            f"timed out after {timeout}s\nstdout:\n{stdout}\nstderr:\n{stderr}",
++            max_chars,
++        )
++    except Exception as e:
++        return f"failed to run {cmd!r}: {e}\n"
++
++    out = ""
++    if proc.stdout:
++        out += proc.stdout
++    if proc.stderr:
++        out += "\nSTDERR:\n" + proc.stderr
++    if proc.returncode != 0:
++        out += f"\n(exit code {proc.returncode})\n"
++    return _clip(out, max_chars)
++
++
++def _read_file(path, max_chars=12000):
++    if not path:
++        return "path unavailable\n"
++    try:
++        with open(path, errors="replace") as fh:
++            return _clip(fh.read(), max_chars)
++    except FileNotFoundError:
++        return f"{path} not found\n"
++    except PermissionError as e:
++        return f"permission denied reading {path}: {e}\n"
++    except OSError as e:
++        return f"failed reading {path}: {e}\n"
++
++
++def _tail_file(path, lines=80, max_chars=12000):
++    if not path:
++        return "path unavailable\n"
++    try:
++        with open(path, errors="replace") as fh:
++            tail = collections.deque(fh, maxlen=lines)
++        return _clip("".join(tail), max_chars)
++    except FileNotFoundError:
++        return f"{path} not found\n"
++    except PermissionError as e:
++        return f"permission denied reading {path}: {e}\n"
++    except OSError as e:
++        return f"failed reading {path}: {e}\n"
++
++
++def _tracefs_file(name):
++    for base in ("/sys/kernel/tracing", "/sys/kernel/debug/tracing"):
++        path = os.path.join(base, name)
++        if os.path.exists(path):
++            return path
++    return None
++
++
++def _proc_text(pid, name, max_chars=12000):
++    return _read_file(os.path.join("/proc", str(pid), name), max_chars=max_chars)
++
++
++def _thread_state(pid, max_threads=32, include_stack=False):
++    task_dir = os.path.join("/proc", str(pid), "task")
++    try:
++        tids = sorted(os.listdir(task_dir), key=int)
++    except OSError as e:
++        return f"failed reading {task_dir}: {e}\n"
++
++    out = []
++    for tid in tids[:max_threads]:
++        out.append(f"--- tid {tid} status ---")
++        out.append(_read_file(os.path.join(task_dir, tid, "status"), max_chars=4000))
++        out.append(f"--- tid {tid} wchan ---")
++        out.append(_read_file(os.path.join(task_dir, tid, "wchan"), max_chars=1000))
++        if include_stack:
++            out.append(f"--- tid {tid} kernel stack ---")
++            out.append(_read_file(os.path.join(task_dir, tid, "stack"), max_chars=4000))
++    if len(tids) > max_threads:
++        out.append(f"...skipped {len(tids) - max_threads} more threads")
++    return _clip("\n".join(out), 40000)
++
++
++def _gdb_backtrace(pid, timeout=20):
++    if not pid:
++        return "pid unavailable\n"
++    if not shutil.which("gdb"):
++        return "gdb not installed\n"
++    return _run_diag_cmd(
++        [
++            "gdb", "-q", "-batch",
++            "-ex", "set pagination off",
++            "-ex", "thread apply all bt",
++            "-p", str(pid),
++        ],
++        timeout=timeout,
++        max_chars=50000,
++    )
++
++
++def collect_usdt_diagnostics(label, inst=None, target_pid=None, tracer_pid=None,
++                             tracer_stderr="", extra=None):
++    """Return a bounded diagnostic bundle for live USDT tracing failures.
++
++    Defaults stay read-only and fairly small. Set USDT_DIAG_DEEP=1 for kernel
++    stacks/gdb and USDT_DIAG_LOGS=1 for access/error log tails.
++    """
++
++    if target_pid is None and inst is not None:
++        try:
++            target_pid = inst.get_pid()
++        except Exception as e:
++            target_pid = None
++            extra = f"{extra or ''}\ninst.get_pid() failed: {e}"
++
++    sections = []
++
++    def add(name, text):
++        sections.append(f"\n===== {name} =====\n{_clip(text)}")
++
++    add("label", label)
++    if extra:
++        add("extra", str(extra))
++    add("tracer stderr tail", _tail(tracer_stderr or "", 80))
++    add("uname", _run_diag_cmd(["uname", "-a"], timeout=3))
++    add("versions", _run_diag_cmd([
++        "rpm", "-q",
++        "kernel-core",
++        f"kernel-devel-{os.uname().release}",
++        "systemtap", "systemtap-runtime", "bpftrace",
++        "389-ds-base", "python3-lib389",
++    ], timeout=8))
++    add("stap version", _run_diag_cmd(["stap", "-V"], timeout=5))
++    add("bpftrace version", _run_diag_cmd(["bpftrace", "--version"], timeout=5))
++    add("bpftrace info", _run_diag_cmd(["bpftrace", "--info"], timeout=10))
++    add("interesting processes", _run_diag_cmd([
++        "sh", "-c",
++        "ps -efL | grep -E '[p]ytest|ns-slapd|stap|stapio|bpftrace'",
++    ], timeout=5, max_chars=30000))
++    if tracer_pid:
++        add("tracer process tree", _run_diag_cmd([
++            "sh", "-c",
++            f"pstree -ap {tracer_pid} 2>/dev/null || ps -efL | awk '$3 == {tracer_pid} || $2 == {tracer_pid}'",
++        ], timeout=5))
++    else:
++        add("tracer process tree", "tracer pid unavailable\n")
++    add("loaded tracing modules", _run_diag_cmd([
++        "sh", "-c",
++        "lsmod | grep -E '^(stap_|bpf|uprobe|trace)'",
++    ], timeout=5))
++    add("uprobe events", _read_file(_tracefs_file("uprobe_events"), max_chars=30000))
++    add("kprobe events", _read_file(_tracefs_file("kprobe_events"), max_chars=20000))
++    add("dmesg tail", _run_diag_cmd(["sh", "-c", "dmesg | tail -200"], timeout=8,
++                                   max_chars=30000))
++
++    if tracer_pid:
++        add(f"tracer {tracer_pid} status", _proc_text(tracer_pid, "status"))
++        add(f"tracer {tracer_pid} wchan", _proc_text(tracer_pid, "wchan"))
++        if USDT_DIAG_DEEP:
++            add(f"tracer {tracer_pid} kernel stack", _proc_text(tracer_pid, "stack"))
++
++    if target_pid:
++        add(f"ns-slapd {target_pid} status", _proc_text(target_pid, "status"))
++        add(f"ns-slapd {target_pid} wchan", _proc_text(target_pid, "wchan"))
++        if USDT_DIAG_DEEP:
++            add(f"ns-slapd {target_pid} threads", _thread_state(
++                target_pid, include_stack=True))
++            add(f"ns-slapd {target_pid} gdb backtrace", _gdb_backtrace(target_pid))
++
++    if inst is not None and USDT_DIAG_LOGS:
++        for name, path in (
++            ("access log tail", getattr(inst.ds_paths, "access_log", None)),
++            ("error log tail", getattr(inst.ds_paths, "error_log", None)),
++        ):
++            add(name, _tail_file(path))
++
++    return "\n".join(sections)
++
++
++def run_workload_with_diagnostics(drive_load, label, inst=None, target_pid=None,
++                                  tracer_pid=None, tracer_stderr_fn=None,
++                                  timeout=USDT_DIAG_TIMEOUT):
++    """Run drive_load synchronously and emit diagnostics if it appears hung.
++
++    The workload stays in the pytest thread so lib389/python-ldap behavior is
++    unchanged. The watchdog only prints diagnostics; it does not fail the test
++    or terminate the server.
++    """
++
++    if timeout is None:
++        timeout = USDT_DIAG_TIMEOUT
++
++    done = threading.Event()
++    reported = threading.Event()
++
++    def watchdog():
++        if timeout <= 0 or done.wait(timeout):
++            return
++        reported.set()
++        tracer_stderr = tracer_stderr_fn() if tracer_stderr_fn else ""
++        diagnostics = collect_usdt_diagnostics(
++            f"{label}: workload still running after {timeout:g}s",
++            inst=inst, target_pid=target_pid, tracer_pid=tracer_pid,
++            tracer_stderr=tracer_stderr,
++            extra=(
++                "diagnostic watchdog only; workload is still executing in "
++                "the pytest thread"
++            ),
++        )
++        sys.stderr.write(f"\n{diagnostics}\n")
++        sys.stderr.flush()
++
++    thread = threading.Thread(
++        target=watchdog, name=f"{label}-diag-watchdog", daemon=True)
++    thread.start()
++    try:
++        drive_load()
++    finally:
++        done.set()
++        thread.join(timeout=1)
++    return reported.is_set()
++
++
++def send_process_group(proc, sig):
++    try:
++        os.killpg(proc.pid, sig)
++    except ProcessLookupError:
++        return
++    except OSError:
++        try:
++            proc.send_signal(sig)
++        except ProcessLookupError:
++            return
++
++
++def _process_group_exists(pgid):
++    try:
++        os.killpg(pgid, 0)
++    except ProcessLookupError:
++        return False
++    except PermissionError:
++        return True
++    except OSError:
++        return False
++    return True
++
++
++def _wait_process_group(proc, timeout):
++    deadline = time.monotonic() + timeout
++    while True:
++        parent_running = proc.poll() is None
++        group_exists = _process_group_exists(proc.pid)
++        if not parent_running and not group_exists:
++            return True
++
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            return False
++
++        if parent_running:
++            try:
++                proc.wait(timeout=min(0.1, remaining))
++                continue
++            except subprocess.TimeoutExpired:
++                pass
++        time.sleep(min(0.1, remaining))
++
++
++def terminate_process_group(proc, wait_timeout=5):
++    send_process_group(proc, signal.SIGTERM)
++    if _wait_process_group(proc, wait_timeout):
++        return
++
++    send_process_group(proc, signal.SIGKILL)
++    _wait_process_group(proc, wait_timeout)
++
++
++def _drive_searches(inst, n=100):
++    for _ in range(n):
++        inst.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "(objectClass=*)")
++
++
++def _drive_searches_concurrent(inst, n=100, parallel=10):
++    """Drive n searches over parallel fresh connections; persistent conns enter
++    turbo mode and bypass the work queue.
++    """
++
++    url = f"ldap://localhost:{inst.port}"
++
++    def one_search(_i):
++        c = ldap.initialize(url)
++        try:
++            c.simple_bind_s(DN_DM, PW_DM)
++            c.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "(objectClass=*)")
++        finally:
++            try:
++                c.unbind_s()
++            except Exception:
++                pass
++
++    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as ex:
++        list(ex.map(one_search, range(n)))
++
++
++class _StderrReader(threading.Thread):
++    """Drain a subprocess's stderr; signal once `ready_marker` is seen.
++    `ready_marker` may be a substring or a compiled re.Pattern.
++    Callers can read `stderr_text` once the process has exited.
++    """
++
++    def __init__(self, proc, ready_marker):
++        super().__init__(daemon=True)
++        self._proc = proc
++        self._ready_marker = ready_marker
++        self._lines = []
++        self.ready = threading.Event()
++
++    def _matches(self, line):
++        m = self._ready_marker
++        if isinstance(m, str):
++            return m in line
++        return m.search(line) is not None
++
++    def run(self):
++        for line in iter(self._proc.stderr.readline, ""):
++            self._lines.append(line)
++            if self._matches(line):
++                self.ready.set()
++        self.ready.set()
++
++    @property
++    def stderr_text(self):
++        return "".join(self._lines)
+diff --git a/dirsrvtests/tests/suites/usdt/usdt_bpftrace_scripts_test.py b/dirsrvtests/tests/suites/usdt/usdt_bpftrace_scripts_test.py
+new file mode 100644
+index 000000000..ee2df4507
+--- /dev/null
++++ b/dirsrvtests/tests/suites/usdt/usdt_bpftrace_scripts_test.py
+@@ -0,0 +1,363 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++import re
++import shutil
++import signal
++import subprocess
++import time
++
++import ldap
++import pytest
++
++from lib389._constants import DEFAULT_SUFFIX
++from lib389.idm.user import UserAccounts
++from test389.topologies import topology_st as topo
++
++from ._common import (
++    ns_slapd_path, libslapd_path, binary_has_sdt_notes,
++    _tail, _drive_searches, _drive_searches_concurrent, _StderrReader,
++    BPFTRACE_READY_MARKER,
++    collect_usdt_diagnostics, run_workload_with_diagnostics,
++    terminate_process_group,
++)
++
++DEBUGGING = os.getenv("DEBUGGING", default=False)
++log = logging.getLogger(__name__)
++log.setLevel(logging.DEBUG if DEBUGGING else logging.INFO)
++
++
++_USDT_LIVE_ACK = os.environ.get('USDT_LIVE_ACK', '').lower() in ('1', 'true', 'yes')
++
++pytestmark = [
++    pytest.mark.tier2,
++    pytest.mark.skipif(not _USDT_LIVE_ACK,
++                       reason="set USDT_LIVE_ACK=1 to run live bpftrace tests"),
++    pytest.mark.skipif(not shutil.which("bpftrace"),
++                       reason="bpftrace is not installed"),
++    pytest.mark.skipif(not shutil.which("readelf"),
++                       reason="readelf (binutils) is required"),
++    pytest.mark.skipif(os.geteuid() != 0,
++                       reason="bpftrace requires root"),
++]
++
++PROFILING_DIR = os.path.normpath(
++    os.path.join(os.path.dirname(__file__),
++                 "..", "..", "..", "..", "profiling", "bpftrace")
++)
++
++# Histogram bucket line, e.g. "[1, 2)        42 |@@@@@@@@@@@..."
++# Also matches single-value bracket form like "[0]   ..." for the lowest bucket.
++_HIST_BUCKET_RE = re.compile(r'^\s*\[\S+(?:,\s*\S+)?[\)\]]\s+(\d+)\s+\|')
++
++
++@pytest.fixture(scope="module")
++def usdt_topo(topo):
++    binary = ns_slapd_path(topo)
++    if not binary_has_sdt_notes(binary):
++        pytest.skip("ns-slapd not built with --enable-usdt")
++    if not libslapd_path(topo):
++        pytest.skip("libslapd.so not located under the instance prefix")
++    return topo
++
++
++@pytest.fixture
++def workload_users(usdt_topo):
++    inst = usdt_topo.standalone
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    created = []
++    for i in range(5):
++        try:
++            created.append(users.create_test_user(uid=900000 + i))
++        except ldap.ALREADY_EXISTS:
++            created.append(users.get(f"test_user_{900000 + i}"))
++    yield created
++    for u in created:
++        try:
++            u.delete()
++        except ldap.NO_SUCH_OBJECT:
++            pass
++
++
++def _run_bpftrace_script(script_path, binary_args, drive_load, inst=None,
++                         ready_timeout=60.0, drain_wait=1.5, exit_timeout=30.0,
++                         workload_timeout=None):
++    """Spawn bpftrace, drive load after attach, SIGINT, return (stdout, stderr, rc)."""
++
++    cmd = ["bpftrace", script_path, *binary_args]
++    label = os.path.basename(script_path)
++    target_pid = inst.get_pid() if inst is not None else None
++    log.info("running: %s", " ".join(cmd))
++    proc = subprocess.Popen(
++        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++        text=True, bufsize=1, start_new_session=True,
++    )
++    log.info("started bpftrace pid=%s target_pid=%s script=%s",
++             proc.pid, target_pid, label)
++    reader = _StderrReader(proc, BPFTRACE_READY_MARKER)
++    reader.start()
++
++    try:
++        if not reader.ready.wait(timeout=ready_timeout):
++            diagnostics = collect_usdt_diagnostics(
++                f"{label}: bpftrace did not attach",
++                inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++                tracer_stderr=reader.stderr_text,
++            )
++            terminate_process_group(proc)
++            stdout, _ = proc.communicate()
++            reader.join(timeout=2)
++            pytest.fail(
++                f"bpftrace did not attach within {ready_timeout}s.\n"
++                f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++                f"stdout:\n{stdout}\n{diagnostics}"
++            )
++        if proc.poll() is not None:
++            stdout, _ = proc.communicate()
++            reader.join(timeout=2)
++            diagnostics = collect_usdt_diagnostics(
++                f"{label}: bpftrace exited at attach",
++                inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++                tracer_stderr=reader.stderr_text,
++                extra=f"returncode={proc.returncode}",
++            )
++            pytest.fail(
++                f"bpftrace exited at attach with code {proc.returncode}.\n"
++                f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++                f"stdout:\n{stdout}\n{diagnostics}"
++            )
++
++        log.info("bpftrace attached; driving workload script=%s", label)
++        run_workload_with_diagnostics(
++            drive_load, f"bpftrace {label}",
++            inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++            tracer_stderr_fn=lambda: reader.stderr_text,
++            timeout=workload_timeout,
++        )
++        log.info("bpftrace workload finished script=%s", label)
++        time.sleep(drain_wait)
++
++        log.info("sending SIGINT to bpftrace pid=%s script=%s", proc.pid, label)
++        if proc.poll() is None:
++            try:
++                proc.send_signal(signal.SIGINT)
++            except ProcessLookupError:
++                pass
++        stdout, _ = proc.communicate(timeout=exit_timeout)
++    except subprocess.TimeoutExpired:
++        diagnostics = collect_usdt_diagnostics(
++            f"{label}: bpftrace did not exit after SIGINT",
++            inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++            tracer_stderr=reader.stderr_text,
++        )
++        terminate_process_group(proc)
++        stdout, _ = proc.communicate()
++        reader.join(timeout=2)
++        pytest.fail(
++            f"bpftrace did not exit within {exit_timeout}s after SIGINT.\n"
++            f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++            f"stdout:\n{stdout}\n{diagnostics}"
++        )
++    except BaseException:
++        terminate_process_group(proc)
++        reader.join(timeout=2)
++        raise
++
++    reader.join(timeout=5)
++    log.info("bpftrace exited rc=%s script=%s", proc.returncode, label)
++    return stdout, reader.stderr_text, proc.returncode
++
++
++def _nonzero_buckets_for_hist(stdout, hist_name):
++    """Count buckets with count > 0 under `@<hist_name>:` header. Scan until
++    the next blank line or next `@<name>:` header.
++    """
++
++    header = f"@{hist_name}:"
++    in_block = False
++    count = 0
++    for line in stdout.splitlines():
++        stripped = line.rstrip()
++        if not in_block:
++            if stripped == header or stripped.startswith(header):
++                in_block = True
++            continue
++        if not stripped:
++            break
++        # next map starts a new block; stop counting.
++        if stripped.startswith("@") and ":" in stripped:
++            break
++        m = _HIST_BUCKET_RE.match(line)
++        if m and int(m.group(1)) > 0:
++            count += 1
++    return count
++
++
++def _nonzero_keyed_map_entries(stdout, name):
++    """Count `@<name>[k]: v` lines where v > 0."""
++    pattern = re.compile(rf'^@{re.escape(name)}\[[^\]]+\]:\s+(\d+)\s*$')
++    return sum(
++        1 for line in stdout.splitlines()
++        if (m := pattern.match(line.strip())) and int(m.group(1)) > 0
++    )
++
++
++def _assert_hist_present(stdout, hist_names):
++    """Each name must have a `@<name>:` header in stdout with at least one
++    non-zero bucket below it.
++    """
++
++    missing = [n for n in hist_names if f"@{n}:" not in stdout]
++    assert not missing, (
++        f"missing histogram header(s): {missing}\nstdout:\n{stdout}"
++    )
++    empty = [(n, _nonzero_buckets_for_hist(stdout, n)) for n in hist_names]
++    bad = [(n, c) for n, c in empty if c < 1]
++    assert not bad, (
++        "histograms with no non-zero buckets:\n  " +
++        "\n  ".join(f"@{n}: nonzero_buckets={c}" for n, c in bad) +
++        f"\n\nstdout:\n{stdout}"
++    )
++
++
++def test_probe_work_queue_bt(usdt_topo, workload_users):
++    """probe_work_queue.bt produces queue-depth, wait-latency, idle-counts maps under load.
++
++    :id: 937d039a-95b0-4fe5-bebf-ee4d703f509a
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_work_queue.bt against ns-slapd
++        2. Drive 100 searches over 10 concurrent fresh connections
++        3. SIGINT and capture default-print
++    :expectedresults:
++        1. bpftrace exits 0
++        2. @queue_depth and @wait_us histograms have at least one non-zero bucket
++        3. @idle_counts has at least one keyed entry with count > 0
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_work_queue.bt")
++    stdout, stderr, rc = _run_bpftrace_script(
++        script, [ns_slapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches_concurrent(inst, n=100, parallel=10),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"bpftrace exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_hist_present(stdout, ["queue_depth", "wait_us"])
++
++    idle = _nonzero_keyed_map_entries(stdout, "idle_counts")
++    assert idle >= 1, (
++        f"@idle_counts has no non-zero keyed entries.\nstdout:\n{stdout}"
++    )
++
++
++def test_probe_do_search_detail_bt(usdt_topo, workload_users):
++    """probe_do_search_detail.bt aggregates four search-phase latencies.
++
++    :id: 22f219c9-a4a9-4312-aa31-359878da7bb4
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_do_search_detail.bt with $1=ns-slapd $2=libslapd.so
++        2. Drive 100 searches
++        3. SIGINT and capture default-print
++    :expectedresults:
++        1. bpftrace exits 0
++        2. All four @do_search_<phase> histograms have at least one non-zero bucket
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_do_search_detail.bt")
++    stdout, stderr, rc = _run_bpftrace_script(
++        script,
++        [ns_slapd_path(usdt_topo), libslapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches(inst, 100),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"bpftrace exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_hist_present(stdout, [
++        "do_search_full",
++        "do_search_prepared",
++        "do_search_complete",
++        "do_search_finalise",
++    ])
++
++
++def test_probe_op_shared_search_bt(usdt_topo, workload_users):
++    """probe_op_shared_search.bt aggregates four phases of op_shared_search().
++
++    :id: 3ad8af11-190b-4c06-bfab-e15daacef432
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_op_shared_search.bt against libslapd.so
++        2. Drive 100 searches
++        3. SIGINT and capture default-print
++    :expectedresults:
++        1. bpftrace exits 0
++        2. All four @op_shared_search_<phase> histograms have at least one non-zero bucket
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_op_shared_search.bt")
++    stdout, stderr, rc = _run_bpftrace_script(
++        script, [libslapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches(inst, 100),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"bpftrace exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_hist_present(stdout, [
++        "op_shared_search_full",
++        "op_shared_search_prepared",
++        "op_shared_search_complete",
++        "op_shared_search_finalise",
++    ])
++
++
++def test_probe_log_access_detail_bt(usdt_topo, workload_users):
++    """probe_log_access_detail.bt aggregates three access-log write phases.
++
++    :id: 5af6d170-2674-4480-b4f5-a60802a07c08
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_log_access_detail.bt against libslapd.so
++        2. Drive 100 searches
++        3. SIGINT and capture default-print
++    :expectedresults:
++        1. bpftrace exits 0
++        2. All three @log_access_<phase> histograms have at least one non-zero bucket
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_log_access_detail.bt")
++    stdout, stderr, rc = _run_bpftrace_script(
++        script, [libslapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches(inst, 100),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"bpftrace exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_hist_present(stdout, [
++        "log_access_full",
++        "log_access_prepared",
++        "log_access_complete",
++    ])
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main(["-s", CURRENT_FILE])
+diff --git a/dirsrvtests/tests/suites/usdt/usdt_probes_test.py b/dirsrvtests/tests/suites/usdt/usdt_probes_test.py
+new file mode 100644
+index 000000000..1434f1981
+--- /dev/null
++++ b/dirsrvtests/tests/suites/usdt/usdt_probes_test.py
+@@ -0,0 +1,278 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import glob
++import logging
++import os
++import shutil
++import subprocess
++
++import pytest
++
++from test389.topologies import topology_st as topo
++
++from ._common import ns_slapd_path, libslapd_path, binary_has_sdt_notes
++
++DEBUGGING = os.getenv("DEBUGGING", default=False)
++log = logging.getLogger(__name__)
++log.setLevel(logging.DEBUG if DEBUGGING else logging.INFO)
++
++
++# Probe sets mirror STAP_PROBE call sites; keep in sync with the C source.
++EXISTING_PROBES = {
++    "do_search__entry", "do_search__return",
++    "op_shared_search__entry", "op_shared_search__prepared",
++    "op_shared_search__backends", "op_shared_search__return",
++    "vslapd_log_audit__entry", "vslapd_log_audit__prepared",
++    "vslapd_log_audit__buffer",
++    "vslapd_log_auditfail__entry", "vslapd_log_auditfail__prepared",
++    "vslapd_log_auditfail__buffer",
++    "vslapd_log_access__entry", "vslapd_log_access__prepared",
++    "vslapd_log_access__buffer",
++    "vslapd_log_security__entry", "vslapd_log_security__prepared",
++    "vslapd_log_security__buffer",
++}
++WORK_QUEUE_PROBES = {
++    "work_q__enqueue", "work_q__dequeue",
++    "worker__busy", "worker__idle",
++    "work__blocked",
++}
++
++EXPECTED_ARG_COUNTS = {
++    "do_search__entry": 0, "do_search__return": 0,
++    "op_shared_search__entry": 0, "op_shared_search__prepared": 0,
++    "op_shared_search__backends": 0, "op_shared_search__return": 0,
++    "vslapd_log_audit__entry": 0, "vslapd_log_audit__prepared": 0,
++    "vslapd_log_audit__buffer": 0,
++    "vslapd_log_auditfail__entry": 0, "vslapd_log_auditfail__prepared": 0,
++    "vslapd_log_auditfail__buffer": 0,
++    "vslapd_log_access__entry": 0, "vslapd_log_access__prepared": 0,
++    "vslapd_log_access__buffer": 0,
++    "vslapd_log_security__entry": 0, "vslapd_log_security__prepared": 0,
++    "vslapd_log_security__buffer": 0,
++    "work_q__enqueue": 3,
++    "work_q__dequeue": 3,
++    "worker__busy": 4,
++    "worker__idle": 1,
++    "work__blocked": 2,
++}
++
++PROFILING_DIR = os.path.normpath(
++    os.path.join(os.path.dirname(__file__),
++                 "..", "..", "..", "..", "profiling", "stap")
++)
++
++
++def _elf_targets(topo):
++    yield ns_slapd_path(topo)
++    lib = libslapd_path(topo)
++    if lib:
++        yield lib
++
++
++def _readelf_notes(binary):
++    return subprocess.run(
++        ["readelf", "-n", binary],
++        capture_output=True, text=True, check=True,
++    ).stdout
++
++
++def _read_probe_names(binary):
++    names = set()
++    for line in _readelf_notes(binary).splitlines():
++        line = line.strip()
++        if line.startswith("Name:"):
++            names.add(line.split(":", 1)[1].strip())
++    return names
++
++
++def _read_all_probe_names(topo):
++    found = set()
++    for path in _elf_targets(topo):
++        if path and os.path.exists(path):
++            found |= _read_probe_names(path)
++    return found
++
++
++def _read_probe_arg_specs(binary):
++    """{probe_name: [arg_specs]} parsed from readelf -n."""
++
++    specs = {}
++    current = None
++    for line in _readelf_notes(binary).splitlines():
++        line = line.strip()
++        if line.startswith("Name:"):
++            current = line.split(":", 1)[1].strip()
++        elif line.startswith("Arguments:") and current is not None:
++            args = line.split(":", 1)[1].strip()
++            specs[current] = args.split() if args else []
++            current = None
++    return specs
++
++
++def _read_all_probe_arg_specs(topo):
++    out = {}
++    for path in _elf_targets(topo):
++        if path and os.path.exists(path):
++            out.update(_read_probe_arg_specs(path))
++    return out
++
++
++def _usdt_targets_or_skip(topo):
++    targets = [p for p in _elf_targets(topo)
++               if p and os.path.exists(p) and binary_has_sdt_notes(p)]
++    if not targets:
++        pytest.skip("ns-slapd not built with --enable-usdt "
++                    "(no stapsdt notes in ns-slapd or libslapd.so)")
++    return targets
++
++
++@pytest.mark.tier1
++@pytest.mark.skipif(not shutil.which("readelf"),
++                    reason="readelf (binutils) is required")
++def test_usdt_probes_compiled_in(topo):
++    """All expected probes are present in ns-slapd / libslapd.so.
++
++    :id: e71ae58c-cbd9-41ab-912c-172f60e027b0
++    :setup: Standalone instance
++    :steps:
++        1. Locate ns-slapd and libslapd.so, skip if no stapsdt notes
++        2. Read every embedded probe name via readelf -n
++        3. Assert EXISTING_PROBES is a subset
++        4. Assert WORK_QUEUE_PROBES is a subset
++    :expectedresults:
++        1. Skip cleanly when not built with --enable-usdt
++        2. Probe-name set is non-empty
++        3. No regressions in existing probes
++        4. All four new probes present
++    """
++
++    _usdt_targets_or_skip(topo)
++    found = _read_all_probe_names(topo)
++    log.info("Found %d USDT probes", len(found))
++    log.debug("Probes: %s", sorted(found))
++
++    missing_existing = sorted(EXISTING_PROBES - found)
++    assert not missing_existing, (
++        f"Existing USDT probes missing (regression!): {missing_existing}"
++    )
++    missing_new = sorted(WORK_QUEUE_PROBES - found)
++    assert not missing_new, (
++        f"New work-queue/worker USDT probes missing: {missing_new}"
++    )
++
++
++@pytest.mark.tier1
++@pytest.mark.skipif(not shutil.which("readelf"),
++                    reason="readelf (binutils) is required")
++def test_probe_argument_counts_match(topo):
++    """Compiled-in probe argument counts match their STAP_PROBE<N> call sites.
++
++    :id: da0c7c41-637c-4805-9c18-2fe4a08af9e9
++    :setup: Standalone instance
++    :steps:
++        1. Read probe arg specs from both ELFs via readelf -n
++        2. Compare each probe's actual arg count against EXPECTED_ARG_COUNTS
++    :expectedresults:
++        1. Specs parse
++        2. All counts match
++    """
++
++    _usdt_targets_or_skip(topo)
++    specs = _read_all_probe_arg_specs(topo)
++
++    mismatches = []
++    for probe, expected in EXPECTED_ARG_COUNTS.items():
++        if probe not in specs:
++            mismatches.append(f"{probe}: missing from binary entirely")
++            continue
++        actual = len(specs[probe])
++        if actual != expected:
++            mismatches.append(
++                f"{probe}: expected {expected} args, got {actual} "
++                f"({specs[probe]})"
++            )
++    assert not mismatches, (
++        "Probe argument count mismatch:\n  " + "\n  ".join(mismatches)
++    )
++
++
++@pytest.mark.tier1
++@pytest.mark.skipif(not shutil.which("readelf"),
++                    reason="readelf (binutils) is required")
++def test_no_unexpected_probes(topo):
++    """Every compiled-in probe is declared in EXPECTED_ARG_COUNTS.
++
++    :id: 891e9048-a32e-4a6e-8b24-6c9b3fa6fef9
++    :setup: Standalone instance
++    :steps:
++        1. Read all probe names from both ELFs
++        2. Diff against EXPECTED_ARG_COUNTS keys
++    :expectedresults:
++        1. Probe-name set is non-empty
++        2. Every binary-resident probe is declared in this test
++    """
++
++    _usdt_targets_or_skip(topo)
++    found = _read_all_probe_names(topo)
++    unknown = sorted(found - set(EXPECTED_ARG_COUNTS.keys()))
++    assert not unknown, (
++        f"Probes found in binary but not declared in this test: {unknown}. "
++        f"Add them to EXPECTED_ARG_COUNTS (and EXISTING_PROBES or "
++        f"WORK_QUEUE_PROBES)."
++    )
++
++
++@pytest.mark.tier1
++@pytest.mark.skipif(not shutil.which("stap"),
++                    reason="systemtap (stap) is required")
++def test_stp_scripts_parse(topo):
++    """All shipped .stp scripts parse cleanly via stap -p1.
++
++    :id: 18ef9213-753f-48bd-83c5-d0c06dd6e95d
++    :setup: Standalone instance
++    :steps:
++        1. Glob systemtap scripts in the profiling/stap directory
++        2. Run stap -p1 <script> <ns-slapd> <libslapd.so> for each
++    :expectedresults:
++        1. At least one script found
++        2. All exit zero
++    """
++
++    if not os.path.isdir(PROFILING_DIR):
++        pytest.skip(f"profiling/stap directory not present at {PROFILING_DIR}")
++
++    scripts = sorted(glob.glob(os.path.join(PROFILING_DIR, "*.stp")))
++    assert scripts, f"no .stp scripts found in {PROFILING_DIR}"
++
++    ns_slapd = ns_slapd_path(topo)
++    libslapd = libslapd_path(topo) or ns_slapd
++
++    failures = []
++    for script in scripts:
++        proc = subprocess.run(
++            ["stap", "-p1", script, ns_slapd, libslapd],
++            capture_output=True, text=True,
++        )
++        if proc.returncode != 0:
++            failures.append(
++                f"{os.path.basename(script)}:\n    {proc.stderr.strip()}"
++            )
++        else:
++            log.info("stap -p1 OK: %s", os.path.basename(script))
++
++    assert not failures, (
++        "stap -p1 failed for:\n  " + "\n  ".join(failures)
++    )
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main(["-s", CURRENT_FILE])
+diff --git a/dirsrvtests/tests/suites/usdt/usdt_stap_scripts_test.py b/dirsrvtests/tests/suites/usdt/usdt_stap_scripts_test.py
+new file mode 100644
+index 000000000..1fb274139
+--- /dev/null
++++ b/dirsrvtests/tests/suites/usdt/usdt_stap_scripts_test.py
+@@ -0,0 +1,354 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++import re
++import shutil
++import signal
++import subprocess
++import time
++
++import ldap
++import pytest
++
++from lib389._constants import DEFAULT_SUFFIX
++from lib389.idm.user import UserAccounts
++from test389.topologies import topology_st as topo
++
++from ._common import (
++    ns_slapd_path, libslapd_path, binary_has_sdt_notes,
++    _tail, _drive_searches, _drive_searches_concurrent, _StderrReader,
++    collect_usdt_diagnostics, run_workload_with_diagnostics,
++    terminate_process_group,
++)
++
++DEBUGGING = os.getenv("DEBUGGING", default=False)
++log = logging.getLogger(__name__)
++log.setLevel(logging.DEBUG if DEBUGGING else logging.INFO)
++
++
++_USDT_LIVE_ACK = os.environ.get('USDT_LIVE_ACK', '').lower() in ('1', 'true', 'yes')
++
++pytestmark = [
++    pytest.mark.tier2,
++    pytest.mark.skipif(not _USDT_LIVE_ACK,
++                       reason="set USDT_LIVE_ACK=1 to run live stap tests"),
++    pytest.mark.skipif(not shutil.which("stap"),
++                       reason="systemtap (stap) is not installed"),
++    pytest.mark.skipif(not shutil.which("readelf"),
++                       reason="readelf (binutils) is required"),
++    pytest.mark.skipif(os.geteuid() != 0,
++                       reason="stap requires root"),
++]
++
++PROFILING_DIR = os.path.normpath(
++    os.path.join(os.path.dirname(__file__),
++                 "..", "..", "..", "..", "profiling", "stap")
++)
++
++_STAP_READY_MARKER = "Pass 5: starting run"
++
++# Matches samples=N (work-queue) and for N samples (latency scripts).
++_SAMPLES_RE = re.compile(r'samples=(\d+)|for\s+(\d+)\s+samples?\b')
++
++
++@pytest.fixture(scope="module")
++def usdt_topo(topo):
++    binary = ns_slapd_path(topo)
++    if not binary_has_sdt_notes(binary):
++        pytest.skip("ns-slapd not built with --enable-usdt")
++    if not libslapd_path(topo):
++        pytest.skip("libslapd.so not located under the instance prefix")
++    return topo
++
++
++@pytest.fixture
++def workload_users(usdt_topo):
++    inst = usdt_topo.standalone
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    created = []
++    for i in range(5):
++        try:
++            created.append(users.create_test_user(uid=900000 + i))
++        except ldap.ALREADY_EXISTS:
++            created.append(users.get(f"test_user_{900000 + i}"))
++    yield created
++    for u in created:
++        try:
++            u.delete()
++        except ldap.NO_SUCH_OBJECT:
++            pass
++
++
++class _StapStderrReader(_StderrReader):
++    """Drain stap stderr; signal once the pass-5 marker is seen."""
++
++    def __init__(self, proc):
++        super().__init__(proc, _STAP_READY_MARKER)
++
++
++def _run_stap_script(script_path, args, drive_load, inst=None,
++                     ready_timeout=60.0, drain_wait=1.5, exit_timeout=30.0,
++                     workload_timeout=None):
++    """Spawn stap, drive load after pass 5, SIGINT, return (stdout, stderr, rc)."""
++
++    cmd = ["stap", "-v", script_path, *args]
++    label = os.path.basename(script_path)
++    target_pid = inst.get_pid() if inst is not None else None
++    log.info("running: %s", " ".join(cmd))
++    proc = subprocess.Popen(
++        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++        text=True, bufsize=1, start_new_session=True,
++    )
++    log.info("started stap pid=%s target_pid=%s script=%s",
++             proc.pid, target_pid, label)
++    reader = _StapStderrReader(proc)
++    reader.start()
++
++    try:
++        if not reader.ready.wait(timeout=ready_timeout):
++            diagnostics = collect_usdt_diagnostics(
++                f"{label}: stap did not reach pass 5",
++                inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++                tracer_stderr=reader.stderr_text,
++            )
++            terminate_process_group(proc)
++            stdout, _ = proc.communicate()
++            reader.join(timeout=2)
++            pytest.fail(
++                f"stap did not reach pass 5 within {ready_timeout}s.\n"
++                f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++                f"stdout:\n{stdout}\n{diagnostics}"
++            )
++        if proc.poll() is not None:
++            stdout, _ = proc.communicate()
++            reader.join(timeout=2)
++            diagnostics = collect_usdt_diagnostics(
++                f"{label}: stap exited at pass 5",
++                inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++                tracer_stderr=reader.stderr_text,
++                extra=f"returncode={proc.returncode}",
++            )
++            pytest.fail(
++                f"stap exited at pass 5 with code {proc.returncode}.\n"
++                f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++                f"stdout:\n{stdout}\n{diagnostics}"
++            )
++
++        log.info("stap reached pass 5; driving workload script=%s", label)
++        run_workload_with_diagnostics(
++            drive_load, f"stap {label}",
++            inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++            tracer_stderr_fn=lambda: reader.stderr_text,
++            timeout=workload_timeout,
++        )
++        log.info("stap workload finished script=%s", label)
++        time.sleep(drain_wait)
++
++        log.info("sending SIGINT to stap pid=%s script=%s", proc.pid, label)
++        if proc.poll() is None:
++            try:
++                proc.send_signal(signal.SIGINT)
++            except ProcessLookupError:
++                pass
++        stdout, _ = proc.communicate(timeout=exit_timeout)
++    except subprocess.TimeoutExpired:
++        diagnostics = collect_usdt_diagnostics(
++            f"{label}: stap did not exit after SIGINT",
++            inst=inst, target_pid=target_pid, tracer_pid=proc.pid,
++            tracer_stderr=reader.stderr_text,
++        )
++        terminate_process_group(proc)
++        stdout, _ = proc.communicate()
++        reader.join(timeout=2)
++        pytest.fail(
++            f"stap did not exit within {exit_timeout}s after SIGINT.\n"
++            f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++            f"stdout:\n{stdout}\n{diagnostics}"
++        )
++    except BaseException:
++        terminate_process_group(proc)
++        reader.join(timeout=2)
++        raise
++
++    reader.join(timeout=5)
++    log.info("stap exited rc=%s script=%s", proc.returncode, label)
++    return stdout, reader.stderr_text, proc.returncode
++
++
++def _sample_count_for_label(stdout, label_substr):
++    """Sample count from the first line containing label_substr, or None."""
++
++    for line in stdout.splitlines():
++        if label_substr not in line:
++            continue
++        m = _SAMPLES_RE.search(line)
++        if m:
++            return int(m.group(1) or m.group(2))
++        return None
++    return None
++
++
++def _assert_distributions(stdout, labels):
++    missing_lines = [l for l in labels if l not in stdout]
++    assert not missing_lines, (
++        f"missing report lines for: {missing_lines}\nstdout:\n{stdout}"
++    )
++    zero_or_unparsed = [
++        (l, _sample_count_for_label(stdout, l)) for l in labels
++        if (_sample_count_for_label(stdout, l) or 0) <= 0
++    ]
++    assert not zero_or_unparsed, (
++        f"distributions with zero or unparseable sample counts:\n  " +
++        "\n  ".join(f"{l}: samples={n}" for l, n in zero_or_unparsed) +
++        f"\n\nstdout:\n{stdout}"
++    )
++
++
++def test_probe_work_queue_stp(usdt_topo, workload_users):
++    """probe_work_queue.stp populates queue-depth, wait-latency, idle-counts under load.
++
++    :id: ad85076b-2f04-45d1-88f3-910ba44e4662
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_work_queue.stp against ns-slapd
++        2. Drive 100 searches over 10 concurrent fresh connections
++        3. SIGINT and capture report()
++    :expectedresults:
++        1. stap exits cleanly
++        2. queue-depth and wait-latency distributions have samples > 0
++        3. Worker idle counts section appears with per-thread lines
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_work_queue.stp")
++    stdout, stderr, rc = _run_stap_script(
++        script, [ns_slapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches_concurrent(inst, n=100, parallel=10),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"stap exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_distributions(stdout, [
++        "Distribution of work-queue depth at enqueue time",
++        "Distribution of enqueue-to-dequeue wait latencies",
++    ])
++    assert "Worker idle counts" in stdout, (
++        f"missing 'Worker idle counts' section.\nstdout:\n{stdout}"
++    )
++    assert re.search(r'thread\s+\d+:\s+\d+\s+idle waits', stdout), (
++        f"no per-thread idle counts reported.\nstdout:\n{stdout}"
++    )
++
++
++def test_probe_do_search_detail_stp(usdt_topo, workload_users):
++    """probe_do_search_detail.stp aggregates four search-phase latencies.
++
++    :id: f81d77a6-a459-4d73-ad74-7598337dce7b
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_do_search_detail.stp with @1=ns-slapd @2=libslapd.so
++        2. Drive 100 searches
++        3. SIGINT and parse report()
++    :expectedresults:
++        1. stap reaches pass 5 (probes armed)
++        2. Searches complete and fire probes
++        3. All four search-phase distributions report samples > 0; stap exits 0
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_do_search_detail.stp")
++    stdout, stderr, rc = _run_stap_script(
++        script,
++        [ns_slapd_path(usdt_topo), libslapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches(inst, 100),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"stap exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_distributions(stdout, [
++        "Distribution of do_search_full",
++        "Distribution of do_search_prepared",
++        "Distribution of do_search_complete",
++        "Distribution of do_search_finalise",
++    ])
++
++
++def test_probe_op_shared_search_stp(usdt_topo, workload_users):
++    """probe_op_shared_search.stp aggregates four phases of op_shared_search().
++
++    :id: d7a5125a-2ee1-4a57-a6aa-a5da925511ac
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_op_shared_search.stp against libslapd.so
++        2. Drive 100 searches
++        3. SIGINT and parse report()
++    :expectedresults:
++        1. stap reaches pass 5 (probes armed)
++        2. Searches complete and fire probes
++        3. All four phase distributions report samples > 0; stap exits 0
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_op_shared_search.stp")
++    stdout, stderr, rc = _run_stap_script(
++        script, [libslapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches(inst, 100),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"stap exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_distributions(stdout, [
++        "Distribution of op_shared_search_full",
++        "Distribution of op_shared_search_prepared",
++        "Distribution of op_shared_search_complete",
++        "Distribution of op_shared_search_finalise",
++    ])
++
++
++def test_probe_log_access_detail_stp(usdt_topo, workload_users):
++    """probe_log_access_detail.stp aggregates three access-log write phases.
++
++    :id: 828710ad-8784-43aa-a3db-58fef6a1aba1
++    :setup: Standalone instance
++    :steps:
++        1. Run probe_log_access_detail.stp against libslapd.so
++        2. Drive 100 searches
++        3. SIGINT and parse report()
++    :expectedresults:
++        1. stap reaches pass 5 (probes armed)
++        2. Searches complete and fire probes
++        3. All three log-phase distributions report samples > 0; stap exits 0
++    """
++
++    inst = usdt_topo.standalone
++    script = os.path.join(PROFILING_DIR, "probe_log_access_detail.stp")
++    stdout, stderr, rc = _run_stap_script(
++        script, [libslapd_path(usdt_topo)],
++        drive_load=lambda: _drive_searches(inst, 100),
++        inst=inst,
++    )
++    log.debug("stdout:\n%s", stdout)
++    assert rc == 0, f"stap exited {rc}\nstderr tail:\n{_tail(stderr, 40)}"
++
++    _assert_distributions(stdout, [
++        "Distribution of log_access_full",
++        "Distribution of log_access_prepared",
++        "Distribution of log_access_complete",
++    ])
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main(["-s", CURRENT_FILE])
+diff --git a/dirsrvtests/tests/suites/usdt/usdt_tracing_test.py b/dirsrvtests/tests/suites/usdt/usdt_tracing_test.py
+new file mode 100644
+index 000000000..32d5b97c5
+--- /dev/null
++++ b/dirsrvtests/tests/suites/usdt/usdt_tracing_test.py
+@@ -0,0 +1,586 @@
++# --- BEGIN COPYRIGHT BLOCK ---
++# Copyright (C) 2026 Red Hat, Inc.
++# All rights reserved.
++#
++# License: GPL (version 3 or any later version).
++# See LICENSE for details.
++# --- END COPYRIGHT BLOCK ---
++#
++import logging
++import os
++import re
++import shutil
++import subprocess
++import threading
++
++import ldap
++import pytest
++
++from lib389._constants import DEFAULT_SUFFIX
++from lib389.idm.user import UserAccounts
++from test389.topologies import topology_st as topo
++
++from ._common import (
++    ns_slapd_path, libslapd_path, binary_has_sdt_notes,
++    _tail, _StderrReader, BPFTRACE_READY_MARKER,
++    collect_usdt_diagnostics, run_workload_with_diagnostics,
++    terminate_process_group,
++)
++
++DEBUGGING = os.getenv("DEBUGGING", default=False)
++log = logging.getLogger(__name__)
++log.setLevel(logging.DEBUG if DEBUGGING else logging.INFO)
++
++
++_USDT_LIVE_ACK = os.environ.get('USDT_LIVE_ACK', '').lower() in ('1', 'true', 'yes')
++
++pytestmark = [
++    pytest.mark.tier2,
++    pytest.mark.skipif(
++        not _USDT_LIVE_ACK,
++        reason="set USDT_LIVE_ACK=1 to run live bpftrace tests",
++    ),
++    pytest.mark.skipif(not shutil.which("bpftrace"),
++                       reason="bpftrace not installed"),
++    pytest.mark.skipif(not shutil.which("readelf"),
++                       reason="readelf (binutils) is required"),
++    pytest.mark.skipif(os.geteuid() != 0,
++                       reason="bpftrace requires root (or CAP_PERFMON+CAP_BPF)"),
++]
++
++
++def _run_bpftrace(pid, program, drive_load=None, inst=None, label="inline bpftrace",
++                  duration_s=10, ready_timeout=30.0, workload_timeout=None):
++    """Attach bpftrace to pid, wait for the attach marker, drive load,
++    return stdout. Program must not exit by itself.
++    """
++
++    full_program = f"{program} interval:s:{duration_s} {{ exit(); }}"
++    log.debug("bpftrace program: %s", full_program)
++    proc = subprocess.Popen(
++        ["bpftrace", "-p", str(pid), "-e", full_program],
++        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++        text=True, bufsize=1, start_new_session=True,
++    )
++    log.info("started bpftrace pid=%s target_pid=%s label=%s",
++             proc.pid, pid, label)
++    reader = _StderrReader(proc, BPFTRACE_READY_MARKER)
++    reader.start()
++
++    try:
++        if not reader.ready.wait(timeout=ready_timeout):
++            diagnostics = collect_usdt_diagnostics(
++                f"{label}: bpftrace did not attach",
++                inst=inst, target_pid=pid, tracer_pid=proc.pid,
++                tracer_stderr=reader.stderr_text,
++            )
++            terminate_process_group(proc)
++            stdout, _ = proc.communicate()
++            reader.join(timeout=2)
++            pytest.fail(
++                f"bpftrace did not attach within {ready_timeout}s.\n"
++                f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++                f"stdout:\n{stdout}\n{diagnostics}"
++            )
++        if proc.poll() is not None:
++            stdout, _ = proc.communicate()
++            reader.join(timeout=2)
++            diagnostics = collect_usdt_diagnostics(
++                f"{label}: bpftrace exited at attach",
++                inst=inst, target_pid=pid, tracer_pid=proc.pid,
++                tracer_stderr=reader.stderr_text,
++                extra=f"returncode={proc.returncode}",
++            )
++            pytest.fail(
++                f"bpftrace exited at attach with code {proc.returncode}.\n"
++                f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++                f"stdout:\n{stdout}\n{diagnostics}"
++            )
++
++        if drive_load is not None:
++            log.info("bpftrace attached; driving workload label=%s", label)
++            run_workload_with_diagnostics(
++                drive_load, f"bpftrace {label}",
++                inst=inst, target_pid=pid, tracer_pid=proc.pid,
++                tracer_stderr_fn=lambda: reader.stderr_text,
++                timeout=workload_timeout,
++            )
++            log.info("bpftrace workload finished label=%s", label)
++        stdout, _ = proc.communicate(timeout=duration_s + 10)
++    except subprocess.TimeoutExpired:
++        diagnostics = collect_usdt_diagnostics(
++            f"{label}: bpftrace did not exit on interval",
++            inst=inst, target_pid=pid, tracer_pid=proc.pid,
++            tracer_stderr=reader.stderr_text,
++        )
++        terminate_process_group(proc)
++        stdout, _ = proc.communicate()
++        reader.join(timeout=2)
++        pytest.fail(
++            f"bpftrace did not exit within timeout.\n"
++            f"stderr tail:\n{_tail(reader.stderr_text, 40)}\n"
++            f"stdout:\n{stdout}\n{diagnostics}"
++        )
++    except BaseException:
++        terminate_process_group(proc)
++        reader.join(timeout=2)
++        raise
++
++    reader.join(timeout=5)
++    stderr = reader.stderr_text
++    if stderr:
++        log.info("bpftrace stderr:\n%s", stderr)
++    if proc.returncode != 0:
++        diagnostics = collect_usdt_diagnostics(
++            f"{label}: bpftrace exited non-zero",
++            inst=inst, target_pid=pid, tracer_pid=proc.pid,
++            tracer_stderr=stderr,
++            extra=f"returncode={proc.returncode}",
++        )
++        pytest.fail(
++            f"bpftrace exited non-zero ({proc.returncode}). "
++            f"stderr:\n{stderr}\nstdout:\n{stdout}\n{diagnostics}"
++        )
++    log.info("bpftrace exited rc=%s label=%s", proc.returncode, label)
++    return stdout
++
++
++_AT_SCALAR_RE = re.compile(r'^(@[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(-?\d+)\s*$')
++
++
++def _parse_at_scalars(stdout):
++    """Parse `@name: N` lines into {name: int}."""
++
++    out = {}
++    for line in stdout.splitlines():
++        m = _AT_SCALAR_RE.match(line.strip())
++        if m:
++            out[m.group(1)] = int(m.group(2))
++    return out
++
++
++def _parse_at_int_map(stdout, name):
++    """Parse `@<name>[k]: v` lines into {k: v}."""
++
++    pattern = re.compile(rf'^@{re.escape(name)}\[(-?\d+)\]\s*:\s*(-?\d+)\s*$')
++    out = {}
++    for line in stdout.splitlines():
++        m = pattern.match(line.strip())
++        if m:
++            out[int(m.group(1))] = int(m.group(2))
++    return out
++
++
++def _drive_searches(inst, n):
++    for _ in range(n):
++        inst.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, "(objectClass=*)")
++
++
++@pytest.fixture(scope="module")
++def usdt_topo(topo):
++    """Standalone with deterministic logging and global work-queue behavior.
++
++    Turbo mode can dispatch persistent connections without going through
++    connection_wait_for_new_work(), so disable it for the work_q__* assertions.
++    """
++
++    binary = ns_slapd_path(topo)
++    if not binary_has_sdt_notes(binary):
++        pytest.skip("ns-slapd not built with --enable-usdt")
++
++    inst = topo.standalone
++    original_buffering = inst.config.get_attr_val_utf8('nsslapd-accesslog-logbuffering')
++    original_turbo = inst.config.get_attr_val_utf8('nsslapd-enable-turbo-mode')
++    inst.config.replace('nsslapd-accesslog-logbuffering', 'off')
++    inst.config.replace('nsslapd-enable-turbo-mode', 'off')
++    try:
++        yield topo
++    finally:
++        if original_turbo is not None:
++            inst.config.replace('nsslapd-enable-turbo-mode', original_turbo)
++        if original_buffering is not None:
++            inst.config.replace('nsslapd-accesslog-logbuffering', original_buffering)
++
++
++@pytest.fixture
++def workload_users(usdt_topo):
++    """Five entries so subtree searches have something to traverse."""
++
++    inst = usdt_topo.standalone
++    users = UserAccounts(inst, DEFAULT_SUFFIX)
++    created = []
++    for i in range(5):
++        try:
++            created.append(users.create_test_user(uid=900000 + i))
++        except ldap.ALREADY_EXISTS:
++            created.append(users.get(f"test_user_{900000 + i}"))
++    yield created
++    for u in created:
++        try:
++            u.delete()
++        except ldap.NO_SUCH_OBJECT:
++            pass
++        except Exception as e:
++            log.warning("cleanup of %s failed: %s", getattr(u, 'dn', '?'), e)
++
++
++def test_work_queue_probes_fire_under_load(usdt_topo, workload_users):
++    """All four new work-queue/worker probes fire under search load.
++
++    The module fixture disables turbo mode because turbo processing can bypass
++    connection_wait_for_new_work(), where work_q__dequeue fires.
++
++    :id: e1b9575f-fad2-47c3-8c52-33e265af1a3a
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace counting each new probe
++        2. Drive 200 searches
++        3. Wait for the bpftrace interval to exit
++    :expectedresults:
++        1. bpftrace attaches without error
++        2. Searches complete and fire probes
++        3. work_q__enqueue, work_q__dequeue, worker__busy each fire > 0; worker__idle key present
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++    program = (
++        f'usdt:{binary}:work_q__enqueue {{ @enq = count(); }} '
++        f'usdt:{binary}:work_q__dequeue {{ @deq = count(); }} '
++        f'usdt:{binary}:worker__busy   {{ @bsy = count(); }} '
++        f'usdt:{binary}:worker__idle   {{ @idl = count(); }} '
++    )
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=lambda: _drive_searches(inst, 200),
++        inst=inst,
++        label="work_queue_probes_fire_under_load",
++    )
++    counts = _parse_at_scalars(stdout)
++    log.info("Probe fire counts: %s", counts)
++
++    assert counts.get("@enq", 0) > 0, f"work_q__enqueue did not fire: {counts}"
++    assert counts.get("@deq", 0) > 0, f"work_q__dequeue did not fire: {counts}"
++    assert counts.get("@bsy", 0) > 0, f"worker__busy did not fire: {counts}"
++    assert "@idl" in counts, f"worker__idle key not in output: {counts}"
++
++
++def test_enqueue_dequeue_counts_match(usdt_topo, workload_users):
++    """Every enqueued op gets dequeued, within an attach-race tolerance.
++
++    Turbo mode is disabled by the module fixture so this assertion tests the
++    global work-queue enqueue/dequeue path.
++
++    :id: 9e143e73-8c5b-42fc-bfda-0a3589aa4bdb
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace counting work_q__enqueue and work_q__dequeue
++        2. Drive 200 searches
++    :expectedresults:
++        1. Both counters fire > 0
++        2. abs(enq - deq) <= max(5, 5% of larger)
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++    program = (
++        f'usdt:{binary}:work_q__enqueue {{ @enq = count(); }} '
++        f'usdt:{binary}:work_q__dequeue {{ @deq = count(); }} '
++    )
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=lambda: _drive_searches(inst, 200),
++        inst=inst,
++        label="enqueue_dequeue_counts_match",
++    )
++    counts = _parse_at_scalars(stdout)
++    enq, deq = counts.get("@enq", 0), counts.get("@deq", 0)
++    log.info("enqueue=%d dequeue=%d", enq, deq)
++
++    assert enq > 0 and deq > 0, f"probes did not fire: {counts}"
++    delta = abs(enq - deq)
++    tolerance = max(5, int(0.05 * max(enq, deq)))
++    assert delta <= tolerance, (
++        f"enqueue/dequeue counts diverge: enq={enq} deq={deq} "
++        f"delta={delta} tolerance={tolerance}"
++    )
++
++
++def test_worker_busy_count_tracks_dequeue(usdt_topo, workload_users):
++    """worker__busy fires once per dispatched op.
++
++    worker__busy is broader than work_q__dequeue when turbo mode is enabled;
++    this test disables turbo so the two counters can be compared.
++
++    :id: cfd89199-5ca3-4346-b448-96ff89da9eb3
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace counting work_q__dequeue and worker__busy
++        2. Drive 200 searches
++    :expectedresults:
++        1. Both counters fire > 0
++        2. abs(deq - bsy) <= max(5, 10% of larger)
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++    program = (
++        f'usdt:{binary}:work_q__dequeue {{ @deq = count(); }} '
++        f'usdt:{binary}:worker__busy   {{ @bsy = count(); }} '
++    )
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=lambda: _drive_searches(inst, 200),
++        inst=inst,
++        label="worker_busy_count_tracks_dequeue",
++    )
++    counts = _parse_at_scalars(stdout)
++    deq, bsy = counts.get("@deq", 0), counts.get("@bsy", 0)
++    log.info("dequeue=%d busy=%d", deq, bsy)
++
++    assert deq > 0 and bsy > 0, f"probes did not fire: {counts}"
++    tolerance = max(5, int(0.10 * max(deq, bsy)))
++    assert abs(deq - bsy) <= tolerance, (
++        f"dequeue/busy counts diverge: deq={deq} bsy={bsy}"
++    )
++
++
++def test_probes_fire_for_all_op_types(usdt_topo):
++    """work_q__enqueue fires for search/add/modify/delete operations.
++
++    :id: 767dcd4c-a8a8-4a40-95a5-6d3b69a3758a
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace counting work_q__enqueue
++        2. Run 1 search + 1 add + 2 modifies + 1 delete (= 5 ops)
++    :expectedresults:
++        1. bpftrace attaches without error
++        2. Counter is >= 5
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++
++    def drive_mixed():
++        users = UserAccounts(inst, DEFAULT_SUFFIX)
++        inst.search_s(DEFAULT_SUFFIX, ldap.SCOPE_BASE, "(objectClass=*)")
++        try:
++            u = users.create_test_user(uid=910001)
++        except ldap.ALREADY_EXISTS:
++            users.get("test_user_910001").delete()
++            u = users.create_test_user(uid=910001)
++        try:
++            u.set("description", "usdt op-coverage test")
++            u.replace("description", "usdt op-coverage test 2")
++        finally:
++            u.delete()
++
++    program = f'usdt:{binary}:work_q__enqueue {{ @enq = count(); }} '
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=drive_mixed, inst=inst,
++        label="probes_fire_for_all_op_types", duration_s=8,
++    )
++    counts = _parse_at_scalars(stdout)
++    log.info("mixed-op enqueue count: %s", counts)
++    assert counts.get("@enq", 0) >= 5, (
++        f"work_q__enqueue should fire for every op type "
++        f"(1 search + 1 add + 2 mod + 1 del = 5): {counts}"
++    )
++
++
++def test_worker_idle_thread_idx_in_range(usdt_topo, workload_users):
++    """worker__idle thread_idx values fall within [1, nsslapd-threadnumber].
++
++    :id: 740bb665-99a0-4f58-97de-f4f67a2d71a9
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace recording per-thread-idx idle counts
++        2. Drive 50 searches
++    :expectedresults:
++        1. At least one worker__idle event recorded
++        2. All thread_idx values are in [1, nsslapd-threadnumber]
++    """
++
++    inst = usdt_topo.standalone
++    threadnumber = int(inst.config.get_attr_val_utf8('nsslapd-threadnumber'))
++    binary = ns_slapd_path(usdt_topo)
++
++    program = f'usdt:{binary}:worker__idle {{ @idx[arg0] = count(); }} '
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=lambda: _drive_searches(inst, 50),
++        inst=inst,
++        label="worker_idle_thread_idx_in_range",
++    )
++    idx_counts = _parse_at_int_map(stdout, "idx")
++    log.info("worker__idle thread_idx histogram: %s", idx_counts)
++
++    assert idx_counts, "no worker__idle events recorded"
++    out_of_range = sorted(i for i in idx_counts if i < 1 or i > threadnumber)
++    assert not out_of_range, (
++        f"worker__idle reported out-of-range thread_idx values: "
++        f"{out_of_range} (expected 1..{threadnumber})"
++    )
++
++
++def test_enqueue_depth_argument_recorded(usdt_topo, workload_users):
++    """work_q__enqueue queue-depth argument is captured and non-negative.
++
++    :id: f89eadef-fe08-4a9b-8e16-b0ce12df2f3e
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace recording max/min queue depth from work_q__enqueue
++        2. Run 8 concurrent threads each driving 30 searches
++    :expectedresults:
++        1. @max captured and >= 1
++        2. @min captured and >= 0
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++
++    def drive_burst():
++        errors = []
++
++        def one_thread():
++            try:
++                _drive_searches(inst, 30)
++            except BaseException as e:
++                errors.append(e)
++
++        threads = [threading.Thread(target=one_thread) for _ in range(8)]
++        for t in threads:
++            t.start()
++        for t in threads:
++            t.join()
++        if errors:
++            raise errors[0]
++
++    program = (
++        f'usdt:{binary}:work_q__enqueue '
++        f'{{ @max = max(arg2); @min = min(arg2); }} '
++    )
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=drive_burst,
++        inst=inst,
++        label="enqueue_depth_argument_recorded", duration_s=8,
++    )
++    log.info("burst depth output:\n%s", stdout)
++
++    vals = _parse_at_scalars(stdout)
++    assert "@max" in vals, f"depth max not recorded: {stdout}"
++    assert vals["@max"] >= 1, f"max queue depth implausibly low: {vals}"
++    assert vals.get("@min", 0) >= 0, (
++        f"min queue depth negative (signed/unsigned bug?): {vals}"
++    )
++
++
++def test_existing_probes_still_fire(usdt_topo, workload_users):
++    """Regression: do_search, op_shared_search, vslapd_log_access still fire.
++
++    :id: b8377e4c-a9fb-4a4d-9293-9c4f8be9db95
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace to do_search__entry, op_shared_search__entry, vslapd_log_access__entry
++        2. Drive 50 searches
++    :expectedresults:
++        1. bpftrace attaches to all three probes
++        2. All three counters fire > 0
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++    libslapd = libslapd_path(usdt_topo)
++    if not libslapd:
++        pytest.skip("libslapd.so not located")
++
++    program = (
++        f'usdt:{binary}:do_search__entry           {{ @ds  = count(); }} '
++        f'usdt:{libslapd}:op_shared_search__entry  {{ @oss = count(); }} '
++        f'usdt:{libslapd}:vslapd_log_access__entry {{ @log = count(); }} '
++    )
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=lambda: _drive_searches(inst, 50),
++        inst=inst,
++        label="existing_probes_still_fire",
++    )
++    counts = _parse_at_scalars(stdout)
++    log.info("existing-probe counts: %s", counts)
++
++    assert counts.get("@ds", 0) > 0,  f"do_search__entry did not fire: {counts}"
++    assert counts.get("@oss", 0) > 0, f"op_shared_search__entry did not fire: {counts}"
++    assert counts.get("@log", 0) > 0, f"vslapd_log_access__entry did not fire: {counts}"
++
++
++def test_probe_connid_matches_access_log(usdt_topo, workload_users):
++    """work_q__enqueue (connid, opid) pairs match the access log.
++
++    :id: 20915cf0-3591-4008-a7fc-8a68cc7a0536
++    :setup: Standalone instance
++    :steps:
++        1. Attach bpftrace printing (connid, opid) for work_q__enqueue
++        2. Drive 5 searches
++        3. Read the access log
++        4. Cross-check probe pairs against conn=N op=M entries
++    :expectedresults:
++        1. bpftrace attaches without error
++        2. Probe prints at least one (connid, opid) pair
++        3. Access log contains conn=N op=M entries
++        4. At least one probe pair matches an access-log entry
++    """
++
++    inst = usdt_topo.standalone
++    binary = ns_slapd_path(usdt_topo)
++
++    program = (
++        f'usdt:{binary}:work_q__enqueue '
++        f'{{ printf("ENQ %d %d\\n", arg0, arg1); }} '
++    )
++    stdout = _run_bpftrace(
++        inst.get_pid(), program,
++        drive_load=lambda: _drive_searches(inst, 5),
++        inst=inst,
++        label="probe_connid_matches_access_log",
++        duration_s=5,
++    )
++
++    probe_pairs = set()
++    for line in stdout.splitlines():
++        parts = line.strip().split()
++        if len(parts) == 3 and parts[0] == "ENQ":
++            try:
++                probe_pairs.add((int(parts[1]), int(parts[2])))
++            except ValueError:
++                continue
++    log.info("captured %d (connid, opid) pairs from probe", len(probe_pairs))
++    assert probe_pairs, "no probe pairs captured"
++
++    log_path = inst.ds_paths.access_log
++    with open(log_path, encoding="utf-8") as fh:
++        access_lines = fh.readlines()
++
++    pattern = re.compile(r'\bconn=(\d+)\s+op=(\d+)')
++    log_pairs = set()
++    for line in access_lines:
++        m = pattern.search(line)
++        if m:
++            log_pairs.add((int(m.group(1)), int(m.group(2))))
++
++    overlap = probe_pairs & log_pairs
++    log.info("overlap with access log: %d/%d probe pairs",
++             len(overlap), len(probe_pairs))
++    assert overlap, (
++        "no probe-emitted (connid, opid) pair matches the access log. "
++        f"probe sample: {sorted(probe_pairs)[:5]} "
++        f"log sample: {sorted(log_pairs)[-5:]}"
++    )
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main(["-s", CURRENT_FILE])
+diff --git a/ldap/servers/slapd/connection.c b/ldap/servers/slapd/connection.c
+index fd8826b66..68c54b046 100644
+--- a/ldap/servers/slapd/connection.c
++++ b/ldap/servers/slapd/connection.c
+@@ -28,6 +28,9 @@
+ #if defined(LINUX)
+ #include <netinet/tcp.h> /* for TCP_CORK */
+ #endif
++#ifdef USDT
++#include <sys/sdt.h>
++#endif
+ 
+ typedef Connection work_q_item;
+ static void connection_threadmain(void *arg);
+@@ -1081,7 +1084,24 @@ connection_wait_for_new_work(Slapi_PBlock *pb, int32_t interval)
+         }
+     }
+ 
++#ifdef USDT
++    /* Snapshot probe args under the lock; same pattern as add_work_q. */
++    uint64_t probe_connid = 0;
++    int probe_opid = 0;
++    int32_t probe_depth = 0;
++    if (wqitem != NULL) {
++        probe_connid = wqitem->c_connid;
++        probe_opid = op_stack_obj->op->o_opid;
++        probe_depth = work_q_size;
++    }
++#endif
+     pthread_mutex_unlock(&work_q_lock);
++
++#ifdef USDT
++    if (wqitem != NULL) {
++        STAP_PROBE3(ns-slapd, work_q__dequeue, probe_connid, probe_opid, probe_depth);
++    }
++#endif
+     return ret;
+ }
+ 
+@@ -1761,6 +1781,9 @@ connection_threadmain(void *arg)
+                we should finish the op now.  Client might be thinking it's
+                done sending the request and wait for the response forever.
+                [blackflag 624234] */
++#ifdef USDT
++            STAP_PROBE1(ns-slapd, worker__idle, *snmp_vars_idx);
++#endif
+             ret = connection_wait_for_new_work(pb, interval);
+ 
+             switch (ret) {
+@@ -2034,6 +2057,9 @@ connection_threadmain(void *arg)
+                                 "New operations will be blocked.\n",
+                                 conn->c_connid);
+                     }
++#ifdef USDT
++                    STAP_PROBE2(ns-slapd, work__blocked, conn->c_connid, op->o_opid);
++#endif
+                 }
+                 pthread_mutex_unlock(&(conn->c_mutex));
+             }
+@@ -2072,6 +2098,13 @@ connection_threadmain(void *arg)
+             operation_set_flag(op, OP_FLAG_REPLICATED);
+         }
+ 
++#ifdef USDT
++        /* Fire just before dispatch so op_tag reflects the request actually
++         * being executed (set by connection_read_operation above). */
++        STAP_PROBE4(ns-slapd, worker__busy, conn->c_connid, op->o_opid,
++                    tag, thread_turbo_flag);
++#endif
++
+         /*
+          * Call the do_<operation> function to process this request.
+          */
+@@ -2258,7 +2291,17 @@ add_work_q(work_q_item *wqitem, struct Slapi_op_stack *op_stack_obj)
+         work_q_size_max = work_q_size;
+     }
+     pthread_cond_signal(&work_q_cv); /* notify waiters in connection_wait_for_new_work */
++#ifdef USDT
++    /* Snapshot under the lock: op_stack pool recycling can zero o_opid before the probe fires. */
++    uint64_t probe_connid = wqitem->c_connid;
++    int probe_opid = op_stack_obj->op->o_opid;
++    int32_t probe_depth = work_q_size;
++#endif
+     pthread_mutex_unlock(&work_q_lock);
++
++#ifdef USDT
++    STAP_PROBE3(ns-slapd, work_q__enqueue, probe_connid, probe_opid, probe_depth);
++#endif
+ }
+ 
+ /* get_work_q(): will get a work_q_item from the beginning of the work queue, return NULL if
+diff --git a/ldap/servers/slapd/log.c b/ldap/servers/slapd/log.c
+index 676a8fff2..edfa4a45c 100644
+--- a/ldap/servers/slapd/log.c
++++ b/ldap/servers/slapd/log.c
+@@ -35,7 +35,7 @@
+ #include <assert.h>
+ #include <execinfo.h>
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+ #include <sys/sdt.h>
+ #endif
+ 
+@@ -2463,7 +2463,7 @@ vslapd_log_audit(const char *log_data, PRBool json_format)
+     int32_t rc = LDAP_SUCCESS;
+     int32_t msg_len = strlen(log_data);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_audit__entry);
+ #endif
+ 
+@@ -2500,12 +2500,12 @@ vslapd_log_audit(const char *log_data, PRBool json_format)
+         }
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_audit__prepared);
+ #endif
+     log_append_audit_buffer(tnl, loginfo.log_audit_buffer, buffer, blen);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_audit__buffer);
+ #endif
+ 
+@@ -2594,7 +2594,7 @@ vslapd_log_auditfail(const char *log_data, PRBool json_format)
+     int32_t rc = LDAP_SUCCESS;
+     int32_t msg_len = strlen(log_data);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_auditfail__entry);
+ #endif
+ 
+@@ -2631,12 +2631,12 @@ vslapd_log_auditfail(const char *log_data, PRBool json_format)
+         }
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_auditfail__prepared);
+ #endif
+     log_append_auditfail_buffer(tnl, loginfo.log_auditfail_buffer, buffer, blen);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_auditfail__buffer);
+ #endif
+ 
+@@ -3190,7 +3190,7 @@ vslapd_log_access(const char *fmt, va_list ap)
+     struct timespec tsnow;
+     time_t tnl;
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_access__entry);
+ #endif
+ 
+@@ -3231,13 +3231,13 @@ vslapd_log_access(const char *fmt, va_list ap)
+         rc = -1;
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_access__prepared);
+ #endif
+ 
+     log_append_access_buffer(tnl, loginfo.log_access_buffer, buffer, blen, vbuf, vlen);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_access__buffer);
+ #endif
+ 
+@@ -4166,7 +4166,7 @@ vslapd_log_security(const char *log_data)
+     int32_t blen = TBUFSIZE;
+     int32_t rc = LDAP_SUCCESS;
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_security__entry);
+ #endif
+ 
+@@ -4176,13 +4176,13 @@ vslapd_log_security(const char *log_data)
+         return -1;
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_security__prepared);
+ #endif
+     tnl = slapi_current_utc_time();
+     log_append_security_buffer(tnl, loginfo.log_security_buffer, buffer, blen);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, vslapd_log_security__buffer);
+ #endif
+ 
+diff --git a/ldap/servers/slapd/opshared.c b/ldap/servers/slapd/opshared.c
+index bf800f7dc..a2a137d77 100644
+--- a/ldap/servers/slapd/opshared.c
++++ b/ldap/servers/slapd/opshared.c
+@@ -16,7 +16,7 @@
+ #include "log.h"
+ #include "slap.h"
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+ #include <sys/sdt.h>
+ #endif
+ 
+@@ -278,7 +278,7 @@ op_shared_search(Slapi_PBlock *pb, int send_result)
+     be_list[0] = NULL;
+     referral_list[0] = NULL;
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, op_shared_search__entry);
+ #endif
+ 
+@@ -689,7 +689,7 @@ op_shared_search(Slapi_PBlock *pb, int send_result)
+         }
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, op_shared_search__prepared);
+ #endif
+ 
+@@ -1008,7 +1008,7 @@ op_shared_search(Slapi_PBlock *pb, int send_result)
+         be = next_be; /* this be won't be used for PAGED_RESULTS */
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, op_shared_search__backends);
+ #endif
+ 
+@@ -1114,7 +1114,7 @@ free_and_return_nolock:
+     slapi_ch_free_string(&proxydn);
+     slapi_ch_free_string(&proxystr);
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, op_shared_search__return);
+ #endif
+ }
+diff --git a/ldap/servers/slapd/search.c b/ldap/servers/slapd/search.c
+index f9d03c090..67e45aebc 100644
+--- a/ldap/servers/slapd/search.c
++++ b/ldap/servers/slapd/search.c
+@@ -30,7 +30,7 @@
+ #include "pratom.h"
+ #include "snmp_collator.h"
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+ #include <sys/sdt.h>
+ #endif
+ 
+@@ -62,7 +62,7 @@ do_search(Slapi_PBlock *pb)
+     Connection *pb_conn = NULL;
+ 
+     slapi_log_err(SLAPI_LOG_TRACE, "do_search", "=>\n");
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, do_search__entry);
+ #endif
+ 
+@@ -447,7 +447,7 @@ free_and_return:
+         slapi_ch_free_string(&rawbase);
+     }
+ 
+-#ifdef SYSTEMTAP
++#ifdef USDT
+     STAP_PROBE(ns-slapd, do_search__return);
+ #endif
+ }
+diff --git a/profiling/bpftrace/probe_do_search_detail.bt b/profiling/bpftrace/probe_do_search_detail.bt
+new file mode 100644
+index 000000000..4d3880cc3
+--- /dev/null
++++ b/profiling/bpftrace/probe_do_search_detail.bt
+@@ -0,0 +1,47 @@
++#!/usr/bin/env bpftrace
++/*
++ * Search latency split into four phases.
++ * Usage: bpftrace probe_do_search_detail.bt /usr/sbin/ns-slapd /usr/lib64/dirsrv/libslapd.so
++ * $1 = ns-slapd (do_search__*); $2 = libslapd.so (op_shared_search__*).
++ *
++ * Mirrors profiling/stap/probe_do_search_detail.stp.
++ */
++
++usdt:$1:ns-slapd:do_search__entry
++{
++    @entry_us[tid] = nsecs / 1000;
++    @prepared_us[tid] = nsecs / 1000;
++}
++
++usdt:$2:ns-slapd:op_shared_search__entry
++{
++    @do_search_prepared = hist((nsecs / 1000) - @prepared_us[tid]);
++    delete(@prepared_us[tid]);
++
++    @search_us[tid] = nsecs / 1000;
++}
++
++usdt:$2:ns-slapd:op_shared_search__return
++{
++    @do_search_complete = hist((nsecs / 1000) - @search_us[tid]);
++    delete(@search_us[tid]);
++
++    @finalise_us[tid] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:do_search__return
++{
++    @do_search_finalise = hist((nsecs / 1000) - @finalise_us[tid]);
++    delete(@finalise_us[tid]);
++
++    @do_search_full = hist((nsecs / 1000) - @entry_us[tid]);
++    delete(@entry_us[tid]);
++}
++
++END
++{
++    clear(@entry_us);
++    clear(@prepared_us);
++    clear(@search_us);
++    clear(@finalise_us);
++}
+diff --git a/profiling/bpftrace/probe_log_access_detail.bt b/profiling/bpftrace/probe_log_access_detail.bt
+new file mode 100644
+index 000000000..c5ca75e28
+--- /dev/null
++++ b/profiling/bpftrace/probe_log_access_detail.bt
+@@ -0,0 +1,38 @@
++#!/usr/bin/env bpftrace
++/*
++ * Access-log latency histogram.
++ * Usage: bpftrace probe_log_access_detail.bt /usr/lib64/dirsrv/libslapd.so
++ * Probes live in libslapd.so, not ns-slapd.
++ *
++ * Mirrors profiling/stap/probe_log_access_detail.stp.
++ */
++
++usdt:$1:ns-slapd:vslapd_log_access__entry
++{
++    @entry_us[tid] = nsecs / 1000;
++    @prepared_us[tid] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:vslapd_log_access__prepared
++{
++    @log_access_prepared = hist((nsecs / 1000) - @prepared_us[tid]);
++    delete(@prepared_us[tid]);
++
++    @finalise_us[tid] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:vslapd_log_access__buffer
++{
++    @log_access_complete = hist((nsecs / 1000) - @finalise_us[tid]);
++    delete(@finalise_us[tid]);
++
++    @log_access_full = hist((nsecs / 1000) - @entry_us[tid]);
++    delete(@entry_us[tid]);
++}
++
++END
++{
++    clear(@entry_us);
++    clear(@prepared_us);
++    clear(@finalise_us);
++}
+diff --git a/profiling/bpftrace/probe_op_shared_search.bt b/profiling/bpftrace/probe_op_shared_search.bt
+new file mode 100644
+index 000000000..814085047
+--- /dev/null
++++ b/profiling/bpftrace/probe_op_shared_search.bt
+@@ -0,0 +1,47 @@
++#!/usr/bin/env bpftrace
++/*
++ * op_shared_search() phase-by-phase latency.
++ * Usage: bpftrace probe_op_shared_search.bt /usr/lib64/dirsrv/libslapd.so
++ * Probes live in libslapd.so, not ns-slapd.
++ *
++ * Mirrors profiling/stap/probe_op_shared_search.stp.
++ */
++
++usdt:$1:ns-slapd:op_shared_search__entry
++{
++    @entry_us[tid] = nsecs / 1000;
++    @prepared_us[tid] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:op_shared_search__prepared
++{
++    @op_shared_search_prepared = hist((nsecs / 1000) - @prepared_us[tid]);
++    delete(@prepared_us[tid]);
++
++    @search_us[tid] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:op_shared_search__backends
++{
++    @op_shared_search_complete = hist((nsecs / 1000) - @search_us[tid]);
++    delete(@search_us[tid]);
++
++    @finalise_us[tid] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:op_shared_search__return
++{
++    @op_shared_search_finalise = hist((nsecs / 1000) - @finalise_us[tid]);
++    delete(@finalise_us[tid]);
++
++    @op_shared_search_full = hist((nsecs / 1000) - @entry_us[tid]);
++    delete(@entry_us[tid]);
++}
++
++END
++{
++    clear(@entry_us);
++    clear(@prepared_us);
++    clear(@search_us);
++    clear(@finalise_us);
++}
+diff --git a/profiling/bpftrace/probe_work_queue.bt b/profiling/bpftrace/probe_work_queue.bt
+new file mode 100644
+index 000000000..2f332d3cd
+--- /dev/null
++++ b/profiling/bpftrace/probe_work_queue.bt
+@@ -0,0 +1,36 @@
++#!/usr/bin/env bpftrace
++/*
++ * Work-queue and worker-thread observability.
++ * Usage: bpftrace probe_work_queue.bt /usr/sbin/ns-slapd
++ *
++ * Mirrors profiling/stap/probe_work_queue.stp.
++ *
++ * work_q__enqueue(connid, opid, depth)
++ * work_q__dequeue(connid, opid, depth)
++ * worker__busy(connid, opid, op_tag, turbo_flag)   -- not used here
++ * worker__idle(thread_idx)
++ * work__blocked(connid, opid)                      -- not used here
++ */
++
++usdt:$1:ns-slapd:work_q__enqueue
++{
++    @queue_depth = hist(arg2);
++    @enqueue_us[arg0, arg1] = nsecs / 1000;
++}
++
++usdt:$1:ns-slapd:work_q__dequeue
++/@enqueue_us[arg0, arg1]/
++{
++    @wait_us = hist((nsecs / 1000) - @enqueue_us[arg0, arg1]);
++    delete(@enqueue_us[arg0, arg1]);
++}
++
++usdt:$1:ns-slapd:worker__idle
++{
++    @idle_counts[arg0] = count();
++}
++
++END
++{
++    clear(@enqueue_us);
++}
+diff --git a/profiling/stap/probe_do_search_detail.stp b/profiling/stap/probe_do_search_detail.stp
+index 673dff1e0..71ae7f2ee 100644
+--- a/profiling/stap/probe_do_search_detail.stp
++++ b/profiling/stap/probe_do_search_detail.stp
+@@ -1,4 +1,7 @@
+ #!/bin/env stap
++# Search latency split into four phases.
++# Usage: stap probe_do_search_detail.stp /usr/sbin/ns-slapd /usr/lib64/dirsrv/libslapd.so
++# @1 = ns-slapd (do_search__*); @2 = libslapd.so (op_shared_search__*).
+ 
+ global do_search_full
+ global do_search_prepared
+@@ -10,24 +13,19 @@ global prepared_times%
+ global search_times%
+ global finalise_times%
+ 
+-// do_search__entry
+-// do_search__prepared
+-// do_search__op_shared_search_complete
+-// do_search__return
+-
+ probe process(@1).mark("do_search__entry") {
+     entry_times[tid()] = gettimeofday_us()
+     prepared_times[tid()] = gettimeofday_us()
+ }
+ 
+-probe process(@1).mark("op_shared_search__entry") {
++probe process(@2).mark("op_shared_search__entry") {
+     do_search_prepared <<< gettimeofday_us() - prepared_times[tid()]
+     delete prepared_times[tid()]
+ 
+     search_times[tid()] = gettimeofday_us()
+ }
+ 
+-probe process(@1).mark("op_shared_search__return") {
++probe process(@2).mark("op_shared_search__return") {
+     do_search_complete <<< gettimeofday_us() - search_times[tid()]
+     delete search_times[tid()]
+ 
+diff --git a/profiling/stap/probe_log_access_detail.stp b/profiling/stap/probe_log_access_detail.stp
+index 38d506e7c..b125632bb 100644
+--- a/profiling/stap/probe_log_access_detail.stp
++++ b/profiling/stap/probe_log_access_detail.stp
+@@ -1,4 +1,7 @@
+ #!/bin/env stap
++# Access-log latency histogram.
++# Usage: stap probe_log_access_detail.stp /usr/lib64/dirsrv/libslapd.so
++# Probes live in libslapd.so, not ns-slapd.
+ 
+ global log_access_full
+ global log_access_prepared
+@@ -8,11 +11,6 @@ global entry_times%
+ global prepared_times%
+ global finalise_times%
+ 
+-// vslapd_log_access__entry
+-// vslapd_log_access__prepared
+-// vslapd_log_access__buffer
+-
+-
+ probe process(@1).mark("vslapd_log_access__entry") {
+     entry_times[tid()] = gettimeofday_us()
+     prepared_times[tid()] = gettimeofday_us()
+diff --git a/profiling/stap/probe_op_shared_search.stp b/profiling/stap/probe_op_shared_search.stp
+index 2fca6c31e..307131799 100644
+--- a/profiling/stap/probe_op_shared_search.stp
++++ b/profiling/stap/probe_op_shared_search.stp
+@@ -1,4 +1,7 @@
+ #!/bin/env stap
++# op_shared_search() phase-by-phase latency.
++# Usage: stap probe_op_shared_search.stp /usr/lib64/dirsrv/libslapd.so
++# Probes live in libslapd.so, not ns-slapd.
+ 
+ global op_shared_search_full
+ global op_shared_search_prepared
+@@ -10,11 +13,6 @@ global prepared_times%
+ global search_times%
+ global finalise_times%
+ 
+-// op_shared_search__entry 
+-// op_shared_search__prepared
+-// op_shared_search__backends
+-// op_shared_search__complete
+-
+ probe process(@1).mark("op_shared_search__entry") {
+     entry_times[tid()] = gettimeofday_us()
+     prepared_times[tid()] = gettimeofday_us()
+diff --git a/profiling/stap/probe_work_queue.stp b/profiling/stap/probe_work_queue.stp
+new file mode 100644
+index 000000000..d953824b9
+--- /dev/null
++++ b/profiling/stap/probe_work_queue.stp
+@@ -0,0 +1,52 @@
++#!/bin/env stap
++# Work-queue and worker-thread observability.
++# Usage: stap probe_work_queue.stp /usr/sbin/ns-slapd
++#
++# work_q__enqueue(connid, opid, depth)
++# work_q__dequeue(connid, opid, depth)
++# worker__busy(connid, opid, op_tag, turbo_flag)   -- not used here
++# worker__idle(thread_idx)
++# work__blocked(connid, opid)                      -- not used here
++
++global queue_depth
++global wait_us
++global idle_counts
++
++global enqueue_us%
++
++probe process(@1).mark("work_q__enqueue") {
++    queue_depth <<< $arg3
++    enqueue_us[$arg1, $arg2] = gettimeofday_us()
++}
++
++probe process(@1).mark("work_q__dequeue") {
++    if ([$arg1, $arg2] in enqueue_us) {
++        wait_us <<< gettimeofday_us() - enqueue_us[$arg1, $arg2]
++        delete enqueue_us[$arg1, $arg2]
++    }
++}
++
++probe process(@1).mark("worker__idle") {
++    idle_counts[$arg1] <<< 1
++}
++
++function report() {
++    printf("Distribution of work-queue depth at enqueue time (samples=%d)\n", @count(queue_depth))
++    if (@count(queue_depth) > 0) {
++        printf("max/avg/min: %d/%d/%d\n", @max(queue_depth), @avg(queue_depth), @min(queue_depth))
++        print(@hist_log(queue_depth))
++    }
++
++    printf("Distribution of enqueue-to-dequeue wait latencies (microseconds) for %d samples\n", @count(wait_us))
++    if (@count(wait_us) > 0) {
++        printf("max/avg/min: %d/%d/%d\n", @max(wait_us), @avg(wait_us), @min(wait_us))
++        print(@hist_log(wait_us))
++    }
++
++    printf("Worker idle counts (per thread index):\n")
++    foreach (idx in idle_counts) {
++        printf("  thread %d: %d idle waits\n", idx, @count(idle_counts[idx]))
++    }
++}
++
++probe end { report() }
+diff --git a/rpm/389-ds-base.spec.in b/rpm/389-ds-base.spec.in
+index 618a5ac03..af9f7e569 100644
+--- a/rpm/389-ds-base.spec.in
++++ b/rpm/389-ds-base.spec.in
+@@ -60,8 +60,8 @@
+ # Build cockpit plugin
+ %bcond cockpit 1
+ 
+-# Build HIBP password breach checking (requires libcurl)
+ %bcond hibp 0
++%bcond usdt 1
+ 
+ # fedora 15 and later uses tmpfiles.d
+ # otherwise, comment this out
+@@ -138,6 +138,9 @@ BuildRequires:    libcurl-devel
+ BuildRequires:    pam-devel
+ BuildRequires:    systemd-units
+ BuildRequires:    systemd-devel
++%if %{with usdt}
++BuildRequires:    systemtap-sdt-devel
++%endif
+ BuildRequires:    cargo
+ BuildRequires:    rust
+ BuildRequires:    pkgconfig
+@@ -217,6 +220,11 @@ Requires:         python3-file-magic
+ # Picks up our systemd deps.
+ %{?systemd_requires}
+ 
++%if %{with usdt}
++# Optional eBPF tracer for the shipped USDT bpftrace scripts.
++Recommends:       bpftrace
++%endif
++
+ 
+ Source0:          %{name}-%{version}.tar.bz2
+ Source2:          %{name}-devel.README
+@@ -420,6 +428,12 @@ RUST_FLAGS="--enable-rust --enable-rust-offline"
+ COCKPIT_FLAGS="--disable-cockpit"
+ %endif
+ 
++%if %{with usdt}
++USDT_FLAGS="--enable-usdt"
++%else
++USDT_FLAGS="--disable-usdt"
++%endif
++
+ %if %{with bundle_jemalloc}
+ # Override page size, bz #1545539
+ # 4K
+@@ -477,7 +491,7 @@ autoreconf -fiv
+            --with-systemdsystemconfdir=%{_sysconfdir}/systemd/system \
+            --with-systemdgroupname=%{groupname} \
+            --libexecdir=%{_libexecdir}/%{pkgname} \
+-           $ASAN_FLAGS $MSAN_FLAGS $TSAN_FLAGS $UBSAN_FLAGS $RUST_FLAGS $CLANG_FLAGS $COCKPIT_FLAGS \
++           $ASAN_FLAGS $MSAN_FLAGS $TSAN_FLAGS $UBSAN_FLAGS $RUST_FLAGS $CLANG_FLAGS $COCKPIT_FLAGS $USDT_FLAGS \
+ %if 0%{?fedora} >= 34 || 0%{?rhel} >= 9
+            --with-libldap-r=no \
+ %endif
+-- 
+2.55.0
+
